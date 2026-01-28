@@ -135,7 +135,7 @@ func destroy() -> void:
 	_generate_button = null
 
 func _on_check_uri() -> void:
-	_plugin_config.uri = _uri_input.text
+	_plugin_config.uri = _uri_input.text as StringName
 	check_uri.emit()
 
 func _on_generate_code() -> void:
