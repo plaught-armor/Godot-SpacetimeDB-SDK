@@ -123,9 +123,6 @@ func add_err(text: Variant) -> void:
 			_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] %s[/color]\n" % [ERROR_LOG_ICON, str(text)]
 
 func destroy() -> void:
-	if is_instance_valid(self):
-		SpacetimePlugin.instance.remove_control_from_bottom_panel(self)
-		queue_free()
 	_uri_input = null
 	_modules_container = null
 	_logs_label = null
