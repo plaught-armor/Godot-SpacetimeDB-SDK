@@ -266,39 +266,8 @@ func _handle_parsed_message(message_resource: Resource):
 		return
 
 	# Handle known message types
-	if message_resource is InitialSubscriptionMessage:
-		var initial_sub: InitialSubscriptionMessage = message_resource
-		print_log("SpacetimeDBClient: Processing Initial Subscription (Query ID: %d)" % initial_sub.query_id.id)
-		_local_db.apply_database_update(initial_sub.database_update)
-		if not _received_initial_subscription:
-			_received_initial_subscription = true
-			self.database_initialized.emit()
 
-	elif message_resource is SubscribeMultiAppliedMessage:
-		var sub: SubscribeMultiAppliedMessage = message_resource
-		print_log("SpacetimeDBClient: Processing Multi Subscription (Query ID: %d)" % sub.query_id.id)
-		_local_db.apply_database_update(sub.database_update)
-		if pending_subscriptions.has(sub.query_id.id):
-			var subscription := pending_subscriptions[sub.query_id.id]
-			current_subscriptions[sub.query_id.id] = subscription
-			pending_subscriptions.erase(sub.query_id.id)
-			subscription.applied.emit()
-
-		if not _received_initial_subscription:
-			_received_initial_subscription = true
-			self.database_initialized.emit()
-
-	elif message_resource is UnsubscribeMultiAppliedMessage:
-		var unsub: UnsubscribeMultiAppliedMessage = message_resource
-		_local_db.apply_database_update(unsub.database_update)
-		print_log("Unsubscribe: " + str(current_subscriptions[unsub.query_id.id]))
-		if current_subscriptions.has(unsub.query_id.id):
-			var subscription := current_subscriptions[unsub.query_id.id]
-			current_subscriptions.erase(unsub.query_id.id)
-			subscription.end.emit()
-			subscription.queue_free()
-
-	elif message_resource is IdentityTokenMessage:
+	if message_resource is IdentityTokenMessage:
 		var identity_token: IdentityTokenMessage = message_resource
 		print_log("SpacetimeDBClient: Received Identity Token.")
 		_identity = identity_token.identity
@@ -306,27 +275,45 @@ func _handle_parsed_message(message_resource: Resource):
 			_token = identity_token.token
 		_connection_id = identity_token.connection_id
 		self.connected.emit(_identity, _token)
+		## TODO: initialise the local_db.
+
+	elif message_resource is SubscribeAppliedMessage:
+		var message: SubscribeAppliedMessage = message_resource
+		_local_db.apply_database_subscription_applied(message.rows)
+		if not _received_initial_subscription:
+			_received_initial_subscription = true
+			self.database_initialized.emit()
+
+
+
+	elif message_resource is UnsubscribeAppliedMessage:
+		print_log("SpacetimeDBClient: Received unhandled message resource type: UnsubscribeAppliedMessage")
+		pass
+
+	elif message_resource is SubscriptionErrorMessage:
+		print_log("SpacetimeDBClient: Received unhandled message resource type: SubscriptionErrorMessage")
+		pass
 
 	elif message_resource is TransactionUpdateMessage:
-		var tx_update: TransactionUpdateMessage = message_resource
-		#print_log("SpacetimeDBClient: Processing Transaction Update (Reducer: %s, Req ID: %d)" % [tx_update.reducer_call.reducer_name, tx_update.reducer_call.request_id])
-		# Apply changes to local DB only if committed
-		if tx_update.status.status_type == UpdateStatusData.StatusType.COMMITTED:
-			if tx_update.status.committed_update: # Check if update data exists
-				_local_db.apply_database_update(tx_update.status.committed_update)
-			else:
-				# This might happen if a transaction committed but affected 0 rows relevant to the client
-				print_log("SpacetimeDBClient: Committed transaction had no relevant row updates.")
-		elif tx_update.status.status_type == UpdateStatusData.StatusType.FAILED:
-			printerr("SpacetimeDBClient: Reducer call failed: ", tx_update.status.failure_message)
-		elif tx_update.status.status_type == UpdateStatusData.StatusType.OUT_OF_ENERGY:
-			printerr("SpacetimeDBClient: Reducer call ran out of energy.")
-
+		var update_sets: TransactionUpdateMessage = message_resource
+		for tx_update: DatabaseUpdateData in update_sets:
+			_local_db.apply_database_update(tx_update)
+			if not _received_initial_subscription:
+				_received_initial_subscription = true
+				self.database_initialized.emit()
 		# Emit the full transaction update signal regardless of status
-		self.transaction_update_received.emit(tx_update)
-	elif message_resource is TransactionUpdateMessageLightmode:
-		var tx_update: TransactionUpdateMessageLightmode = message_resource
-		_local_db.apply_database_update(tx_update.committed_update)
+		self.transaction_update_received.emit(update_sets)
+
+	elif message_resource is OneOffQueryMessage:
+		print_log("SpacetimeDBClient: Received unhandled message resource type: OneOffQueryMessage")
+		pass
+
+	## elif message_resource is reducer result message:
+		## pass
+
+	## elif message_resource is procedure result message:
+		## pass
+
 	else:
 		print_log("SpacetimeDBClient: Received unhandled message resource type: " + message_resource.get_class())
 
@@ -385,14 +372,16 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 		return SpacetimeDBSubscription.fail(ERR_CONNECTION_ERROR)
 
 	# 1. Generate a request ID
+	var request_id := _next_request_id
+	_next_request_id += 1
 	var query_id := _next_query_id
 	_next_query_id += 1
 	# 2. Create the correct payload Resource
-	var payload_data := SubscribeMultiMessage.new(queries, query_id)
+	var payload_data := SubscribeMessage.new(_next_request_id, query_id, queries)
 
 	# 3. Serialize the complete ClientMessage using the universal function
 	var message_bytes := _serializer.serialize_client_message(
-		SpacetimeDBClientMessage.SUBSCRIBE_MULTI,
+		SpacetimeDBClientMessage.SUBSCRIBE,
 		payload_data
 	)
 
@@ -429,27 +418,29 @@ func unsubscribe(query_id: int) -> Error:
 		printerr("SpacetimeDBClient: Cannot unsubscribe, not connected.")
 		return ERR_CONNECTION_ERROR
 
+	var request_id:= _next_request_id
+	_next_request_id += 1
 	# 1. Create the correct payload Resource
-	var payload_data := UnsubscribeMultiMessage.new(query_id)
+	var payload_data := UnsubscribeMessage.new(request_id, query_id)
 
 	# 2. Serialize the complete ClientMessage using the universal function
 	var message_bytes := _serializer.serialize_client_message(
-		SpacetimeDBClientMessage.UNSUBSCRIBE_MULTI,
+		SpacetimeDBClientMessage.UNSUBSCRIBE,
 		payload_data
 	)
 
 	if _serializer.has_error():
-		printerr("SpacetimeDBClient: Failed to serialize SubscribeMulti message: %s" % _serializer.get_last_error())
+		printerr("SpacetimeDBClient: Failed to serialize Unsubscribe message: %s" % _serializer.get_last_error())
 		return ERR_PARSE_ERROR
 
 	# 3. Send the binary message via WebSocket
 	if _connection and _connection._websocket:
 		var err := _connection.send_bytes(message_bytes)
 		if err != OK:
-			printerr("SpacetimeDBClient: Error sending SubscribeMulti BSATN message: %s" % error_string(err))
+			printerr("SpacetimeDBClient: Error sending Unsubscribe BSATN message: %s" % error_string(err))
 			return err
 
-		print_log("SpacetimeDBClient: UnsubscribeMulti request sent successfully (BSATN), Query ID: %d" % query_id)
+		print_log("SpacetimeDBClient: Unsubscribe request sent successfully (BSATN), Query ID: %d" % query_id)
 		return OK
 
 	printerr("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")

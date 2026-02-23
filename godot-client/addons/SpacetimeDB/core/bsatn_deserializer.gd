@@ -44,7 +44,8 @@ func _init(p_schema: SpacetimeDBSchema, p_debug_mode: bool = false) -> void:
 
 	_native_arraylike_regex.compile("^(?<struct>.+)\\[(?<components>.*)\\]$")
 
-# --- Error Handling ---
+
+#region --- Error Handling ---
 func has_error() -> bool: return _last_error != ""
 func get_last_error() -> String: var err := _last_error; _last_error = ""; return err
 func clear_error() -> void: _last_error = ""
@@ -59,8 +60,9 @@ func _check_read(spb: StreamPeerBuffer, bytes_needed: int) -> bool:
 		_set_error("Attempted to read %d bytes past end of buffer (size: %d)." % [bytes_needed, spb.get_size()], spb.get_position())
 		return false
 	return true
+#endregion
 
-# --- Primitive Value Readers ---
+#region --- Primitive Value Readers ---
 # These directly read basic types from the internal StreamPeerBuffer.
 
 func read_i8(spb: StreamPeerBuffer) -> int:
@@ -167,6 +169,10 @@ func read_scheduled_at(spb: StreamPeerBuffer) -> int:
 	read_i8(spb) # skipping the scheduled_at enum int
 	return read_timestamp(spb)
 
+func read_query_id_data(spb: StreamPeerBuffer):
+	var query_id_data := QueryIdData.new()
+	query_id_data.id = read_u32_le(spb)
+	return query_id_data
 
 func read_vec_u8(spb: StreamPeerBuffer) -> PackedByteArray:
 	var start_pos := spb.get_position()
@@ -177,8 +183,10 @@ func read_vec_u8(spb: StreamPeerBuffer) -> PackedByteArray:
 		return PackedByteArray()
 	if length == 0: return PackedByteArray()
 	return read_bytes(spb, length)
+#endregion
 
-# --- Special Readers ---
+
+#region --- Special Readers ---
 
 ## Reads an option property.
 func _read_option(spb: StreamPeerBuffer, parent_resource_containing_option: Resource, option_property_dict: Dictionary, explicit_inner_bsatn_type_str: String = "") -> Option:
@@ -439,8 +447,10 @@ func read_bsatn_row_list(spb: StreamPeerBuffer) -> Array[PackedByteArray]:
 				rows[i] = data.slice(start_offset, end_offset)
 		_: _set_error("Unknown RowSizeHint type: %d" % size_hint_type, start_pos); return []
 	return rows
+#endregion
 
-# --- Core Deserialization Logic ---
+
+#region --- Core Deserialization Logic ---
 
 # Helper to get a primitive reader Callable based on a BSATN type string.
 func _get_primitive_reader_from_bsatn_type(bsatn_type_str: String) -> Callable:
@@ -689,8 +699,10 @@ func _populate_enum_data_from_bytes(resource: Resource, spb: StreamPeerBuffer) -
 		resource.data = data
 		return true
 	return false
+#endregion
 
-# --- Specific Message/Structure Readers ---
+
+#region --- Specific Message/Structure Readers ---
 
 # Reads UpdateStatus structure (handles enum tag)
 func _read_update_status(spb: StreamPeerBuffer) -> UpdateStatusData:
@@ -856,10 +868,8 @@ func _get_query_update_stream(spb: StreamPeerBuffer, table_name_for_error: Strin
 
 # Manual reader specifically for SubscriptionErrorMessage due to Option<T> fields
 # Keep this manual until Option<T> is handled generically (if ever needed)
-func _read_subscription_error_manual(spb: StreamPeerBuffer) -> SubscriptionErrorMessage:
+func _read_subscription_error_message(spb: StreamPeerBuffer) -> SubscriptionErrorMessage:
 	var resource := SubscriptionErrorMessage.new()
-
-	resource.total_host_execution_duration_micros = read_u64_le(spb); if has_error(): return null
 
 	# Read Option<u32> request_id (0 = Some, 1 = None)
 	var req_id_tag = read_u8(spb); if has_error(): return null
@@ -868,25 +878,30 @@ func _read_subscription_error_manual(spb: StreamPeerBuffer) -> SubscriptionError
 	else: _set_error("Invalid tag %d for Option<u32> request_id" % req_id_tag, spb.get_position() - 1); return null
 	if has_error(): return null
 
-	# Read Option<u32> query_id
-	var query_id_tag = read_u8(spb); if has_error(): return null
-	if query_id_tag == 0: resource.query_id = read_u32_le(spb)
-	elif query_id_tag == 1: resource.query_id = -1 # Using -1 to represent None
-	else: _set_error("Invalid tag %d for Option<u32> query_id" % query_id_tag, spb.get_position() - 1); return null
+	# Read query_id
+	resource.query_id = read_query_id_data(spb)
 	if has_error(): return null
-
-	# Read Option<TableId> table_id_resource
-	var table_id_tag = read_u8(spb); if has_error(): return null
-	if table_id_tag == 0: # Some(TableId)
-		var table_id_res = TableIdData.new()
-		if not _populate_resource_from_bytes(table_id_res, spb): return null
-		resource.table_id_resource = table_id_res
-	elif table_id_tag == 1: # None
-		resource.table_id_resource = null
-	else: _set_error("Invalid tag %d for Option<TableId>" % table_id_tag, spb.get_position() - 1); return null
 
 	resource.error_message = read_string_with_u32_len(spb)
 	return null if has_error() else resource
+
+func _read_reducer_result_message(spb: StreamPeerBuffer)-> ReducerResultMessage:
+	var resource := ReducerResultMessage.new()
+
+	resource.request_id = read_u32_le(spb); if has_error(): return null
+	resource.timestamp = read_timestamp(spb); if has_error(): return null
+	var outcome : ReducerOutcomeEnum = ReducerOutcomeEnum.new()
+	_populate_enum_from_bytes(spb, outcome)
+	match outcome.value:
+		ReducerOutcomeEnum.Options.ok:
+			pass
+		ReducerOutcomeEnum.Options.okEmpty:
+			pass
+		ReducerOutcomeEnum.Options.err:
+			pass
+		ReducerOutcomeEnum.Options.internalError:
+			pass
+	return resource
 
 func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Resource]:
 	if new_data.is_empty():
@@ -923,14 +938,10 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Reso
 			break
 
 	return parsed_messages
+#endregion
 
-# --- Top-Level Message Parsing ---
-# Entry point: Parses the entire byte buffer into a top-level message Resource.
-func parse_packet(buffer: PackedByteArray) -> Resource:
-	push_warning("BSATNDeserializer.parse_packet is deprecated. Use process_bytes_and_extract_messages instead.")
-	var results = process_bytes_and_extract_messages(buffer)
-	return results[0] if not results.is_empty() else null
 
+#region --- Top-Level Message Parsing ---
 
 func _parse_message_from_stream(spb: StreamPeerBuffer) -> Resource:
 	clear_error()
@@ -954,7 +965,7 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> Resource:
 	# --- Special handling for types requiring manual parsing ---
 	if msg_type == SpacetimeDBServerMessage.SUBSCRIPTION_ERROR:
 		# Use the manual reader due to Option<T> complexity
-		result_resource = _read_subscription_error_manual(spb)
+		result_resource = _read_subscription_error_message(spb)
 		if has_error(): return null
 		# Error message is printed by _set_error, but we can add context
 		if result_resource.error_message: printerr("Subscription Error Received: ", result_resource.error_message)
@@ -963,6 +974,9 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> Resource:
 	elif msg_type == SpacetimeDBServerMessage.ONE_OFF_QUERY_RESPONSE:
 		_set_error("Reader for OneOffQueryResponse (0x04) not implemented.", spb.get_position() -1)
 		return null # Or return an empty resource shell if preferred
+
+	elif msg_type == SpacetimeDBServerMessage.REDUCER_RESULT:
+		result_resource = _read_reducer_result_message(spb)
 
 	# --- Generic handling for types parsed via _populate_resource_from_bytes ---
 	else:
@@ -986,3 +1000,4 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> Resource:
 		push_warning("Bytes remaining after parsing message type 0x%02X: %d" % [msg_type, remaining_bytes])
 
 	return result_resource
+#endregion

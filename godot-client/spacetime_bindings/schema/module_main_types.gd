@@ -8,6 +8,7 @@ enum TestEnum {
 	B
 }
 const TestType = preload('res://spacetime_bindings/schema/types/main_test_type.gd')
+const TestNestedEnum = preload('res://spacetime_bindings/schema/types/main_test_nested_enum.gd')
 const TestScheduledTable = preload('res://spacetime_bindings/schema/types/main_test_scheduled_table.gd')
 const Message = preload('res://spacetime_bindings/schema/types/main_message.gd')
 const Damage = preload('res://spacetime_bindings/schema/types/main_damage.gd')

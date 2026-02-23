@@ -94,4 +94,3 @@ func test_struct(message: MainMessage, cb: Callable = func(_t: TransactionUpdate
 	else:
 		return ERR_METHOD_NOT_FOUND
 	return OK
-

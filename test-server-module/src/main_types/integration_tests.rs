@@ -7,10 +7,21 @@ pub enum TestEnum {
     B,
 }
 
-#[derive(Debug, SpacetimeType, Clone, Default)]
+#[derive(Debug, SpacetimeType, Clone)]
+pub enum TestNestedEnum{
+    OK(u64),
+    OkEmpty,
+    Err(Box<[u8]>),
+    InternalError(Box<str>),
+    Test(TestScheduledTable)
+
+}
+
+#[derive(Debug, SpacetimeType, Clone)]
 pub struct  TestType {
     pub test_name : String,
     pub test_int: u64,
+    pub test_nested_enum: TestNestedEnum
 }
 
 #[table(accessor = test_table_datatypes, public)]
@@ -67,13 +78,13 @@ impl Default for TestTableDatatypes {
             t_test_enum: TestEnum::default(),
             t_test_enum_vec: vec![TestEnum::default()],
             t_test_enum_option: Some(TestEnum::default()),
-            t_test_type: TestType{ test_name: "test_name".to_string(), test_int: 1 },
-            t_test_type_vec: vec![TestType{ test_name: "test_name".to_string(), test_int: 1 }],
-            t_test_type_option: Some(TestType{ test_name: "test_name".to_string(), test_int: 1 }),
+            t_test_type: TestType{ test_name: "test_name".to_string(), test_int: 1, test_nested_enum: TestNestedEnum::OkEmpty },
+            t_test_type_vec: vec![TestType{ test_name: "test_name".to_string(), test_int: 1 , test_nested_enum: TestNestedEnum::OkEmpty}],
+            t_test_type_option: Some(TestType{ test_name: "test_name".to_string(), test_int: 1, test_nested_enum: TestNestedEnum::OkEmpty }),
         }
     }
 }
-
+#[derive(Debug, Clone)]
 #[table(accessor = test_scheduled_table, public, scheduled(test_scheduled_reducer), index(accessor = get_by_public_count, btree(columns = [public_count])))]
 pub struct TestScheduledTable {
     #[primary_key]
@@ -128,15 +139,16 @@ pub fn test_scheduled_reducer(ctx: &ReducerContext, mut row: TestScheduledTable)
                 t_test_enum: TestEnum::A,
                 t_test_enum_option: Some(TestEnum::A),
                 t_test_enum_vec: vec![TestEnum::A, TestEnum::B],
-                t_test_type: TestType{ test_name: "test_name".to_string(), test_int: 1 },
-                t_test_type_vec: vec![TestType{ test_name: "test_name".to_string(), test_int: 1 }, TestType{ test_name: "test_name".to_string(), test_int: 1 }],
-                t_test_type_option: Some(TestType{ test_name: "test_name".to_string(), test_int: 1 }),
+                t_test_type: TestType{ test_name: "test_name".to_string(), test_int: 1, test_nested_enum: TestNestedEnum::OkEmpty },
+                t_test_type_vec: vec![TestType{ test_name: "test_name".to_string(), test_int: 1, test_nested_enum: TestNestedEnum::OkEmpty }, TestType{ test_name: "test_name".to_string(), test_int: 1, test_nested_enum: TestNestedEnum::OkEmpty }],
+                t_test_type_option: Some(TestType{ test_name: "test_name".to_string(), test_int: 1, test_nested_enum: TestNestedEnum::OkEmpty }),
             });
     }
 }
 
 #[reducer]
 pub fn start_integration_tests(ctx: &ReducerContext) {
+    log::info!("start_integration_tests called");
     ctx.db.test_scheduled_table().insert(TestScheduledTable {
         scheduled_id: 0,
         h1: 1,
@@ -172,6 +184,7 @@ pub fn start_integration_tests(ctx: &ReducerContext) {
 
 #[reducer]
 pub fn clear_integration_tests(ctx: &ReducerContext) {
+    log::info!("clear_integration_tests called");
     for row in ctx.db.test_scheduled_table().iter() {
         ctx.db.test_scheduled_table().delete(row);
     }
