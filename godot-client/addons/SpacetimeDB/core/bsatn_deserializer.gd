@@ -484,7 +484,7 @@ func _get_reader_callable_for_property(resource: Resource, prop: Dictionary) -> 
 
 	# --- Special Cases First ---
 	# Handle specific properties requiring custom logic before generic checks
-	if resource is TransactionUpdateMessage and prop_name == "status":
+	if resource is TransactionUpdateMessage and prop_name == "query_sets":
 		reader_callable = Callable(self, "_read_update_status")
 	# Add other special cases here if needed (e.g., Option<T> fields if handled generically later)
 	if prop.class_name == &'Option':
@@ -894,14 +894,48 @@ func _read_reducer_result_message(spb: StreamPeerBuffer)-> ReducerResultMessage:
 	_populate_enum_from_bytes(spb, outcome)
 	match outcome.value:
 		ReducerOutcomeEnum.Options.ok:
-			pass
+			var resource_script_path := SpacetimeDBServerMessage.get_resource_path(SpacetimeDBServerMessage.TRANSACTION_UPDATE)
+			resource.reducer_result.data = _read_generic_server_message(SpacetimeDBServerMessage.TRANSACTION_UPDATE, resource_script_path, spb)
 		ReducerOutcomeEnum.Options.okEmpty:
 			pass
 		ReducerOutcomeEnum.Options.err:
+
 			pass
 		ReducerOutcomeEnum.Options.internalError:
 			pass
 	return resource
+
+func _read_transaction_update_message(spb: StreamPeerBuffer) -> TransactionUpdateMessage :
+	var tx_update_resource: TransactionUpdateMessage = TransactionUpdateMessage.new()
+	var query_set_count: int = read_u32_le(spb); if has_error(): return
+	for i in query_set_count:
+		var dataset : DatabaseUpdateData = DatabaseUpdateData.new()
+		tx_update_resource.query_sets.append(dataset)
+		dataset.query_id.id = read_u32_le(spb); if has_error(): return
+		var table_count = read_u32_le(spb); if has_error(): return
+		for i2 in table_count:
+			var table : TableUpdateData = TableUpdateData.new()
+			dataset.tables.append(table)
+			if not _read_table_update_instance(spb, table):
+				if not has_error(): _set_error("Failed reading TableUpdate element %d" % i2)
+				return
+
+	return tx_update_resource
+
+func _read_generic_server_message(msg_type:int, script_path:String, spb:StreamPeerBuffer)-> Resource:
+		if not ResourceLoader.exists(script_path):
+			_set_error("Script not found for message type 0x%02X: %s" % [msg_type, script_path], 1)
+			return null
+		var script: GDScript = ResourceLoader.load(script_path, "GDScript")
+		if not script or not script.can_instantiate():
+			_set_error("Failed to load or instantiate script for message type 0x%02X: %s" % [msg_type, script_path], 1)
+			return null
+
+		var result_resource = script.new()
+		if not _populate_resource_from_bytes(result_resource, spb):
+			# Error already set by _populate_resource_from_bytes or its callees
+			return null # Return null on population failure
+		return result_resource
 
 func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Resource]:
 	if new_data.is_empty():
@@ -969,6 +1003,8 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> Resource:
 		if has_error(): return null
 		# Error message is printed by _set_error, but we can add context
 		if result_resource.error_message: printerr("Subscription Error Received: ", result_resource.error_message)
+	elif msg_type == SpacetimeDBServerMessage.TRANSACTION_UPDATE:
+		result_resource = _read_transaction_update_message(spb)
 
 	# --- TODO: Implement reader for OneOffQueryResponseData ---
 	elif msg_type == SpacetimeDBServerMessage.ONE_OFF_QUERY_RESPONSE:
@@ -977,22 +1013,12 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> Resource:
 
 	elif msg_type == SpacetimeDBServerMessage.REDUCER_RESULT:
 		result_resource = _read_reducer_result_message(spb)
+		if has_error(): return null
+
 
 	# --- Generic handling for types parsed via _populate_resource_from_bytes ---
 	else:
-		if not ResourceLoader.exists(resource_script_path):
-			_set_error("Script not found for message type 0x%02X: %s" % [msg_type, resource_script_path], 1)
-			return null
-		var script: GDScript = ResourceLoader.load(resource_script_path, "GDScript")
-		if not script or not script.can_instantiate():
-			_set_error("Failed to load or instantiate script for message type 0x%02X: %s" % [msg_type, resource_script_path], 1)
-			return null
-
-		result_resource = script.new()
-		if not _populate_resource_from_bytes(result_resource, spb):
-			# Error already set by _populate_resource_from_bytes or its callees
-			return null # Return null on population failure
-
+		result_resource = _read_generic_server_message(msg_type, resource_script_path, spb)
 	# Optional: Check if all bytes were consumed after parsing the message body
 	var remaining_bytes := spb.get_size() - spb.get_position()
 	if remaining_bytes > 0:

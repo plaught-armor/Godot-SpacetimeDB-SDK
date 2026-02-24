@@ -284,8 +284,6 @@ func _handle_parsed_message(message_resource: Resource):
 			_received_initial_subscription = true
 			self.database_initialized.emit()
 
-
-
 	elif message_resource is UnsubscribeAppliedMessage:
 		print_log("SpacetimeDBClient: Received unhandled message resource type: UnsubscribeAppliedMessage")
 		pass
@@ -386,7 +384,7 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 	)
 
 	if _serializer.has_error():
-		printerr("SpacetimeDBClient: Failed to serialize SubscribeMulti message: %s" % _serializer.get_last_error())
+		printerr("SpacetimeDBClient: Failed to serialize Subscribe message: %s" % _serializer.get_last_error())
 		return SpacetimeDBSubscription.fail(ERR_PARSE_ERROR)
 
 	# 4. Create subscription handle
@@ -396,11 +394,11 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 	if _connection and _connection._websocket:
 		var err := _connection.send_bytes(message_bytes)
 		if err != OK:
-			printerr("SpacetimeDBClient: Error sending SubscribeMulti BSATN message: %s" % error_string(err))
+			printerr("SpacetimeDBClient: Error sending Subscribe BSATN message: %s" % error_string(err))
 			subscription.error = err
 			subscription._ended = true
 		else:
-			print_log("SpacetimeDBClient: SubscribeMulti request sent successfully (BSATN), Query ID: %d" % query_id)
+			print_log("SpacetimeDBClient: Subscribe request sent successfully (BSATN), Query ID: %d" % query_id)
 			pending_subscriptions.set(query_id, subscription)
 			# Add as child for signals
 			subscription.name = "Subscription"

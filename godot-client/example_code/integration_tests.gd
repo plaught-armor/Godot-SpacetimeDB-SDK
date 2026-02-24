@@ -4,14 +4,12 @@ extends Control
 # Called when the node enters the scene tree for the first time.
 func _ready() -> void:
 	var options :SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
-
 	options.one_time_token = true # <--- anonymous-like. set to false to persist
 	options.debug_mode = true # <--- enables lots of additional debug prints and warnings
 	options.compression = SpacetimeDBConnection.CompressionPreference.GZIP
 	options.threading = false
 	# Increase buffer size. In general, you don't need this.
 	# options.set_all_buffer_size(1024 * 1024 * 2)
-
 	# Disable threading (e.g., for web builds)
 	# options.threading = false
 
@@ -29,6 +27,15 @@ func _ready() -> void:
 func _on_spacetimedb_connected(identity: PackedByteArray, _token: String) -> void:
 	print("Game: Connected to SpacetimeDB!")
 	print("Game: My Identity: 0x%s" % [identity.hex_encode()])
+	#var id := SpacetimeDB.Main.get_local_identity()
+	#var query_string := [
+		#"SELECT * FROM *$)§"
+	#]
+	#var sub := SpacetimeDB.Main.subscribe(query_string)
+	#if sub.error:
+		#printerr("Game: Failed to send subscription request.")
+		#return
+	#print("Game: Subscription request sent (Query ID: %d)." % sub.query_id)
 
 func _on_spacetimedb_disconnected() -> void:
 	print("Game: Disconnected from SpacetimeDB.")
