@@ -99,11 +99,13 @@ func _on_check_uri():
 	uri += "/v1/ping"
 	print_log("Pinging... " + uri)
 	http_request.request(uri)
+	var ping_start = Time.get_ticks_usec()
 	var result = await http_request.request_completed
 	if result[1] == 0:
 		print_err("Request timeout - " + uri)
 	else:
 		print_log("Response code: " + str(result[1]))
+	print_log("request took: "+ str(Time.get_ticks_usec() - ping_start) + " microseconds")
 
 func _on_generate_schema():
 	if plugin_config.uri.ends_with("/"):

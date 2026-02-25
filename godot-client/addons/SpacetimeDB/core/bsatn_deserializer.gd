@@ -473,6 +473,7 @@ func _get_primitive_reader_from_bsatn_type(bsatn_type_str: String) -> Callable:
 		&"vec_u8": return Callable(self, "read_vec_u8")
 		&"bool": return Callable(self, "read_bool")
 		&"string": return Callable(self, "read_string_with_u32_len")
+		&"transactionupdatemessage": return Callable(self, "_read_transaction_update_message")
 		_: return Callable() # Return invalid Callable if type is not primitive/known
 
 # Determines the correct reader function (Callable) for a given property.
@@ -891,28 +892,26 @@ func _read_reducer_result_message(spb: StreamPeerBuffer)-> ReducerResultMessage:
 	resource.request_id = read_u32_le(spb); if has_error(): return null
 	resource.timestamp = read_timestamp(spb); if has_error(): return null
 	var outcome : ReducerOutcomeEnum = ReducerOutcomeEnum.new()
-	_populate_enum_from_bytes(spb, outcome)
-	match outcome.value:
-		ReducerOutcomeEnum.Options.ok:
-			var resource_script_path := SpacetimeDBServerMessage.get_resource_path(SpacetimeDBServerMessage.TRANSACTION_UPDATE)
-			resource.reducer_result.data = _read_generic_server_message(SpacetimeDBServerMessage.TRANSACTION_UPDATE, resource_script_path, spb)
-		ReducerOutcomeEnum.Options.okEmpty:
-			pass
-		ReducerOutcomeEnum.Options.err:
-
-			pass
-		ReducerOutcomeEnum.Options.internalError:
-			pass
+	resource.reducer_result = outcome
+	if not _populate_enum_from_bytes(spb, outcome):
+		if not has_error(): _set_error("failed to parse reducer result Enum")
+		return
 	return resource
 
 func _read_transaction_update_message(spb: StreamPeerBuffer) -> TransactionUpdateMessage :
 	var tx_update_resource: TransactionUpdateMessage = TransactionUpdateMessage.new()
-	var query_set_count: int = read_u32_le(spb); if has_error(): return
+	var query_set_count: int = read_u32_le(spb)
+	if has_error():
+		return
 	for i in query_set_count:
 		var dataset : DatabaseUpdateData = DatabaseUpdateData.new()
 		tx_update_resource.query_sets.append(dataset)
-		dataset.query_id.id = read_u32_le(spb); if has_error(): return
-		var table_count = read_u32_le(spb); if has_error(): return
+		dataset.query_id.id = read_u32_le(spb)
+		if has_error():
+			return
+		var table_count = read_u32_le(spb)
+		if has_error():
+			return
 		for i2 in table_count:
 			var table : TableUpdateData = TableUpdateData.new()
 			dataset.tables.append(table)
@@ -921,6 +920,23 @@ func _read_transaction_update_message(spb: StreamPeerBuffer) -> TransactionUpdat
 				return
 
 	return tx_update_resource
+
+func _read_subscripton_applied_message(spb: StreamPeerBuffer) -> SubscribeAppliedMessage:
+	var sub_app_resource: SubscribeAppliedMessage = SubscribeAppliedMessage.new()
+	sub_app_resource.request_id = read_u32_le(spb)
+	sub_app_resource.query_id.id = read_f32_le(spb)
+	if has_error(): return null
+	var table_count = read_u32_le(spb)
+	if has_error():
+		return
+	for i in table_count:
+		var table : TableUpdateData = TableUpdateData.new()
+		sub_app_resource.rows.append(table)
+		if not _read_table_update_instance(spb, table):
+			if not has_error(): _set_error("Failed reading TableUpdate element %d" % i)
+			return
+
+	return sub_app_resource
 
 func _read_generic_server_message(msg_type:int, script_path:String, spb:StreamPeerBuffer)-> Resource:
 		if not ResourceLoader.exists(script_path):
@@ -1004,8 +1020,12 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> Resource:
 		# Error message is printed by _set_error, but we can add context
 		if result_resource.error_message: printerr("Subscription Error Received: ", result_resource.error_message)
 	elif msg_type == SpacetimeDBServerMessage.TRANSACTION_UPDATE:
+		print("read transaction update")
 		result_resource = _read_transaction_update_message(spb)
 
+	elif msg_type == SpacetimeDBServerMessage.SUBSCRIBE_APPLIED:
+		result_resource = _read_subscripton_applied_message(spb)
+		if has_error(): return null
 	# --- TODO: Implement reader for OneOffQueryResponseData ---
 	elif msg_type == SpacetimeDBServerMessage.ONE_OFF_QUERY_RESPONSE:
 		_set_error("Reader for OneOffQueryResponse (0x04) not implemented.", spb.get_position() -1)
@@ -1015,9 +1035,9 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> Resource:
 		result_resource = _read_reducer_result_message(spb)
 		if has_error(): return null
 
-
 	# --- Generic handling for types parsed via _populate_resource_from_bytes ---
 	else:
+		print("read generic message")
 		result_resource = _read_generic_server_message(msg_type, resource_script_path, spb)
 	# Optional: Check if all bytes were consumed after parsing the message body
 	var remaining_bytes := spb.get_size() - spb.get_position()
