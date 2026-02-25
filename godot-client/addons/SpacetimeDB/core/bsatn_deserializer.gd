@@ -753,11 +753,13 @@ func _read_array_of_table_updates(spb: StreamPeerBuffer, resource: Resource, pro
 
 # Reads the content of a SINGLE TableUpdate structure into an existing instance.
 # Handles the custom CompressableQueryUpdate format for deletes/inserts.
-func _read_table_update_instance(spb: StreamPeerBuffer, resource: TableUpdateData) -> bool:
+## TODO: this function is where i'm currently stuck with parsing.
+func _read_table_update_instance(spb: StreamPeerBuffer, resource: TableUpdateData, is_sub_applied: bool = false) -> bool:
 	# Read standard fields first using direct readers
 	resource.table_id = read_u32_le(spb)
-	resource.table_name = read_string_with_u32_len(spb)
-	resource.num_rows = read_u64_le(spb)
+	if not is_sub_applied:
+		resource.table_name = read_string_with_u32_len(spb)
+		resource.num_rows = read_u64_le(spb)
 	if has_error(): return false
 
 	# Now handle the custom CompressableQueryUpdate structure
@@ -926,16 +928,16 @@ func _read_subscripton_applied_message(spb: StreamPeerBuffer) -> SubscribeApplie
 	sub_app_resource.request_id = read_u32_le(spb)
 	sub_app_resource.query_id.id = read_f32_le(spb)
 	if has_error(): return null
-	var table_count = read_u32_le(spb)
-	if has_error():
+	#var table_count = read_u32_le(spb)
+	#if has_error():
+		#return
+	#for i in table_count:
+		#print("subscription applied table: %s", i)
+	var table : TableUpdateData = TableUpdateData.new()
+	sub_app_resource.tables.append(table)
+	if not _read_table_update_instance(spb, table,true):
+		if not has_error(): _set_error("Failed reading TableUpdate element")
 		return
-	for i in table_count:
-		print("subscription applied table: %s", i)
-		var table : TableUpdateData = TableUpdateData.new()
-		sub_app_resource.tables.append(table)
-		if not _read_table_update_instance(spb, table):
-			if not has_error(): _set_error("Failed reading TableUpdate element %d" % i)
-			return
 
 	return sub_app_resource
 
