@@ -84,6 +84,17 @@ func test_option_vec(option: Option, cb: Callable = func(_t: TransactionUpdateMe
 		return ERR_METHOD_NOT_FOUND
 	return OK
 
+## 0. row: MainTestScheduledTable [br]
+func test_scheduled_reducer(row: MainTestScheduledTable, cb: Callable = func(_t: TransactionUpdateMessage) -> void: pass) -> Error:
+	var __handle__ : SpacetimeDBReducerCall = _client.call_reducer('test_scheduled_reducer', [row], [&'MainTestScheduledTable'])
+	if __handle__.error: return __handle__.error
+	var __result__: TransactionUpdateMessage = await __handle__.wait_for_response()
+	if cb.is_valid():
+		cb.call(__result__)
+	else:
+		return ERR_METHOD_NOT_FOUND
+	return OK
+
 ## 0. message: MainMessage [br]
 func test_struct(message: MainMessage, cb: Callable = func(_t: TransactionUpdateMessage) -> void: pass) -> Error:
 	var __handle__ : SpacetimeDBReducerCall = _client.call_reducer('test_struct', [message], [&'MainMessage'])
@@ -94,3 +105,4 @@ func test_struct(message: MainMessage, cb: Callable = func(_t: TransactionUpdate
 	else:
 		return ERR_METHOD_NOT_FOUND
 	return OK
+

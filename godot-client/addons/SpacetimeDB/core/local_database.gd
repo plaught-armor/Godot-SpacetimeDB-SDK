@@ -110,7 +110,7 @@ func _get_primary_key_field(table_name_lower: String) -> StringName:
 
 
 # --- Applying Updates ---
-func apply_database_subscription_applied(db_update:SubscribeRowsData):
+func apply_database_subscription_applied(db_update:SubscribeAppliedMessage):
 	if not db_update: return
 	var changes:Array[Dictionary] = []
 	for table_update: TableUpdateData in db_update.tables:

@@ -64,3 +64,4 @@ static func create_internal_error(_data: String) -> MainTestNestedEnum:
 
 static func create_test(_data: MainTestScheduledTable) -> MainTestNestedEnum:
 	return create(Options.test, _data)
+

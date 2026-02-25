@@ -279,7 +279,7 @@ func _handle_parsed_message(message_resource: Resource):
 
 	elif message_resource is SubscribeAppliedMessage:
 		var message: SubscribeAppliedMessage = message_resource
-		_local_db.apply_database_subscription_applied(message.rows)
+		_local_db.apply_database_subscription_applied(message)
 		if not _received_initial_subscription:
 			_received_initial_subscription = true
 			self.database_initialized.emit()
@@ -293,20 +293,24 @@ func _handle_parsed_message(message_resource: Resource):
 		pass
 
 	elif message_resource is TransactionUpdateMessage:
-		var update_sets: TransactionUpdateMessage = message_resource
-		for tx_update: DatabaseUpdateData in update_sets:
-			_local_db.apply_database_update(tx_update)
-			if not _received_initial_subscription:
-				_received_initial_subscription = true
-				self.database_initialized.emit()
-		# Emit the full transaction update signal regardless of status
-		self.transaction_update_received.emit(update_sets)
+		_handle_transaction_update(message_resource)
 
 	elif message_resource is OneOffQueryMessage:
 		print_log("SpacetimeDBClient: Received unhandled message resource type: OneOffQueryMessage")
 		pass
 
-	## elif message_resource is reducer result message:
+	elif message_resource is ReducerResultMessage:
+		print_log("SpacetimeDBClient: Handle Reducer result message")
+		match message_resource.reducer_result.value:
+			ReducerOutcomeEnum.Options.ok:
+				_handle_transaction_update(message_resource.reducer_result.get_ok())
+			ReducerOutcomeEnum.Options.okEmpty:
+				pass
+			ReducerOutcomeEnum.Options.err:
+				print_log(message_resource.reducer_result.get_err())
+			ReducerOutcomeEnum.Options.internalError:
+				print_log(message_resource.reducer_result.get_internal_error())
+		pass
 		## pass
 
 	## elif message_resource is procedure result message:
@@ -314,6 +318,15 @@ func _handle_parsed_message(message_resource: Resource):
 
 	else:
 		print_log("SpacetimeDBClient: Received unhandled message resource type: " + message_resource.get_class())
+
+func _handle_transaction_update(update_sets : TransactionUpdateMessage):
+	for tx_update: DatabaseUpdateData in update_sets:
+		_local_db.apply_database_update(tx_update)
+		if not _received_initial_subscription:
+			_received_initial_subscription = true
+			self.database_initialized.emit()
+	# Emit the full transaction update signal regardless of status
+	self.transaction_update_received.emit(update_sets)
 
 
 # --- Public API ---

@@ -930,8 +930,9 @@ func _read_subscripton_applied_message(spb: StreamPeerBuffer) -> SubscribeApplie
 	if has_error():
 		return
 	for i in table_count:
+		print("subscription applied table: %s", i)
 		var table : TableUpdateData = TableUpdateData.new()
-		sub_app_resource.rows.append(table)
+		sub_app_resource.tables.append(table)
 		if not _read_table_update_instance(spb, table):
 			if not has_error(): _set_error("Failed reading TableUpdate element %d" % i)
 			return
@@ -1024,6 +1025,7 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> Resource:
 		result_resource = _read_transaction_update_message(spb)
 
 	elif msg_type == SpacetimeDBServerMessage.SUBSCRIBE_APPLIED:
+		print("read subscribe applied")
 		result_resource = _read_subscripton_applied_message(spb)
 		if has_error(): return null
 	# --- TODO: Implement reader for OneOffQueryResponseData ---
