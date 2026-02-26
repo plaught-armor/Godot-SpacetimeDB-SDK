@@ -1,11 +1,8 @@
 @tool
-class_name IdentityTokenMessage extends Resource
+class_name IdentityTokenMessage extends SpacetimeDBServerMessage
+
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"identity": &"identity", &"connection_id": &"connection_id", &"token": &"string" }
 
 @export var identity: PackedByteArray
-@export var connection_id: PackedByteArray # 16 bytes
+@export var connection_id: PackedByteArray
 @export var token: String
-
-func _init():
-	set_meta("bsatn_type_identity", &"identity")
-	set_meta("bsatn_type_connection_id", &"connection_id")
-	set_meta("bsatn_type_token", &"string")

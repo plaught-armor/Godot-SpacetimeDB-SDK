@@ -1,9 +1,9 @@
 @tool
-class_name UnsubscribeAppliedMessage extends Resource
+class_name UnsubscribeAppliedMessage extends SpacetimeDBServerMessage
 
-@export var request_id: int # u32
-@export var query_id: QueryIdData # Nested Resource
-@export var tables: Array[TableUpdateData] # Nested Resource
+var request_id: int # u32
+var query_id: QueryIdData
+var tables: Array[TableUpdateData]
 
 func _init():
 	query_id = QueryIdData.new()

@@ -1,4 +1,6 @@
-class_name SubscribeMessage extends Resource
+class_name SubscribeMessage extends SpacetimeDBClientMessage
+
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32" }
 
 @export var request_id: int
 @export var query_id: int
@@ -8,4 +10,3 @@ func _init(p_request_id: int = 0, p_query_id: int = 0, p_queries: Array[String] 
 	request_id = p_request_id
 	query_id = p_query_id
 	queries = p_queries
-	set_meta("bsatn_type_request_id", "u32")

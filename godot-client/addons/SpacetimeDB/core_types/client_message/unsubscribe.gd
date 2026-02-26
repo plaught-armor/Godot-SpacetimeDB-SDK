@@ -1,16 +1,13 @@
-class_name UnsubscribeMessage extends Resource
+class_name UnsubscribeMessage extends SpacetimeDBClientMessage
 
 enum UnsubscribeFlags {Default, SendDroppedRows}
 
-## Client request ID used during the original subscription.
-@export var request_id: int # u32
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32", &"query_id": &"u32" }
 
-## Identifier of the query being unsubscribed from.
+@export var request_id: int
 @export var query_id: int
-@export var flags : UnsubscribeFlags = UnsubscribeFlags.Default
+@export var flags: UnsubscribeFlags = UnsubscribeFlags.Default
 
-func _init(p_request_id: int = 0, p_query_id:int = 0):
+func _init(p_request_id: int = 0, p_query_id: int = 0):
 	request_id = p_request_id
 	query_id = p_query_id
-	set_meta("bsatn_type_request_id", "u32")
-	set_meta("bsatn_type_query_id", "u32")

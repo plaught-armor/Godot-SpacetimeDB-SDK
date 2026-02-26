@@ -1,9 +1,9 @@
 @tool
-class_name SubscriptionErrorMessage extends Resource
+class_name SubscriptionErrorMessage extends SpacetimeDBServerMessage
 
-@export var request_id: int # u32 or -1 for None
-@export var query_id: QueryIdData # u32 or -1 for None
-@export var error_message: String
+var request_id: int # u32 or -1 for None
+var query_id: QueryIdData # null for None
+var error_message: String
 
 func _init():
 	request_id = -1 # Default to None

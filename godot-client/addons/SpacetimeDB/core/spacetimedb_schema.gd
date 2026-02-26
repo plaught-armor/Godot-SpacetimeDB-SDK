@@ -1,9 +1,10 @@
-class_name SpacetimeDBSchema extends Resource
+class_name SpacetimeDBSchema
+extends Resource
 
-var types: Dictionary[String, GDScript] = {}
-var tables: Dictionary[String, GDScript] = {}
-
+var types: Dictionary[StringName, GDScript] = { }
+var tables: Dictionary[StringName, GDScript] = { }
 var debug_mode: bool = false # Controls verbose debug printing
+
 
 func _init(p_module_name: String, p_schema_path: String = "res://spacetime_bindings/schema", p_debug_mode: bool = false) -> void:
 	debug_mode = p_debug_mode
@@ -13,30 +14,35 @@ func _init(p_module_name: String, p_schema_path: String = "res://spacetime_bindi
 	# Load core types if they are defined as Resources with scripts
 	_load_types("res://addons/SpacetimeDB/core_types/**")
 
+
+func get_type(type_name: StringName) -> GDScript:
+	return types.get(type_name)
+
+
 func _load_types(raw_path: String, prefix: String = "") -> void:
-	var path := raw_path
+	var path: String = raw_path
 	if path.ends_with("/**"):
 		path = path.left(-3)
 
-	var dir := DirAccess.open(path)
+	var dir: DirAccess = DirAccess.open(path)
 	if not DirAccess.dir_exists_absolute(path):
 		printerr("SpacetimeDBSchema: Schema directory does not exist: ", path)
 		return
 
 	dir.list_dir_begin()
 	while true:
-		var file_name_raw := dir.get_next()
+		var file_name_raw: String = dir.get_next()
 		if file_name_raw == "":
 			break
 
 		if dir.current_is_dir():
-			var dir_name := file_name_raw
+			var dir_name: String = file_name_raw
 			if dir_name != "." and dir_name != ".." and raw_path.ends_with("/**"):
 				var dir_path := path.path_join(dir_name)
 				_load_types(dir_path.path_join("/**"), prefix)
 			continue
 
-		var file_name := file_name_raw
+		var file_name: String = file_name_raw
 
 		# Handle potential remapping on export
 		if file_name.ends_with(".remap"):
@@ -50,7 +56,7 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 		if prefix != "" and not file_name.begins_with(prefix):
 			continue
 
-		var script_path := path.path_join(file_name)
+		var script_path: String = path.path_join(file_name)
 		if not ResourceLoader.exists(script_path):
 			printerr("SpacetimeDBSchema: Script file not found or inaccessible: ", script_path, " (Original name: ", file_name_raw, ")")
 			continue
@@ -58,11 +64,11 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 		var script := ResourceLoader.load(script_path, "GDScript") as GDScript
 
 		if script and script.can_instantiate():
-			var instance = script.new()
-			if instance is Resource: # Ensure it's a resource to get metadata
+			var instance: Variant = script.new()
+			if instance is Resource or instance is RefCounted: # Accept both base types
 				var fallback_table_names: Array[String] = [file_name.get_basename().get_file()]
 
-				var constants := script.get_script_constant_map()
+				var constants: Dictionary = script.get_script_constant_map()
 
 				if constants.has('table_names'):
 					_add_table_names(constants['table_names'] as Array[String], true, script, script_path)
@@ -70,12 +76,10 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 
 	dir.list_dir_end()
 
-func get_type(type_name: String) -> GDScript:
-	return types.get(type_name)
 
 func _add_table_names(table_names: Array[String], is_table: bool, script: GDScript, script_path: String) -> void:
-	for table_name in table_names:
-		var lower_table_name := table_name.to_lower().replace("_", "")
+	for table_name: String in table_names:
+		var lower_table_name: StringName = table_name.to_lower().replace("_", "")
 		if types.has(lower_table_name) and debug_mode:
 			push_warning("SpacetimeDBSchema: Overwriting schema for table '%s' (from %s)" % [table_name, script_path])
 

@@ -1,6 +1,12 @@
 @tool
 class_name ReducerOutcomeEnum extends RustEnum
 
+## v2 ReducerOutcome enum:
+##   Ok(ReducerOk { ret_value: bytes, transaction_update: TransactionUpdate })
+##   OkEmpty
+##   Err(bytes)
+##   InternalError(string)
+
 enum Options {
 	ok,
 	okEmpty,
@@ -8,16 +14,9 @@ enum Options {
 	internalError,
 }
 
-func _init() -> void:
-	_reset_metadata()
-
-func _reset_metadata() -> void:
-	# Clear old metadata
-	for key : StringName in get_meta_list():
-		set_meta(key, null)
-
-	set_meta('enum_options', [&'TransactionUpdateMessage', &'', &'vec_u8', &'string'])
-	set_meta('bsatn_enum_type', &'ReducerOutcomeEnum')
+## 'ok' data is parsed manually and stored as TransactionUpdateMessage.
+## '' means no data for okEmpty. vec_u8 for err bytes. string for internalError.
+const ENUM_OPTIONS: Array[StringName] = [&'ReducerOk', &'', &'vec_u8', &'string']
 
 static func parse_enum_name(i: int) -> String:
 	match i:
@@ -29,10 +28,11 @@ static func parse_enum_name(i: int) -> String:
 			printerr("Enum does not have value for %d. This is out of bounds." % i)
 			return &'Unknown'
 
-func get_ok() -> int:
+## Returns the TransactionUpdateMessage from the Ok variant.
+func get_ok() -> TransactionUpdateMessage:
 	return data
 
-func get_err() -> Array[int]:
+func get_err() -> PackedByteArray:
 	return data
 
 func get_internal_error() -> String:
@@ -43,15 +43,3 @@ static func create(p_type: int, p_data: Variant = null) -> ReducerOutcomeEnum:
 	result.value = p_type
 	result.data = p_data
 	return result
-
-static func create_ok(_data: int) -> ReducerOutcomeEnum:
-	return create(Options.ok, _data)
-
-static func create_ok_empty() -> ReducerOutcomeEnum:
-	return create(Options.okEmpty)
-
-static func create_err(_data: Array[int]) -> ReducerOutcomeEnum:
-	return create(Options.err, _data)
-
-static func create_internal_error(_data: String) -> ReducerOutcomeEnum:
-	return create(Options.internalError, _data)

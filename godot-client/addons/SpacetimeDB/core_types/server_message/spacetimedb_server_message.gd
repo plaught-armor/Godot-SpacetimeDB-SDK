@@ -1,24 +1,43 @@
-class_name SpacetimeDBServerMessage
+class_name SpacetimeDBServerMessage extends SpacetimeDBMessage
 
-# Server Message Tags (ensure these match protocol)
-const INITIAL_CONNECTION        := 0x00 #type file done,
-const SUBSCRIBE_APPLIED         := 0x01
-const UNSUBSCRIBE_APPLIED       := 0x02
-const SUBSCRIPTION_ERROR        := 0x03
-const TRANSACTION_UPDATE        := 0x04
-const ONE_OFF_QUERY_RESPONSE    := 0x05
-const REDUCER_RESULT            := 0x06
-const PROCEDURE_RESULT          := 0x07
+## v2 server message type tags (wire values must match protocol exactly)
+enum Type {
+	INITIAL_CONNECTION = 0x00,
+	SUBSCRIBE_APPLIED = 0x01,
+	UNSUBSCRIBE_APPLIED = 0x02,
+	SUBSCRIPTION_ERROR = 0x03,
+	TRANSACTION_UPDATE = 0x04,
+	ONE_OFF_QUERY_RESPONSE = 0x05,
+	REDUCER_RESULT = 0x06,
+	PROCEDURE_RESULT = 0x07,
+}
 
-static func get_resource_path(msg_type: int) -> String:
+## Back-compat consts so existing code referencing SpacetimeDBServerMessage.SUBSCRIBE_APPLIED etc. still works.
+const INITIAL_CONNECTION: int = Type.INITIAL_CONNECTION
+const SUBSCRIBE_APPLIED: int = Type.SUBSCRIBE_APPLIED
+const UNSUBSCRIBE_APPLIED: int = Type.UNSUBSCRIBE_APPLIED
+const SUBSCRIPTION_ERROR: int = Type.SUBSCRIPTION_ERROR
+const TRANSACTION_UPDATE: int = Type.TRANSACTION_UPDATE
+const ONE_OFF_QUERY_RESPONSE: int = Type.ONE_OFF_QUERY_RESPONSE
+const REDUCER_RESULT: int = Type.REDUCER_RESULT
+const PROCEDURE_RESULT: int = Type.PROCEDURE_RESULT
+
+
+static func get_script_path(msg_type: int) -> String:
 	match msg_type:
-		INITIAL_CONNECTION:        return "res://addons/SpacetimeDB/core_types/server_message/initial_connection.gd"
-		SUBSCRIBE_APPLIED:         return "res://addons/SpacetimeDB/core_types/server_message/subscribe_applied.gd"
-		UNSUBSCRIBE_APPLIED:       return "res://addons/SpacetimeDB/core_types/server_message/unsubscribe_applied.gd"
-		SUBSCRIPTION_ERROR:        return "res://addons/SpacetimeDB/core_types/server_message/subscription_error.gd" # Uses manual reader
-		TRANSACTION_UPDATE:        return "res://addons/SpacetimeDB/core_types/server_message/transaction_update.gd"
-		ONE_OFF_QUERY_RESPONSE:    return "res://addons/SpacetimeDB/core_types/server_message/one_off_query_response.gd" # IMPLEMENT READER
-		REDUCER_RESULT:             return "res://addons/SpacetimeDB/core_types/server_message/reducer_result.gd"
-		#PROCEDURE_RESULT
+		Type.INITIAL_CONNECTION:
+			return "res://addons/SpacetimeDB/core_types/server_message/initial_connection.gd"
+		Type.SUBSCRIBE_APPLIED:
+			return "res://addons/SpacetimeDB/core_types/server_message/subscribe_applied.gd"
+		Type.UNSUBSCRIBE_APPLIED:
+			return "res://addons/SpacetimeDB/core_types/server_message/unsubscribe_applied.gd"
+		Type.SUBSCRIPTION_ERROR:
+			return "res://addons/SpacetimeDB/core_types/server_message/subscription_error.gd"
+		Type.TRANSACTION_UPDATE:
+			return "res://addons/SpacetimeDB/core_types/server_message/transaction_update.gd"
+		Type.ONE_OFF_QUERY_RESPONSE:
+			return "res://addons/SpacetimeDB/core_types/server_message/one_off_query_response.gd"
+		Type.REDUCER_RESULT:
+			return "res://addons/SpacetimeDB/core_types/server_message/reducer_result.gd"
 		_:
 			return ""

@@ -1,4 +1,4 @@
-class_name RustEnum extends Resource
+class_name RustEnum extends RefCounted
 
-@export var value: int = 0
+var value: int = 0
 var data: Variant

@@ -1,14 +1,10 @@
 @tool
-class_name TableUpdateData extends Resource
+class_name TableUpdateData extends RefCounted
 
-enum TableTypeEnum{
-	persistent,
-	event,        ## only insert
-	subscription  ## only insert and table name
-	}
-@export var table_id: int # u32
-@export var table_name: String
-@export var num_rows: int # u64
-@export var TableType: TableTypeEnum
-@export var deletes: Array[Resource] # Array of specific table row resources (e.g., Message, User)
-@export var inserts: Array[Resource] # Array of specific table row resources
+## v2 protocol: TableUpdate { table_name: RawIdentifier, rows: Array[TableUpdateRows] }
+## TableUpdateRows is an enum: PersistentTable(inserts, deletes) | EventTable(events)
+## We flatten it here: inserts/deletes for persistent tables, events for event tables.
+
+var table_name: String
+var deletes: Array[Resource] # _ModuleTableType rows (must stay Resource)
+var inserts: Array[Resource] # _ModuleTableType rows (must stay Resource)

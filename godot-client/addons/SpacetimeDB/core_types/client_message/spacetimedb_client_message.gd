@@ -1,4 +1,4 @@
-class_name SpacetimeDBClientMessage
+class_name SpacetimeDBClientMessage extends SpacetimeDBMessage
 
 # Client Message Variant Tags (ensure these match server/protocol)
 const SUBSCRIBE         := 0x00

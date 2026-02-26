@@ -1,21 +1,23 @@
-class_name SpacetimeDBRestAPI extends Node
-
-# Enum to track the type of the currently pending request
-enum RequestType { NONE, TOKEN, REDUCER_CALL } # Add more if needed for other REST calls
-
-var _http_request := HTTPRequest.new()
-var _base_url: String
-var _token: String
-# State variable to track the expected response type
-var _pending_request_type := RequestType.NONE
-var _debug_mode := false
+class_name SpacetimeDBRestAPI
+extends Node
 
 signal token_received(token: String)
 signal token_request_failed(error_code: int, response_body: String)
 signal reducer_call_completed(result: Dictionary) # Or specific resource
 signal reducer_call_failed(error_code: int, response_body: String)
 
-func _init(base_url: String, debug_mode: bool):
+# Enum to track the type of the currently pending request
+enum RequestType { NONE, TOKEN, REDUCER_CALL } # Add more if needed for other REST calls
+
+var _http_request: HTTPRequest = HTTPRequest.new()
+var _base_url: String
+var _token: String
+# State variable to track the expected response type
+var _pending_request_type: RequestType = RequestType.NONE
+var _debug_mode: bool = false
+
+
+func _init(base_url: String, debug_mode: bool) -> void:
 	self._base_url = base_url
 	self._debug_mode = debug_mode
 	add_child(_http_request)
@@ -23,16 +25,18 @@ func _init(base_url: String, debug_mode: bool):
 	if not _http_request.is_connected("request_completed", Callable(self, "_on_request_completed")):
 		_http_request.request_completed.connect(_on_request_completed)
 
-func print_log(log_message: String):
+
+func print_log(log_message: String) -> void:
 	if _debug_mode:
 		print(log_message)
 
-func set_token(token: String):
+
+func set_token(token: String) -> void:
 	self._token = token
 
-# --- Token Management ---
 
-func request_new_token():
+# --- Token Management ---
+func request_new_token() -> void:
 	# Prevent concurrent requests if this handler isn't designed for it
 	if _pending_request_type != RequestType.NONE:
 		printerr("SpacetimeDBRestAPI: Cannot request token while another request is pending (%s)." % RequestType.keys()[_pending_request_type])
@@ -40,94 +44,105 @@ func request_new_token():
 		return
 
 	print_log("SpacetimeDBRestAPI: Requesting new token...")
-	var url := _base_url.path_join("/v1/identity")
+	var url: String = _base_url.path_join("/v1/identity")
 	# Set state *before* making the request
 	_pending_request_type = RequestType.TOKEN
-	var error := _http_request.request(url, [], HTTPClient.METHOD_POST)
+	var error: Error = _http_request.request(url, [], HTTPClient.METHOD_POST)
 	if error != OK:
 		printerr("SpacetimeDBRestAPI: Error initiating token request: ", error)
 		# Reset state on immediate failure
 		_pending_request_type = RequestType.NONE
-		emit_signal("token_request_failed", error, "Failed to initiate request")
+		token_request_failed.emit(error, "Failed to initiate request")
+		#emit_signal("token_request_failed", error, "Failed to initiate request")
 
-func _handle_token_response(result_code: int, response_code: int, headers: PackedStringArray, body: PackedByteArray):
+
+# --- Reducer Call (REST Example) ---
+func call_reducer(database: String, reducer_name: String, args: Dictionary) -> void:
+	if _pending_request_type != RequestType.NONE:
+		printerr("SpacetimeDBRestAPI: Cannot call reducer while another request is pending (%s)." % RequestType.keys()[_pending_request_type])
+		reducer_call_failed.emit(-1, "Another request pending")
+		#emit_signal("reducer_call_failed", -1, "Another request pending")
+		return
+
+	if _token.is_empty():
+		printerr("SpacetimeDBRestAPI: Cannot call reducer without auth token.")
+		reducer_call_failed.emit(-1, "Auth token not set")
+		#emit_signal("reducer_call_failed", -1, "Auth token not set")
+		return
+
+	var url: String = _base_url.path_join("/v1/database").path_join(database).path_join("call").path_join(reducer_name)
+	var headers: PackedStringArray = [
+		"Authorization: Bearer " + _token,
+		"Content-Type: application/json",
+	]
+	var body: String = JSON.stringify(args)
+
+	# Set state *before* making the request
+	_pending_request_type = RequestType.REDUCER_CALL
+	var error: Error = _http_request.request(url, headers, HTTPClient.METHOD_POST, body)
+	if error != OK:
+		printerr("SpacetimeDBRestAPI: Error initiating reducer call request: ", error)
+		# Reset state on immediate failure
+		_pending_request_type = RequestType.NONE
+		reducer_call_failed.emit(error, "Failed to initiate request")
+		#emit_signal("reducer_call_failed", error, "Failed to initiate request")
+
+
+func _handle_token_response(result_code: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
 	# (Logic for handling token response - remains the same as before)
 	if result_code != HTTPRequest.RESULT_SUCCESS:
 		printerr("SpacetimeDBRestAPI: Token request failed. Result code: ", result_code)
-		emit_signal("token_request_failed", result_code, body.get_string_from_utf8())
+		token_request_failed.emit(result_code, body.get_string_from_utf8())
+		#emit_signal("token_request_failed", result_code, body.get_string_from_utf8())
 		return
 
-	var body_text := body.get_string_from_utf8()
-	var json = JSON.parse_string(body_text)
+	var body_text: String = body.get_string_from_utf8()
+	var json: Variant = JSON.parse_string(body_text)
 
 	if response_code >= 400 or json == null:
 		printerr("SpacetimeDBRestAPI: Token request failed. Response code: ", response_code)
 		printerr("SpacetimeDBRestAPI: Response body: ", body_text)
-		emit_signal("token_request_failed", response_code, body_text)
+		token_request_failed.emit(response_code, body_text)
+		#emit_signal("token_request_failed", response_code, body_text)
 		return
 
 	if json.has("token") and json.token is String and not json.token.is_empty():
 		var new_token: String = json.token
 		print_log("SpacetimeDBRestAPI: New token received.")
 		set_token(new_token) # Store it internally as well
-		emit_signal("token_received", new_token)
+		token_received.emit(new_token)
+		#emit_signal("token_received", new_token)
 	else:
 		printerr("SpacetimeDBRestAPI: Token not found or empty in JSON response: ", body_text)
-		emit_signal("token_request_failed", response_code, "Invalid token format in response")
+		token_request_failed.emit(response_code, "Invalid token format in response")
+		#emit_signal("token_request_failed", response_code, "Invalid token format in response")
 
 
-# --- Reducer Call (REST Example) ---
-
-func call_reducer(database: String, reducer_name: String, args: Dictionary):
-	if _pending_request_type != RequestType.NONE:
-		printerr("SpacetimeDBRestAPI: Cannot call reducer while another request is pending (%s)." % RequestType.keys()[_pending_request_type])
-		emit_signal("reducer_call_failed", -1, "Another request pending")
-		return
-
-	if _token.is_empty():
-		printerr("SpacetimeDBRestAPI: Cannot call reducer without auth token.")
-		emit_signal("reducer_call_failed", -1, "Auth token not set")
-		return
-
-	var url := _base_url.path_join("/v1/database").path_join(database).path_join("call").path_join(reducer_name)
-	var headers := [
-		"Authorization: Bearer " + _token,
-        "Content-Type: application/json"
-	]
-	var body := JSON.stringify(args)
-
-	# Set state *before* making the request
-	_pending_request_type = RequestType.REDUCER_CALL
-	var error := _http_request.request(url, headers, HTTPClient.METHOD_POST, body)
-	if error != OK:
-		printerr("SpacetimeDBRestAPI: Error initiating reducer call request: ", error)
-		# Reset state on immediate failure
-		_pending_request_type = RequestType.NONE
-		emit_signal("reducer_call_failed", error, "Failed to initiate request")
-
-func _handle_reducer_response(result_code: int, response_code: int, headers: PackedStringArray, body: PackedByteArray):
+func _handle_reducer_response(result_code: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
 	# (Logic for handling reducer response - remains the same as before)
 	if result_code != HTTPRequest.RESULT_SUCCESS or response_code >= 400:
 		printerr("SpacetimeDBRestAPI: Reducer call failed. Result: %d, Code: %d" % [result_code, response_code])
 		printerr("SpacetimeDBRestAPI: Response body: ", body.get_string_from_utf8())
-		emit_signal("reducer_call_failed", response_code, body.get_string_from_utf8())
+		reducer_call_failed.emit(response_code, body.get_string_from_utf8())
+		#emit_signal("reducer_call_failed", response_code, body.get_string_from_utf8())
 		return
 
-	var body_text := body.get_string_from_utf8()
-	var json = JSON.parse_string(body_text)
+	var body_text: String = body.get_string_from_utf8()
+	var json: Variant = JSON.parse_string(body_text)
 	if json == null:
 		printerr("SpacetimeDBRestAPI: Failed to parse reducer response JSON: ", body_text)
-		emit_signal("reducer_call_failed", response_code, "Invalid JSON response")
+		reducer_call_failed.emit(response_code, "Invalid JSON response")
+		#emit_signal("reducer_call_failed", response_code, "Invalid JSON response")
 		return
 
-	emit_signal("reducer_call_completed", json)
+	reducer_call_completed.emit(json)
+	#emit_signal("reducer_call_completed", json)
 
 
 # --- Request Completion Handler ---
-
-func _on_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray):
+func _on_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
 	# Capture the type of request that was pending *before* resetting state
-	var request_type_that_completed := _pending_request_type
+	var request_type_that_completed: RequestType = _pending_request_type
 	# Reset state immediately, allowing new requests
 	_pending_request_type = RequestType.NONE
 

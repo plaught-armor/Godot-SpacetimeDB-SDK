@@ -1,5 +1,6 @@
 @tool
-class_name SpacetimePlugin extends EditorPlugin
+class_name SpacetimePlugin
+extends EditorPlugin
 
 const LEGACY_DATA_PATH := "res://spacetime_data"
 const BINDINGS_PATH := "res://spacetime_bindings"
@@ -12,12 +13,25 @@ const CONFIG_PATH := "res://addons/SpacetimeDB/plugin.cfg"
 const UI_PANEL_NAME := "SpacetimeDB"
 const UI_PATH := "res://addons/SpacetimeDB/ui/ui.tscn"
 
+static var instance: SpacetimePlugin
+
 var http_request := HTTPRequest.new()
 var plugin_config: SpacetimeDBPluginConfig
 var ui: SpacetimePluginUI
-var dock : EditorDock
+var dock: EditorDock
 
-static var instance: SpacetimePlugin
+
+static func clear_logs():
+	instance.ui.clear_logs()
+
+
+static func print_log(text: Variant) -> void:
+	instance.ui.add_log(text)
+
+
+static func print_err(text: Variant) -> void:
+	instance.ui.add_err(text)
+
 
 func _enter_tree():
 	instance = self
@@ -45,7 +59,7 @@ func _enter_tree():
 	ui.generate_schema.connect(_on_generate_schema)
 	ui.clear_logs()
 
-	http_request.timeout = 4;
+	http_request.timeout = 4
 	add_child(http_request)
 
 	var config_file = ConfigFile.new()
@@ -55,7 +69,8 @@ func _enter_tree():
 	var author: String = config_file.get_value("plugin", "author", "??")
 
 	print_log("SpacetimeDB SDK v%s (c) 2025-present %s & Contributors" % [version, author])
-	print_log("""New modules:
+	print_log(
+		"""New modules:
 [ul]
 Name: Required
 Alias: Optional
@@ -64,8 +79,22 @@ Hide private tables: Hides private tables from the client.
 [/ul]
 
 After generating schema files, please restart Godot.
-""")
+""",
+	)
 	load_codegen_data()
+
+
+func _exit_tree():
+	ui.destroy()
+	ui = null
+	remove_dock(dock)
+	dock.queue_free()
+	dock = null
+	http_request.queue_free()
+	http_request = null
+
+	if ProjectSettings.has_setting("autoload/" + AUTOLOAD_NAME):
+		remove_autoload_singleton(AUTOLOAD_NAME)
 
 
 func load_codegen_data() -> void:
@@ -76,6 +105,7 @@ func load_codegen_data() -> void:
 		plugin_config = SpacetimeDBPluginConfig.new()
 	ui._plugin_config = plugin_config
 	ui.update_module_ui()
+
 
 func save_codegen_data() -> void:
 	if not FileAccess.file_exists(BINDINGS_PATH):
@@ -88,8 +118,10 @@ func save_codegen_data() -> void:
 		ui.update_module_ui()
 	ResourceSaver.save(plugin_config, SAVE_PATH)
 
+
 func _on_plugin_config_changed() -> void:
 	save_codegen_data()
+
 
 func _on_check_uri():
 	if plugin_config.uri.ends_with("/"):
@@ -105,7 +137,8 @@ func _on_check_uri():
 		print_err("Request timeout - " + uri)
 	else:
 		print_log("Response code: " + str(result[1]))
-	print_log("request took: "+ str(Time.get_ticks_usec() - ping_start) + " microseconds")
+	print_log("request took: " + str(Time.get_ticks_usec() - ping_start) + " microseconds")
+
 
 func _on_generate_schema():
 	if plugin_config.uri.ends_with("/"):
@@ -120,7 +153,7 @@ func _on_generate_schema():
 		http_request.request(schema_uri)
 		var result = await http_request.request_completed
 		if result[1] == 200:
-			var json: String= PackedByteArray(result[3]).get_string_from_utf8()
+			var json: String = PackedByteArray(result[3]).get_string_from_utf8()
 			var snake_module_name = module_config.alias.replace("-", "_")
 			module_config.unparsed_module_schema = json
 			print_log("Fetched schema for module: %s with alias: %s" % [module_config.name, module_config.alias])
@@ -166,10 +199,12 @@ func _on_generate_schema():
 
 func _cleanup_unused_classes(dir_path: String = "res://schema", files: Array[String] = []) -> void:
 	var dir = DirAccess.open(dir_path)
-	if not dir: return
+	if not dir:
+		return
 	print_log("File Cleanup: Scanning folder: " + dir_path)
 	for file in dir.get_files():
-		if not file.ends_with(".gd"): continue
+		if not file.ends_with(".gd"):
+			continue
 		var full_path = "%s/%s" % [dir_path, file]
 		if not full_path in files:
 			print_log("Removing file: %s" % [full_path])
@@ -179,24 +214,3 @@ func _cleanup_unused_classes(dir_path: String = "res://schema", files: Array[Str
 	var subfolders = dir.get_directories()
 	for folder in subfolders:
 		_cleanup_unused_classes(dir_path + "/" + folder, files)
-
-static func clear_logs():
-	instance.ui.clear_logs()
-
-static func print_log(text: Variant) -> void:
-	instance.ui.add_log(text)
-
-static func print_err(text: Variant) -> void:
-	instance.ui.add_err(text)
-
-func _exit_tree():
-	ui.destroy()
-	ui = null
-	remove_dock(dock)
-	dock.queue_free()
-	dock = null
-	http_request.queue_free()
-	http_request = null
-
-	if ProjectSettings.has_setting("autoload/" + AUTOLOAD_NAME):
-		remove_autoload_singleton(AUTOLOAD_NAME)

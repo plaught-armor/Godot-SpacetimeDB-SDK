@@ -1,5 +1,8 @@
 @tool
-class_name DatabaseUpdateData extends Resource
+class_name DatabaseUpdateData extends RefCounted
 
-@export var query_id: QueryIdData
-@export var tables: Array[TableUpdateData]
+var query_id: QueryIdData
+var tables: Array[TableUpdateData]
+
+func _init():
+	query_id = QueryIdData.new()
