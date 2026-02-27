@@ -2,7 +2,8 @@ class_name SpacetimeDBSchema
 extends Resource
 
 var types: Dictionary[StringName, GDScript] = { }
-var tables: Dictionary[StringName, GDScript] = { }
+var tables: Dictionary[StringName, GDScript] = { }  # keyed by normalized (no-underscore) name
+var raw_table_names: Array[StringName] = []           # raw wire names, used once by LocalDatabase._init
 var debug_mode: bool = false # Controls verbose debug printing
 
 
@@ -65,24 +66,26 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 
 		if script and script.can_instantiate():
 			var instance: Variant = script.new()
-			if instance is Resource or instance is RefCounted: # Accept both base types
+			if instance is RefCounted: # Resource extends RefCounted — one check covers both
 				var fallback_table_names: Array[String] = [file_name.get_basename().get_file()]
 
 				var constants: Dictionary = script.get_script_constant_map()
 
 				if constants.has('table_names'):
-					_add_table_names(constants['table_names'] as Array[String], true, script, script_path)
+					_add_table_names(constants['table_names'], true, script, script_path)
 				_add_table_names(fallback_table_names, false, script, script_path)
 
 	dir.list_dir_end()
 
 
-func _add_table_names(table_names: Array[String], is_table: bool, script: GDScript, script_path: String) -> void:
-	for table_name: String in table_names:
-		var lower_table_name: StringName = table_name.to_lower().replace("_", "")
+func _add_table_names(table_names: Array, is_table: bool, script: GDScript, script_path: String) -> void:
+	for table_name in table_names:
+		var sn: StringName = StringName(table_name)
+		var lower_table_name: StringName = sn.to_lower().replace("_", "")
 		if types.has(lower_table_name) and debug_mode:
 			push_warning("SpacetimeDBSchema: Overwriting schema for table '%s' (from %s)" % [table_name, script_path])
 
 		if is_table:
 			tables[lower_table_name] = script
+			raw_table_names.append(sn)
 		types[lower_table_name] = script

@@ -9,10 +9,10 @@ signal connection_error(code: int, reason: String)
 signal database_initialized # Emitted after InitialSubscription is processed
 signal database_update(table_update: TableUpdateData) # Emitted for each table update
 # From LocalDatabase
-signal row_inserted(table_name: String, row: Resource)
-signal row_updated(table_name: String, old_row: Resource, new_row: Resource)
-signal row_deleted(table_name: String, row: Resource)
-signal row_transactions_completed(table_name: String)
+signal row_inserted(table_name: StringName, row: Resource)
+signal row_updated(table_name: StringName, old_row: Resource, new_row: Resource)
+signal row_deleted(table_name: StringName, row: Resource)
+signal row_transactions_completed(table_name: StringName)
 signal reducer_call_response(response: Resource) # TODO: Define response resource
 signal reducer_call_timeout(request_id: int) # TODO: Implement timeout logic
 signal transaction_update_received(update: TransactionUpdateMessage)
@@ -29,10 +29,10 @@ signal reducer_result_received(request_id: int, tx_update: TransactionUpdateMess
 @export var one_time_token: bool = false
 @export var compression: SpacetimeDBConnection.CompressionPreference
 @export var debug_mode: bool = true
-var module_name: String = ""
 @export var current_subscriptions: Dictionary[int, SpacetimeDBSubscription]
 @export var use_threading: bool = true
 
+var module_name: String = ""
 var deserializer_worker: Thread
 var connection_options: SpacetimeDBConnectionOptions
 var pending_subscriptions: Dictionary[int, SpacetimeDBSubscription]
@@ -413,8 +413,7 @@ func _on_websocket_message_received(raw_bytes: PackedByteArray) -> void:
 		_packet_mutex.unlock()
 		_packet_semaphore.post()
 	else:
-		var message: SpacetimeDBServerMessage = _parse_packet_and_get_resource(_decompress_and_parse(raw_bytes))
-		_result_queue.append(message)
+		_result_queue.append_array(_parse_packet_and_get_resource(_decompress_and_parse(raw_bytes)))
 
 
 func _thread_loop() -> void:
@@ -437,9 +436,7 @@ func _thread_loop() -> void:
 		var local_results: Array[SpacetimeDBServerMessage] = []
 		for packet: PackedByteArray in local_packets:
 			var payload: PackedByteArray = _decompress_and_parse(packet)
-			var message: SpacetimeDBServerMessage = _parse_packet_and_get_resource(payload)
-			if message:
-				local_results.append(message)
+			local_results.append_array(_parse_packet_and_get_resource(payload))
 
 		# Flush parsed results in one lock acquisition
 		if not local_results.is_empty():
@@ -497,19 +494,17 @@ func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
 	return payload
 
 
-func _parse_packet_and_get_resource(bsatn_bytes: PackedByteArray) -> SpacetimeDBServerMessage:
+func _parse_packet_and_get_resource(bsatn_bytes: PackedByteArray) -> Array[SpacetimeDBServerMessage]:
 	if not _deserializer:
-		return null
+		return []
 
 	var result: Array[SpacetimeDBServerMessage] = _deserializer.process_bytes_and_extract_messages(bsatn_bytes)
-	if result.is_empty():
-		return null
 
 	if _deserializer.has_error():
 		printerr("SpacetimeDBClient: Failed to parse BSATN packet: ", _deserializer.get_last_error())
-		return null
+		return []
 
-	return result[0]
+	return result
 
 
 func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:

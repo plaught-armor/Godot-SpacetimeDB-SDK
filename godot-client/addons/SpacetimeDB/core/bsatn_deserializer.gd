@@ -27,12 +27,22 @@ var _deserialization_plan_cache: Dictionary[Script, Array] = { }
 var _pending_data: PackedByteArray = []
 var _schema: SpacetimeDBSchema
 var _native_arraylike_regex := RegEx.new()
+var _normalized_name_cache: Dictionary[StringName, StringName] = {}
 
 
 func _init(p_schema: SpacetimeDBSchema, p_debug_mode: bool = false) -> void:
 	debug_mode = p_debug_mode
 	_schema = p_schema
 	_native_arraylike_regex.compile("^(?<struct>.+)\\[(?<components>.*)\\]$")
+
+
+func _normalize(name: StringName) -> StringName:
+	var cached: StringName = _normalized_name_cache.get(name, &"")
+	if cached != &"":
+		return cached
+	var normalized: StringName = name.to_lower().replace("_", "")
+	_normalized_name_cache[name] = normalized
+	return normalized
 
 
 #--- Error Handling ---
@@ -501,7 +511,7 @@ func _read_nested_resource(spb: StreamPeerBuffer, prop: Dictionary) -> Object:
 		)
 		return null
 
-	var key: StringName = nested_class_name.to_lower()
+	var key: StringName = _normalize(nested_class_name)
 	var script: GDScript = _schema.get_type(key)
 	var nested_instance: Object
 
@@ -509,8 +519,8 @@ func _read_nested_resource(spb: StreamPeerBuffer, prop: Dictionary) -> Object:
 		nested_instance = script.new()
 	elif ClassDB.can_instantiate(nested_class_name):
 		nested_instance = ClassDB.instantiate(nested_class_name)
-		if not (nested_instance is Resource or nested_instance is RefCounted):
-			_set_error("ClassDB instantiated '%s' for '%s' but it is not a Resource or RefCounted" % [nested_class_name, prop_name], spb.get_position())
+		if not nested_instance is RefCounted: # Resource extends RefCounted
+			_set_error("ClassDB instantiated '%s' for '%s' but it is not a RefCounted" % [nested_class_name, prop_name], spb.get_position())
 			return null
 	else:
 		_set_error("Could not find or instantiate class '%s' for property '%s'" % [nested_class_name, prop_name], spb.get_position())
@@ -802,7 +812,7 @@ func _read_table_update_instance(spb: StreamPeerBuffer, resource: TableUpdateDat
 	if has_error():
 		return false
 
-	var table_name_lower: StringName = resource.table_name.to_lower().replace("_", "")
+	var table_name_lower: StringName = _normalize(resource.table_name)
 	var row_schema_script: GDScript = _schema.get_type(table_name_lower)
 
 	var rows_count: int = read_u32_le(spb)
@@ -889,7 +899,7 @@ func _read_subscripton_applied_message(spb: StreamPeerBuffer) -> SubscribeApplie
 		var table_update: TableUpdateData = TableUpdateData.new()
 		table_update.table_name = table_name
 
-		var table_name_lower: StringName = table_name.to_lower().replace("_", "")
+		var table_name_lower: StringName = _normalize(table_name)
 		var row_schema_script: GDScript = _schema.get_type(table_name_lower)
 
 		if row_schema_script:
@@ -975,7 +985,7 @@ func _read_unsubscribe_applied_message(spb: StreamPeerBuffer) -> UnsubscribeAppl
 				return null
 			var table_update: TableUpdateData = TableUpdateData.new()
 			table_update.table_name = table_name
-			var table_name_lower: StringName = table_name.to_lower().replace("_", "")
+			var table_name_lower: StringName = _normalize(table_name)
 			var row_schema_script: GDScript = _schema.get_type(table_name_lower)
 			if row_schema_script:
 				var rows: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name, row_spb)

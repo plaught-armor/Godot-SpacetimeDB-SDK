@@ -21,6 +21,7 @@ const NATIVE_ARRAYLIKE_TYPES: Array[Variant.Type] = [
 var debug_mode: bool = false # Controls verbose debug printing
 # --- Properties ---
 var _last_error: String = ""
+var _has_error: bool = false
 var _serialization_plan_cache: Dictionary[Script, Array] = { }
 var _spb: StreamPeerBuffer # Internal buffer used by writing functions
 var _native_arraylike_regex: RegEx = RegEx.new()
@@ -37,17 +38,19 @@ func _init(p_debug_mode: bool = false) -> void:
 
 # --- Error Handling ---
 func has_error() -> bool:
-	return not _last_error.is_empty()
+	return _has_error
 
 
 func get_last_error() -> String:
 	var e: String = _last_error
 	_last_error = ""
+	_has_error = false
 	return e
 
 
 func clear_error() -> void:
 	_last_error = ""
+	_has_error = false
 
 
 # --- Primitive Value Writers ---
@@ -385,8 +388,8 @@ func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary
 
 
 func write_nested_resource(resource: Object, bsatn_type: StringName, prop: Dictionary) -> void:
-	if not (resource is Resource or resource is RefCounted):
-		_set_error("Cannot serialize non-Resource/RefCounted Object argument.")
+	if not resource is RefCounted: # Resource extends RefCounted — SpacetimeDBMessage too
+		_set_error("Cannot serialize non-RefCounted Object (got: %s)" % resource.get_class())
 		return
 
 	var prop_name: StringName = prop.name
@@ -437,14 +440,15 @@ func _write_fixed_bytes_le(v: PackedByteArray, expected_size: int, type_label: S
 
 # Sets the error message if not already set. Internal use.
 func _set_error(msg: String) -> void:
-	if _last_error.is_empty(): # Prevent overwriting
+	if not _has_error: # Prevent overwriting — O(1) bool check
 		_last_error = "BSATNSerializer Error: %s" % msg
-		printerr(_last_error) # Always print errors
+		_has_error = true
+		printerr(_last_error)
 
 
 # --- Core Serialization Logic ---
 func _get_value_class_name(value: Variant) -> String:
-	if value is Resource or value is RefCounted:
+	if value is RefCounted: # Resource extends RefCounted — one check covers both
 		var script: Script = value.get_script()
 		if not script:
 			return value.get_class()

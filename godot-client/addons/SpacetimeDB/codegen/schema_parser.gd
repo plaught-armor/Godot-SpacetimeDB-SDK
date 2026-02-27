@@ -136,7 +136,7 @@ static func parse_schema(schema: Dictionary, module_name: String) -> SpacetimePa
 
 			if not type_data.get("is_sum_type"):
 				meta_type_map[type_name] = "u8"
-				type_map[type_name] = "%sModuleClient.Types.%s" % [module_name.to_pascal_case(), type_name.to_pascal_case()]
+				type_map[type_name] = "%sTypes.%s" % [module_name.to_pascal_case(), type_name.to_pascal_case()]
 			else:
 				type_map[type_name] = module_name.to_pascal_case() + type_name.to_pascal_case()
 				meta_type_map[type_name] = module_name.to_pascal_case() + type_name.to_pascal_case()
