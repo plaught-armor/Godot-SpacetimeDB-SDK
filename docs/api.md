@@ -13,8 +13,8 @@ A connection to a SpacetimeDB database is controlled by the `SpacetimeDBClient` 
 ```gdscript
 class SpacetimeDBClient:
     func connect_db(
-        uri: String,
-        module_name: String,
+        host_url: String,
+        database_name: String,
         options: SpacetimeDBConnectionOptions = null
     ) -> void
 ```
@@ -23,8 +23,8 @@ Connects to a SpacetimeDB database.
 
 | Name | Description |
 | --- | --- |
-| uri | The URI of the SpacetimeDB instance hosting the remote database. |
-| module_name | The name or identity of the remote database. |
+| host_url | The base HTTP URL of the SpacetimeDB instance (e.g. `"http://127.0.0.1:3000"`). |
+| database_name | The name or identity of the remote database. |
 | options | Client connection options, see the [`SpacetimeDBConnectionOptions`](#spacetimedbconnectionoptions-resource) documentation. |
 
 #### `disconnect_db()` method
@@ -35,6 +35,15 @@ class SpacetimeDBClient:
 ```
 
 Disconnects from the SpacetimeDB database.
+
+#### `is_connected_db()` method
+
+```gdscript
+class SpacetimeDBClient:
+    func is_connected_db() -> bool
+```
+
+Returns `true` if the client is currently connected to a SpacetimeDB database.
 
 ### Query the local database cache
 
@@ -86,7 +95,7 @@ class SpacetimeDBClient:
 | -------- | --------------------------------------- |
 | query_id | The query id of an active subscription. |
 
-Close a subscription by calling `unsubscribe(query_id)` with the query id of an existing query. A Godot `Error` is returned to indicate success or failure.
+Close a subscription by calling `unsubscribe(query_id)` with the query id of an existing query. A Godot `Error` is returned to indicate success or failure. The subscription's `end` signal will fire when the server confirms the unsubscribe.
 
 ### Call reducers
 
@@ -121,13 +130,50 @@ class SpacetimeDBClient:
 
 Waits for the reducer call response and returns the received `TransactionUpdateMessage`, or returns `null` if there is an error or it times out.
 
+### Call procedures
+
+#### `call_procedure()` method
+
+```gdscript
+class SpacetimeDBClient:
+    func call_procedure(procedure_name: String, args: Array = [], types: Array = [], return_bsatn_type: StringName = &"") -> SpacetimeDBProcedureCall
+```
+
+| Name              | Description                                                 |
+| ----------------- | ----------------------------------------------------------- |
+| procedure_name    | The name of the procedure to call.                          |
+| args              | The arguments to pass to the procedure.                     |
+| types             | The BSATN types of the arguments.                           |
+| return_bsatn_type | The BSATN type string for decoding the return value.        |
+
+Call a procedure with `call_procedure()`, which returns a [`SpacetimeDBProcedureCall`](#spacetimedbprocedurecall-class) instance. It is recommended you use the auto-generated procedure methods. See [Calling procedures](#calling-procedures).
+
+### Signals
+
+| Signal | Description |
+| --- | --- |
+| `connected(identity: PackedByteArray, token: String)` | Emitted when the connection is established. |
+| `disconnected` | Emitted when the connection is closed. |
+| `connection_error(code: int, reason: String)` | Emitted when a connection error occurs. |
+| `database_initialized` | Emitted when the first subscription is applied and the local DB is populated. |
+| `row_inserted(table_name: StringName, row: Resource)` | Emitted when a row is inserted. |
+| `row_updated(table_name: StringName, old_row: Resource, new_row: Resource)` | Emitted when a row is updated. |
+| `row_deleted(table_name: StringName, row: Resource)` | Emitted when a row is deleted. |
+| `row_transactions_completed(table_name: StringName)` | Emitted when all row changes for a table update are applied. |
+| `transaction_update_received(update: TransactionUpdateMessage)` | Emitted when a transaction update is received. |
+| `reducer_result_received(request_id: int, tx_update: TransactionUpdateMessage)` | Emitted when a reducer result arrives. |
+| `procedure_result_received(request_id: int, return_bytes: PackedByteArray)` | Emitted when a procedure result arrives. |
+| `reconnecting(attempt: int, max_attempts: int)` | Emitted before each reconnection attempt. |
+| `reconnected` | Emitted after a successful reconnection and all subscriptions are restored. |
+| `reconnect_failed` | Emitted when all reconnection attempts are exhausted. |
+
 ## Generated `ModuleClient` class
 
 **Inherits:** [SpacetimeDBClient](#spacetimedbclient-class) < Node
 
-This class is generated per module and contains information about the types, tables and reducers defined by your module.
+This class is generated per module and contains information about the types, tables, reducers, and procedures defined by your module.
 
-### Access tables and reducers
+### Access tables, reducers, and procedures
 
 #### `db` property
 
@@ -146,6 +192,15 @@ class ModuleClient:
 ```
 
 The `reducers` property provides access to reducers exposed by the module. See [Calling reducers](#calling-reducers).
+
+#### `procedures` property
+
+```gdscript
+class ModuleClient:
+    const procedures: ModuleProcedures
+```
+
+The `procedures` property provides access to procedures exposed by the module. See [Calling procedures](#calling-procedures).
 
 ### Access the local database
 
@@ -225,6 +280,25 @@ The `Row` type will be the auto-generated type which matches the row type define
 
 Call `remove_on_delete` to un-register a previously registered listener.
 
+#### Query helpers
+
+```gdscript
+class ModuleTable:
+    func find_where(predicate: Callable) -> Array
+    func first_where(predicate: Callable) -> Row
+    func find_by(field: StringName, value: Variant) -> Array
+    func first_by(field: StringName, value: Variant) -> Row
+    func count_where(predicate: Callable) -> int
+```
+
+| Method | Description |
+| --- | --- |
+| `find_where` | Returns all rows matching the predicate. |
+| `first_where` | Returns the first row matching the predicate, or `null`. |
+| `find_by` | Returns all rows where `field` equals `value`. |
+| `first_by` | Returns the first row where `field` equals `value`, or `null`. |
+| `count_where` | Returns the count of rows matching the predicate. |
+
 #### Unique index access
 
 For each unique constraint on a table, its table class has a property whose name is the unique column name. This property is a `ModuleTableUniqueIndex` which has a `find` method.
@@ -242,17 +316,65 @@ This SDK does not currently support non-unique BTree indexes.
 
 ### Calling reducers
 
-Each public reducer defined by your module has a method on the `.reducers` property. The method name is the reducer name converted to `snake_case`. Each reducer method takes the arguments defined by the reducer and an optional callback function.
+Each public reducer defined by your module has a method on the `.reducers` property. The method name is the reducer name converted to `snake_case`. Each reducer method takes the arguments defined by the reducer and returns a [`SpacetimeDBReducerCall`](#spacetimedbreducercall-class) handle.
 
 ```gdscript
-static async func example_reducer(
-    arg1: String,
-    arg2: int,
-    callback: Callable
-) -> Error
+func example_reducer(arg1: String, arg2: int) -> SpacetimeDBReducerCall
+```
 
-# Callback function signature
-func(tx: TransactionUpdateMessage) -> void
+### Calling procedures
+
+Each public procedure defined by your module has a method on the `.procedures` property. The method name is the procedure name converted to `snake_case`. Each procedure method takes the arguments defined by the procedure and returns a [`SpacetimeDBProcedureCall`](#spacetimedbprocedurecall-class) handle.
+
+```gdscript
+func example_procedure(arg1: String) -> SpacetimeDBProcedureCall
+```
+
+## `SpacetimeDBQuery` class
+
+**Inherits:** RefCounted
+
+A fluent query builder for constructing SQL subscription queries with input validation.
+
+```gdscript
+var query := SpacetimeDBQuery.table("players").where("online", true).to_sql()
+# => "SELECT * FROM players WHERE online = true"
+```
+
+#### Static constructors
+
+```gdscript
+class SpacetimeDBQuery:
+    static func table(name: String) -> SpacetimeDBQuery
+    static func from(t: _ModuleTable) -> SpacetimeDBQuery
+```
+
+#### WHERE conditions
+
+All conditions are AND'd together. Field names are validated to prevent SQL injection (alphanumeric and underscores only).
+
+```gdscript
+class SpacetimeDBQuery:
+    func where(field: StringName, value: Variant) -> SpacetimeDBQuery
+    func where_ne(field: StringName, value: Variant) -> SpacetimeDBQuery
+    func where_gt(field: StringName, value: Variant) -> SpacetimeDBQuery
+    func where_lt(field: StringName, value: Variant) -> SpacetimeDBQuery
+    func where_gte(field: StringName, value: Variant) -> SpacetimeDBQuery
+    func where_lte(field: StringName, value: Variant) -> SpacetimeDBQuery
+```
+
+#### Output
+
+```gdscript
+class SpacetimeDBQuery:
+    func to_sql() -> String
+```
+
+#### Helpers
+
+```gdscript
+# Format a PackedByteArray identity for use in queries
+SpacetimeDBQuery.identity(bytes: PackedByteArray) -> String
 ```
 
 ## `SpacetimeDBConnection` class
@@ -270,11 +392,11 @@ class SpacetimeDBConnection:
 
 The compression preference for the connection.
 
-| Name   | Description                                       |
-| ------ | ------------------------------------------------- |
-| NONE   | No compression                                    |
-| BROTLI | Brotli compression (NOT SUPPORTED out-of-the-box) |
-| GZIP   | GZIP compression                                  |
+| Name   | Description                                                                  |
+| ------ | ---------------------------------------------------------------------------- |
+| NONE   | No compression.                                                              |
+| BROTLI | Not supported. If set, the SDK warns and automatically falls back to GZIP.   |
+| GZIP   | GZIP compression (recommended).                                              |
 
 ## `SpacetimeDBConnectionOptions` resource
 
@@ -287,7 +409,7 @@ class SpacetimeDBConnectionOptions:
     var compression: CompressionPreference
 ```
 
-The [`CompressionPreference`](#compressionpreference-enum) for the connection
+The [`CompressionPreference`](#compressionpreference-enum) for the connection.
 
 #### `threading` property
 
@@ -296,7 +418,7 @@ class SpacetimeDBConnectionOptions:
     var threading: bool = true
 ```
 
-Whether to use threading for processing database update messages
+Whether to use threading for processing database update messages.
 
 #### `one_time_token` property
 
@@ -305,7 +427,7 @@ class SpacetimeDBConnectionOptions:
     var one_time_token: bool = true
 ```
 
-Whether to use a one-time token for the connection
+Whether to use a one-time token for the connection.
 
 #### `token` property
 
@@ -323,7 +445,7 @@ class SpacetimeDBConnectionOptions:
     var debug_mode: bool = false
 ```
 
-Enables verbose logging
+Enables verbose logging.
 
 #### `inbound_buffer_size` property
 
@@ -332,7 +454,7 @@ class SpacetimeDBConnectionOptions:
     var inbound_buffer_size: int = 1024 * 1024 * 2
 ```
 
-The maximum size of the inbound buffer
+The maximum size of the inbound buffer.
 
 #### `outbound_buffer_size` property
 
@@ -354,16 +476,46 @@ class SpacetimeDBConnectionOptions:
 | ---- | ------------------------------------------------------- |
 | size | The size of the inbound and outbound buffers, in bytes. |
 
+#### `monitor_mode` property
+
+```gdscript
+class SpacetimeDBConnectionOptions:
+    var monitor_mode: bool = false
+```
+
+When enabled, registers custom Godot Performance monitors for tracking network statistics (packets/bytes sent and received per second and total).
+
+#### Reconnection options
+
+```gdscript
+class SpacetimeDBConnectionOptions:
+    var auto_reconnect: bool = false
+    var max_reconnect_attempts: int = 10       # 0 = infinite
+    var reconnect_initial_delay: float = 1.0   # seconds
+    var reconnect_max_delay: float = 30.0      # seconds (cap)
+    var reconnect_backoff_multiplier: float = 2.0
+    var reconnect_jitter_fraction: float = 0.5 # 0.0–1.0
+```
+
+| Name | Description |
+| --- | --- |
+| `auto_reconnect` | Whether to automatically reconnect on disconnect. Must be `true` for reconnection to work. |
+| `max_reconnect_attempts` | Maximum number of reconnection attempts. Set to 0 for infinite retries. |
+| `reconnect_initial_delay` | Initial delay before the first reconnection attempt, in seconds. |
+| `reconnect_max_delay` | Maximum delay between reconnection attempts, in seconds. |
+| `reconnect_backoff_multiplier` | Multiplier applied to the delay after each failed attempt. |
+| `reconnect_jitter_fraction` | Random jitter applied to each delay (0.0 = none, 1.0 = full delay range). Prevents thundering herd on reconnect. |
+
 ## `SpacetimeDBSubscription` class
 
-**Inherits:** Node
+**Inherits:** RefCounted
 
 A handle to a subscription to the SpacetimeDB database. The handle does not contain or provide access to the subscribed data, all subscribed rows are available via the module's [`LocalDatabase`](#localdatabase-class). See [Access the local database](#access-the-local-database).
 
 #### `query_id` property
 
 ```gdscript
-class SpacetimeDBReducerCall:
+class SpacetimeDBSubscription:
     var query_id: int
 ```
 
@@ -372,7 +524,7 @@ The id of the subscription.
 #### `queries` property
 
 ```gdscript
-class SpacetimeDBReducerCall:
+class SpacetimeDBSubscription:
     var queries: PackedStringArray
 ```
 
@@ -381,11 +533,20 @@ The SQL queries that were subscribed to.
 #### `error` property
 
 ```gdscript
-class SpacetimeDBReducerCall:
+class SpacetimeDBSubscription:
     var error: Error
 ```
 
-A Godot `Error` that is either `OK` if the subscription was successful or an error if it failed.
+A Godot `Error` that is either `OK` if the subscription request was sent successfully, or an error if it failed to send.
+
+#### `error_message` property
+
+```gdscript
+class SpacetimeDBSubscription:
+    var error_message: String
+```
+
+A human-readable error message from the server if the subscription failed. Empty string if no error.
 
 #### `active` property
 
@@ -403,7 +564,7 @@ class SpacetimeDBSubscription:
     var ended: bool
 ```
 
-Indicates if this subscription has been terminated due to an unsubscribe request or an error.
+Indicates if this subscription has been terminated due to an unsubscribe confirmation, a server error, or a disconnect.
 
 #### `unsubscribe()` method
 
@@ -412,9 +573,9 @@ class SpacetimeDBSubscription:
     func unsubscribe() -> Error
 ```
 
-Terminate this subscription, causing the subscribed rows to be removed from the [`LocalDatabase`](#localdatabase-class).
+Sends an unsubscribe request to the server. The `end` signal fires when the server confirms the unsubscribe via `UnsubscribeAppliedMessage`.
 
-Returns an error if the subscription has already ended, either due to a previous `unsubscribe()` call or an error.
+Returns `ERR_DOES_NOT_EXIST` if the subscription has already ended.
 
 #### `wait_for_applied()` method
 
@@ -429,7 +590,10 @@ class SpacetimeDBSubscription:
 
 Waits for the subscription to be applied, or until it times out.
 
-Returns an error if the subscription has already ended or if the timeout is reached.
+Returns:
+- `OK` if the subscription was applied successfully.
+- `ERR_TIMEOUT` if the timeout was reached.
+- `ERR_DOES_NOT_EXIST` if the subscription ended or errored before being applied. Check `error_message` for details.
 
 #### `wait_for_end()` method
 
@@ -444,7 +608,7 @@ class SpacetimeDBSubscription:
 
 Waits for the subscription to be terminated, or until it times out.
 
-Returns an error if the timeout is reached.
+Returns `ERR_TIMEOUT` if the timeout is reached, `OK` otherwise.
 
 #### `applied` signal
 
@@ -453,7 +617,7 @@ class SpacetimeDBSubscription:
     signal applied
 ```
 
-Emitted when the `SubscribeMultiApplied` message is received and the subscription is set to active.
+Emitted when the server confirms the subscription is active (`SubscribeAppliedMessage`).
 
 #### `end` signal
 
@@ -462,13 +626,33 @@ class SpacetimeDBSubscription:
     signal end
 ```
 
-Emitted when the `UnsubscribeMultiApplied` message is received and the subscription is set to ended.
+Emitted when the subscription ends. This happens when:
+- The server confirms an unsubscribe (`UnsubscribeAppliedMessage`).
+- The server reports a subscription error (`SubscriptionErrorMessage`) — check `error_message` for details.
+- The client disconnects or reconnects — all existing subscription handles are ended.
 
 ## `SpacetimeDBReducerCall` class
 
-**Inherits:** Resource
+**Inherits:** RefCounted
 
 A handle to a reducer call to the SpacetimeDB database.
+
+#### `Outcome` enum
+
+```gdscript
+class SpacetimeDBReducerCall:
+    enum Outcome { PENDING, OK, OK_EMPTY, ERROR, INTERNAL_ERROR, TIMEOUT, DISCONNECTED }
+```
+
+| Value | Description |
+| --- | --- |
+| `PENDING` | Waiting for server response. |
+| `OK` | Reducer succeeded with a transaction update. |
+| `OK_EMPTY` | Reducer succeeded but produced no database changes. |
+| `ERROR` | Reducer returned an error (check `error_message`). |
+| `INTERNAL_ERROR` | Server-side internal error. |
+| `TIMEOUT` | Response timed out. |
+| `DISCONNECTED` | Connection was lost while waiting. |
 
 #### `request_id` property
 
@@ -486,7 +670,43 @@ class SpacetimeDBReducerCall:
     var error: Error
 ```
 
-A Godot `Error` that is either `OK` if the reducer call was successful or an error if it failed.
+A Godot `Error` that is `OK` if the request was sent, or an error if it failed to send.
+
+#### `outcome` property
+
+```gdscript
+class SpacetimeDBReducerCall:
+    var outcome: Outcome
+```
+
+The outcome of the reducer call. Initially `PENDING`, updated when the server responds.
+
+#### `error_message` property
+
+```gdscript
+class SpacetimeDBReducerCall:
+    var error_message: String
+```
+
+A human-readable error message if the reducer call failed.
+
+#### `transaction_update` property
+
+```gdscript
+class SpacetimeDBReducerCall:
+    var transaction_update: TransactionUpdateMessage
+```
+
+The `TransactionUpdateMessage` from the server when the outcome is `OK`. `null` for other outcomes.
+
+#### `is_ok()` / `is_error()` / `is_completed()` methods
+
+```gdscript
+class SpacetimeDBReducerCall:
+    func is_ok() -> bool          # outcome == OK or OK_EMPTY
+    func is_error() -> bool       # outcome is ERROR, INTERNAL_ERROR, or DISCONNECTED
+    func is_completed() -> bool   # outcome != PENDING
+```
 
 #### `wait_for_response()` method
 
@@ -501,7 +721,105 @@ class SpacetimeDBReducerCall:
 
 Waits for the reducer call response, or until it times out.
 
-Returns the received `TransactionUpdateMessage`, or `null` if there was an error or it timed out.
+Returns the received `TransactionUpdateMessage`, or `null` if there was an error or it timed out. Check `outcome` and `error_message` after awaiting.
+
+## `SpacetimeDBProcedureCall` class
+
+**Inherits:** RefCounted
+
+A handle to a procedure call to the SpacetimeDB database.
+
+#### `Outcome` enum
+
+```gdscript
+class SpacetimeDBProcedureCall:
+    enum Outcome { PENDING, RETURNED, ERROR, INTERNAL_ERROR, TIMEOUT, DISCONNECTED }
+```
+
+| Value | Description |
+| --- | --- |
+| `PENDING` | Waiting for server response. |
+| `RETURNED` | Procedure returned successfully. |
+| `ERROR` | Procedure returned an error (check `error_message`). |
+| `INTERNAL_ERROR` | Server-side internal error. |
+| `TIMEOUT` | Response timed out. |
+| `DISCONNECTED` | Connection was lost while waiting. |
+
+#### `request_id` property
+
+```gdscript
+class SpacetimeDBProcedureCall:
+    var request_id: int
+```
+
+The id of the procedure call request.
+
+#### `error` property
+
+```gdscript
+class SpacetimeDBProcedureCall:
+    var error: Error
+```
+
+A Godot `Error` that is `OK` if the request was sent, or an error if it failed to send.
+
+#### `outcome` property
+
+```gdscript
+class SpacetimeDBProcedureCall:
+    var outcome: Outcome
+```
+
+The outcome of the procedure call. Initially `PENDING`, updated when the server responds.
+
+#### `error_message` property
+
+```gdscript
+class SpacetimeDBProcedureCall:
+    var error_message: String
+```
+
+A human-readable error message if the procedure call failed.
+
+#### `return_bytes` property
+
+```gdscript
+class SpacetimeDBProcedureCall:
+    var return_bytes: PackedByteArray
+```
+
+The raw BSATN-encoded return value from the procedure. Use `decode()` to get the typed value.
+
+#### `wait_for_response()` method
+
+```gdscript
+class SpacetimeDBProcedureCall:
+    async func wait_for_response(timeout_sec: float = 10) -> PackedByteArray
+```
+
+| Name        | Description                                                       |
+| ----------- | ----------------------------------------------------------------- |
+| timeout_sec | The number of seconds to wait for the response before timing out. |
+
+Waits for the procedure response, or until it times out. Returns the raw return bytes.
+
+#### `decode()` method
+
+```gdscript
+class SpacetimeDBProcedureCall:
+    func decode() -> Variant
+```
+
+Decodes the raw `return_bytes` using the BSATN type information provided at call time. Returns `null` if the return bytes are empty or no return type was specified.
+
+#### `is_ok()` / `is_error()` / `is_completed()` methods
+
+```gdscript
+class SpacetimeDBProcedureCall:
+    func is_ok() -> bool          # outcome == RETURNED
+    func is_error() -> bool       # outcome is ERROR, INTERNAL_ERROR, or DISCONNECTED
+    func is_completed() -> bool   # outcome != PENDING
+```
 
 ## `LocalDatabase` class
 
@@ -548,13 +866,24 @@ The `callable` runs whenever an existing row in the table with the given `table_
 
 You can call `unsubscribe_from_deletes` with a `callable` that was previously registered.
 
+### Subscribe to transactions completed
+
+```gdscript
+class LocalDatabase:
+    func subscribe_to_transactions_completed(table_name: StringName, callable: Callable) -> void
+
+    func unsubscribe_from_transactions_completed(table_name: StringName, callable: Callable) -> void
+```
+
+The `callable` runs after all row changes for a table update batch have been applied to the table with the given `table_name`. Useful for batching UI updates rather than reacting to each individual row change.
+
 ### Access untyped data in the local database
 
 #### `get_row_by_pk()` method
 
 ```gdscript
 class LocalDatabase:
-    func get_row_by_pk(table_name: String, primary_key_value) -> _ModuleTableType
+    func get_row_by_pk(table_name: StringName, primary_key_value: Variant) -> _ModuleTableType
 ```
 
 Returns the row in the table with the given `table_name` that has the given `primary_key_value`.
@@ -565,7 +894,7 @@ If a table with the given `table_name` does not exist or no row with the given `
 
 ```gdscript
 class LocalDatabase:
-    func get_all_rows(table_name: String) -> Array[_ModuleTableType]
+    func get_all_rows(table_name: StringName) -> Array[_ModuleTableType]
 ```
 
 Returns all subscribed rows in the table with the given `table_name`, if the table does not exist an empty array is returned.
@@ -574,10 +903,21 @@ Returns all subscribed rows in the table with the given `table_name`, if the tab
 
 ```gdscript
 class LocalDatabase:
-    func count_all_rows(table_name: String) -> int
+    func count_all_rows(table_name: StringName) -> int
 ```
 
 Returns the number of subscribed rows in the table with the given `table_name`.
+
+#### Query helpers
+
+```gdscript
+class LocalDatabase:
+    func find_where(table_name: StringName, predicate: Callable) -> Array[_ModuleTableType]
+    func first_where(table_name: StringName, predicate: Callable) -> _ModuleTableType
+    func find_by(table_name: StringName, field: StringName, value: Variant) -> Array[_ModuleTableType]
+    func first_by(table_name: StringName, field: StringName, value: Variant) -> _ModuleTableType
+    func count_where(table_name: StringName, predicate: Callable) -> int
+```
 
 # Rust Enums in Godot
 
@@ -648,12 +988,20 @@ The SDK handles serialization between Godot types and SpacetimeDB's BSATN format
 
     -   `bool` <-> `bool`
     -   `int` <-> `i64` (Signed 64-bit integer)
-    -   `float` <-> `f64` (Single-precision float)
+    -   `float` <-> `f64` (Double-precision float)
     -   `String` <-> `String` (UTF-8)
-    -   `Vector2`/`Vector3`/`Color`/`Quaternion` <-> Matching server struct (f32 fields)
-    -   `PackedByteArray` <-> `Vec<u8>` (Default) OR `Identity`
+    -   `Vector2`/`Vector2i` <-> Matching server struct (f32/i32 fields)
+    -   `Vector3`/`Vector3i` <-> Matching server struct (f32/i32 fields)
+    -   `Vector4`/`Vector4i` <-> Matching server struct (f32/i32 fields)
+    -   `Quaternion` <-> Matching server struct (f32 fields)
+    -   `Color` <-> Matching server struct (f32 fields)
+    -   `Plane` <-> Matching server struct (f32 fields: normal.x, normal.y, normal.z, d)
+    -   `PackedByteArray` <-> `Vec<u8>` (Default) OR `Identity` OR `ConnectionId`
     -   `Array[T]` <-> `Vec<T>` (Requires typed array hint, e.g., `@export var scores: Array[int]`)
+    -   `Option` <-> `Option<T>` (Rust Option type)
     -   Nested `Resource` <-> `struct` (Fields serialized inline)
+
+-   **Deep Nesting:** Arbitrary nesting of `Option<T>` and `Vec<T>` is supported: `Option<Option<T>>`, `Vec<Vec<T>>`, `Option<Vec<Option<T>>>`, etc.
 
 -   **Metadata for Specific Types:** Use `set_meta("bsatn_type_fieldname", "type_string")` in your schema's `_init()` for:
 
@@ -665,9 +1013,10 @@ The SDK handles serialization between Godot types and SpacetimeDB's BSATN format
 ### Supported Data Types
 
 -   **Primitives:** `bool`, `int` (maps to `i8`-`i64`, `u8`-`u64` via metadata/hints), `float` (maps to `f32`, `f64` via metadata/hints), `String`
--   **Godot Types:** `Vector2`, `Vector3`, `Color`, `Quaternion` (require compatible server structs)
--   **Byte Arrays:** `PackedByteArray` (maps to `Vec<u8>` or `Identity`)
--   **Collections:** `Array[T]` (requires typed `@export` hint)
+-   **Godot Types:** `Vector2`, `Vector2i`, `Vector3`, `Vector3i`, `Vector4`, `Vector4i`, `Quaternion`, `Color`, `Plane` (require compatible server structs)
+-   **Byte Arrays:** `PackedByteArray` (maps to `Vec<u8>`, `Identity`, or `ConnectionId`)
+-   **Collections:** `Array[T]` (requires typed `@export` hint), `Vec<T>` with deep nesting
+-   **Options:** `Option` class wrapping `Option<T>` with deep nesting
 -   **Custom Resources:** Nested `Resource` classes defined in your schema path.
 -   **Rust Enums:** Code generator creates a RustEnum class in Godot
 
@@ -675,12 +1024,9 @@ The SDK handles serialization between Godot types and SpacetimeDB's BSATN format
 
 -   **Client -> Server:** Not currently implemented. Messages sent from the client (like reducer calls) are uncompressed.
 -   **Server -> Client:**
-    -   **None (0x00):** Fully supported. This is the default requested by the client.
-    -   **Gzip (0x02):** Experimental support.
-    -   **Brotli (0x01):** **NOT SUPPORTED out-of-the-box.** If the server sends Brotli-compressed messages, the parser will report an error. To handle Brotli, you would need to:
-        1.  Obtain or create a GDExtension/GDNative module wrapping a Brotli library.
-        2.  Modify `addons/SpacetimeDB/core/bsatn_deserializer.gd` (`_get_query_update_stream` function and potentially `parse_packet`) to call your native decompression function.
-    -   **Recommendation:** Ensure your SpacetimeDB server is configured _not_ to send compressed messages, or only use `CompressionPreference.NONE` when connecting.
+    -   **None (0x00):** Fully supported.
+    -   **Gzip (0x02):** Supported.
+    -   **Brotli (0x01):** Not supported. If `CompressionPreference.BROTLI` is set, the SDK automatically falls back to GZIP and logs a warning.
 
 ---
 
@@ -689,3 +1035,4 @@ The SDK handles serialization between Godot types and SpacetimeDB's BSATN format
 -   [Installation](installation.md)
 -   [Generate module bindings](codegen.md)
 -   [Quick Start guide](quickstart.md)
+-   [Migration guide (0.2.x to 1.0)](migrations/1.0.md)

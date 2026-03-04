@@ -2,10 +2,10 @@
 
 ## Prerequisites
 
-> Last tested with: `Godot 4.4.1-stable` and `SpacetimeDB 1.2.0`
+> Requires **SpacetimeDB 2.0.0+** (v2 BSATN protocol). Tested with `Godot 4.4.1-stable` to `Godot 4.6.beta3`.
 
--   A SpacetimeDB server running atleast version `1.0.0`
--   A Godot 4.0+ project
+-   A SpacetimeDB server running version `2.0.0` or later
+-   A Godot 4.4.1+ project
 -   [Install the SpacetimeDB SDK addon](installation.md)
 -   [Generate module bindings](codegen.md)
 
@@ -21,7 +21,6 @@ func _ready():
     SpacetimeDB.MyModule.connected.connect(_on_spacetimedb_connected)
     SpacetimeDB.MyModule.disconnected.connect(_on_spacetimedb_disconnected)
     SpacetimeDB.MyModule.connection_error.connect(_on_spacetimedb_connection_error)
-    SpacetimeDB.MyModule.transaction_update_received.connect(_on_transaction_update) # For reducer results
 
     var options = SpacetimeDBConnectionOptions.new()
 
@@ -37,9 +36,12 @@ func _ready():
     # Disable threading (e.g., for web builds)
     # options.threading = false
 
+    # Enable auto-reconnection
+    # options.auto_reconnect = true
+
     SpacetimeDB.MyModule.connect_db(
         "http://127.0.0.1:3000", # Base HTTP URL
-        "my_module",             # Module Name
+        "my_module",             # Database name
         options
     )
 
@@ -57,25 +59,17 @@ func _on_spacetimedb_connected(identity: PackedByteArray, token: String):
 func _on_subscription_applied():
     print("Game: Initial subscription applied.")
     # Safe to query the local DB for initially subscribed data
-    var initial_players = SpacetimeDB.MyModule.PlayerData.iter()
+    var initial_players = SpacetimeDB.MyModule.db.player_data.iter()
     print("Initial players found: %d" % initial_players.size())
     var identity = SpacetimeDB.MyModule.get_local_identity()
-    var current_player = SpacetimeDB.MyModule.PlayerData.identity.find(identity)
+    var current_player = SpacetimeDB.MyModule.db.player_data.identity.find(identity)
     # ... setup initial game state ...
 
 func _on_spacetimedb_disconnected():
     print("Game: Disconnected.")
 
-func _on_spacetimedb_connection_error(code, reason):
+func _on_spacetimedb_connection_error(code: int, reason: String):
     printerr("Game: Connection Error (Code: %d): %s" % [code, reason])
-
-func _on_transaction_update(update: TransactionUpdateData):
-    # Handle results/errors from reducer calls
-    if update.status.status_type == UpdateStatusData.StatusType.FAILED:
-        printerr("Reducer call (ReqID: %d) failed: %s" % [update.reducer_call.request_id, update.status.failure_message])
-    elif update.status.status_type == UpdateStatusData.StatusType.COMMITTED:
-        print("Reducer call (ReqID: %d) committed." % update.reducer_call.request_id)
-        # Optionally inspect update.status.committed_update for DB changes
 
 # listening for the game closing/crashing to disconnect cleanly from the server.
 func _notification(what: int) -> void:
@@ -161,7 +155,7 @@ SpacetimeDB.MyModule.row_inserted.connect(_on_global_row_inserted)
 SpacetimeDB.MyModule.row_updated.connect(_on_global_row_updated)
 SpacetimeDB.MyModule.row_deleted.connect(_on_global_row_deleted)
 
-func _on_global_row_inserted(table_name: String, row: Resource):
+func _on_global_row_inserted(table_name: StringName, row: Resource):
     if row is PlayerData: # Check the type of the inserted row
         print("Global Insert: New PlayerData row!")
         _spawn_player(row) # Your function
@@ -169,13 +163,12 @@ func _on_global_row_inserted(table_name: String, row: Resource):
         print("Global Insert: GameState updated!")
         # ... update game state UI ...
 
-func _on_global_row_updated(table_name: String, old_row: Resource, new_row: Resource):
+func _on_global_row_updated(table_name: StringName, old_row: Resource, new_row: Resource):
     if new_row is PlayerData:
         print("Global Update: PlayerData updated!")
-        _update_player(row) # Your function
+        _update_player(new_row) # Your function
 
-func _on_global_row_deleted(table_name: String, row: Resource):
-    # Note: This signal provides the primary key, not the full row data
+func _on_global_row_deleted(table_name: StringName, row: Resource):
     if row is PlayerData:
         print("Global Delete: PlayerData deleted!")
         _despawn_player(row)
@@ -189,14 +182,18 @@ Use the generated module bindings to trigger server-side logic.
 func move_player(direction: Vector2):
     if not SpacetimeDB.MyModule.is_connected_db(): return
 
-    # You can use callback, but it doesn`t required
-    # Example with callback
-    SpacetimeDB.MyModule.reducers.move_user(direction, global_position, func(tx: TransactionUpdateData):
-        print("Result:", tx)
-    )
-
-    # Example without callback
+    # Fire and forget
     SpacetimeDB.MyModule.reducers.move_user(direction, global_position)
+
+    # Or await the result using the SpacetimeDBReducerCall handle
+    var call := SpacetimeDB.MyModule.reducers.move_user(direction, global_position)
+    var result = await call.wait_for_response()
+    if call.is_ok():
+        print("Reducer succeeded")
+    elif call.is_error():
+        printerr("Reducer failed: ", call.error_message)
+    elif call.outcome == SpacetimeDBReducerCall.Outcome.TIMEOUT:
+        printerr("Reducer timed out")
 ```
 
 ## Query Local Database
