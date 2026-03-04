@@ -32,42 +32,39 @@ func is_some() -> bool:
 func is_none() -> bool:
 	return _internal_data.is_empty()
 
-func unwrap():
+func unwrap() -> Variant:
 	if is_some():
 		return _internal_data[0]
-	else:
-		push_error("Attempted to unwrap a None Optional value!")
-		return null
+	push_error("Attempted to unwrap a None Optional value!")
+	return null
 
-func unwrap_or(default_value):
+func unwrap_or(default_value: Variant) -> Variant:
 	if is_some():
 		return _internal_data[0]
-	else:
-		return default_value
+	return default_value
 
-func unwrap_or_else(fn: Callable):
+func unwrap_or_else(fn: Callable) -> Variant:
 	if is_some():
 		return _internal_data[0]
-	else:
-		if fn.is_valid():
-			return fn.call()
+	if fn.is_valid():
+		return fn.call()
+	return null
 
-func expect(type: Variant.Type, err_msg: String = ""):
+func expect(type: Variant.Type, err_msg: String = "") -> Variant:
 	if is_some():
 		if typeof(_internal_data[0]) != type:
 			err_msg = "Expected type %s, got %s" % [type, typeof(_internal_data[0])] if err_msg.is_empty() else err_msg
 			push_error(err_msg)
 			return null
 		return _internal_data[0]
-	else:
-		err_msg = "Expected type %s, got None" % type if err_msg.is_empty() else err_msg
-		push_error(err_msg)
-		return null
+	err_msg = "Expected type %s, got None" % type if err_msg.is_empty() else err_msg
+	push_error(err_msg)
+	return null
 
-func set_some(value):
+func set_some(value: Variant) -> void:
 	self.data = [value]
 
-func set_none():
+func set_none() -> void:
 	self.data = []
 
 func to_string() -> String:
