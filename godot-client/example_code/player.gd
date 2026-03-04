@@ -32,9 +32,12 @@ func test_struct():
 	option_inner.set_some(test_damage)
 	test_one.test_inner = option_inner
 
-	var res = await SpacetimeDB.Main.reducers.test_struct(test_one, func(_t):
-		print("Result:", _t)
-	)
+	var handle: SpacetimeDBReducerCall = SpacetimeDB.Main.reducers.test_struct(test_one)
+	var res: TransactionUpdateMessage = await handle.wait_for_response()
+	if handle.is_ok():
+		print("Result:", res)
+	elif handle.is_error():
+		print("Error:", handle.error_message)
 
 func test_option_vec(text):
 	var opt = Option.new()

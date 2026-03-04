@@ -21,6 +21,8 @@ var _target_url: String
 var _token: String
 var _is_connected: bool = false
 var _connection_requested: bool = false
+var _options: SpacetimeDBConnectionOptions
+var _db_name: String
 var _debug_mode: bool = false
 var _total_bytes_send: int = 0
 var _second_bytes_send: int = 0
@@ -33,6 +35,8 @@ var _second_messages_received: int = 0
 
 
 func _init(options: SpacetimeDBConnectionOptions, db_name: String):
+	_options = options
+	_db_name = db_name
 	if options.monitor_mode:
 		Performance.add_custom_monitor("spacetime/" + db_name + "_second_received_packets", get_second_received_packets)
 		Performance.add_custom_monitor("spacetime/" + db_name + "_second_received_bytes", get_second_received_bytes)
@@ -92,10 +96,10 @@ func _physics_process(delta: float) -> void:
 			if _is_connected or _connection_requested: # Only report if we were connected or trying
 				if code == -1: # Abnormal closure
 					printerr("SpacetimeDBConnection: connection_error ", code, " Abnormal closure with reason:")
-					emit_signal("connection_error", code, "Abnormal closure")
+					connection_error.emit(code, "Abnormal closure")
 				else:
 					_print_log("SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)" % [code, reason])
-					emit_signal("disconnected") # Normal closure signal
+					disconnected.emit() # Normal closure signal
 			_is_connected = false
 			_connection_requested = false
 			set_physics_process(false) # Stop polling
@@ -103,6 +107,15 @@ func _physics_process(delta: float) -> void:
 
 func _notification(what: int) -> void:
 	match what:
+		NOTIFICATION_PREDELETE:
+			if _options and _options.monitor_mode:
+				for suffix: String in [
+					"_second_received_packets", "_second_received_bytes",
+					"_total_received_packets", "_total_received_kbytes",
+					"_second_sent_packets", "_second_sent_bytes",
+					"_total_sent_packets", "_total_sent_kbytes",
+				]:
+					Performance.remove_custom_monitor("spacetime/" + _db_name + suffix)
 		NOTIFICATION_CRASH:
 			if _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED and _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSING:
 				get_tree().auto_accept_quit = false
@@ -158,7 +171,11 @@ func set_token(token: String) -> void:
 
 
 func set_compression_preference(preference: CompressionPreference) -> void:
-	self.preferred_compression = preference
+	if preference == CompressionPreference.BROTLI:
+		push_warning("SpacetimeDBConnection: Brotli compression is not supported. Falling back to Gzip.")
+		self.preferred_compression = CompressionPreference.GZIP
+	else:
+		self.preferred_compression = preference
 
 
 func send_bytes(bytes: PackedByteArray) -> Error:
@@ -174,9 +191,19 @@ func send_bytes(bytes: PackedByteArray) -> Error:
 
 
 func connect_to_database(base_url: String, database_name: String, connection_id: String) -> void: # Added connection_id
-	if _is_connected or _connection_requested:
-		_print_log("SpacetimeDBConnection: Already connected or connecting.")
+	if _is_connected:
+		_print_log("SpacetimeDBConnection: Already connected.")
 		return
+
+	if _connection_requested:
+		_print_log("SpacetimeDBConnection: Previous attempt still in progress, resetting.")
+		if _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED:
+			_websocket.close()
+		_is_connected = false
+		_connection_requested = false
+		_websocket = WebSocketPeer.new()
+		_websocket.inbound_buffer_size = _options.inbound_buffer_size
+		_websocket.outbound_buffer_size = _options.outbound_buffer_size
 
 	if _token.is_empty():
 		_print_log("SpacetimeDBConnection: Cannot connect without auth token.")
@@ -224,7 +251,7 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 	var err: Error = _websocket.connect_to_url(_target_url)
 	if err != OK:
 		printerr("SpacetimeDBConnection: Error initiating connection: ", err)
-		emit_signal("connection_error", err, "Failed to initiate connection")
+		connection_error.emit(err, "Failed to initiate connection")
 	else:
 		_print_log("SpacetimeDBConnection: Connection initiated.")
 		_connection_requested = true

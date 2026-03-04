@@ -3,6 +3,7 @@ class_name SpacetimeParsedSchema extends Resource
 var module: String = ""
 var types: Array[Dictionary] = []
 var reducers: Array[Dictionary] = []
+var procedures: Array[Dictionary] = []
 var tables: Array[Dictionary] = []
 var type_map: Dictionary[String, String] = {}
 var meta_type_map: Dictionary[String, String] = {}
@@ -16,6 +17,7 @@ func to_dictionary() -> Dictionary:
 		"module": module,
 		"types": types,
 		"reducers": reducers,
+		"procedures": procedures,
 		"tables": tables,
 		"type_map": type_map,
 		"meta_type_map": meta_type_map,

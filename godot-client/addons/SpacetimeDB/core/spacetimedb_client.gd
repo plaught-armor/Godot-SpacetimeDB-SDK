@@ -13,11 +13,15 @@ signal row_inserted(table_name: StringName, row: Resource)
 signal row_updated(table_name: StringName, old_row: Resource, new_row: Resource)
 signal row_deleted(table_name: StringName, row: Resource)
 signal row_transactions_completed(table_name: StringName)
-signal reducer_call_response(response: Resource) # TODO: Define response resource
-signal reducer_call_timeout(request_id: int) # TODO: Implement timeout logic
 signal transaction_update_received(update: TransactionUpdateMessage)
 # Fired when a ReducerResultMessage arrives — carries request_id + optional tx_update (null if okEmpty/err)
 signal reducer_result_received(request_id: int, tx_update: TransactionUpdateMessage)
+# Fired when a ProcedureResultData arrives — carries request_id + return bytes (empty if error)
+signal procedure_result_received(request_id: int, return_bytes: PackedByteArray)
+# --- Reconnection Signals ---
+signal reconnecting(attempt: int, max_attempts: int)
+signal reconnected
+signal reconnect_failed
 
 # --- Configuration ---
 @export var base_url: String = "http://127.0.0.1:3000"
@@ -29,7 +33,7 @@ signal reducer_result_received(request_id: int, tx_update: TransactionUpdateMess
 @export var one_time_token: bool = false
 @export var compression: SpacetimeDBConnection.CompressionPreference
 @export var debug_mode: bool = true
-@export var current_subscriptions: Dictionary[int, SpacetimeDBSubscription]
+var current_subscriptions: Dictionary[int, SpacetimeDBSubscription]
 @export var use_threading: bool = true
 
 var module_name: String = ""
@@ -45,6 +49,9 @@ var _thread_should_exit: bool = false
 var _message_limit_in_frame: int = 5
 # Cache of reducer results that arrived before anyone called wait_for_reducer_response
 var _reducer_result_cache: Dictionary[int, TransactionUpdateMessage] = { } # request_id -> TransactionUpdateMessage (or null)
+var _pending_reducer_calls: Dictionary[int, SpacetimeDBReducerCall] = {}
+var _pending_procedure_calls: Dictionary[int, SpacetimeDBProcedureCall] = {}
+var _procedure_result_cache: Dictionary[int, PackedByteArray] = {}
 # --- Components ---
 var _connection: SpacetimeDBConnection
 var _deserializer: BSATNDeserializer
@@ -59,6 +66,13 @@ var _is_initialized: bool = false
 var _received_initial_subscription: bool = false
 var _next_query_id: int = 0
 var _next_request_id: int = 0
+# --- Reconnection State ---
+enum _ReconnectState { IDLE, RECONNECTING }
+var _reconnect_state: _ReconnectState = _ReconnectState.IDLE
+var _reconnect_attempt: int = 0
+var _intentional_disconnect: bool = false
+var _saved_subscription_queries: Array[PackedStringArray] = []
+var _reconnect_timer: SceneTreeTimer = null
 
 
 func _ready() -> void:
@@ -72,6 +86,7 @@ func _physics_process(_delta: float) -> void:
 
 
 func _exit_tree() -> void:
+	_cancel_reconnection()
 	if deserializer_worker:
 		_thread_should_exit = true
 		_packet_semaphore.post()
@@ -118,8 +133,8 @@ func initialize_and_connect() -> void:
 
 	# 5. Initialize Connection Handler
 	_connection = SpacetimeDBConnection.new(connection_options, database_name)
-	_connection.disconnected.connect(func(): disconnected.emit())
-	_connection.connection_error.connect(func(c, r): connection_error.emit(c, r))
+	_connection.disconnected.connect(_on_connection_disconnected)
+	_connection.connection_error.connect(_on_connection_error)
 	_connection.message_received.connect(_on_websocket_message_received)
 	_connection.name = "Connection"
 	add_child(_connection)
@@ -133,6 +148,7 @@ func initialize_and_connect() -> void:
 
 # --- Public API ---
 func connect_db(host_url: String, database_name: String, options: SpacetimeDBConnectionOptions = null) -> void:
+	_cancel_reconnection()
 	if not options:
 		options = SpacetimeDBConnectionOptions.new()
 	connection_options = options
@@ -164,6 +180,8 @@ func connect_db(host_url: String, database_name: String, options: SpacetimeDBCon
 
 
 func disconnect_db() -> void:
+	_intentional_disconnect = true
+	_cancel_reconnection()
 	_token = ""
 	if _connection:
 		_connection.disconnect_from_server()
@@ -218,9 +236,6 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 		else:
 			print_log("SpacetimeDBClient: Subscribe request sent successfully (BSATN), Query ID: %d" % query_id)
 			pending_subscriptions.set(query_id, subscription)
-			# Add as child for signals
-			subscription.name = "Subscription"
-			add_child(subscription)
 
 		return subscription
 
@@ -298,10 +313,52 @@ func call_reducer(reducer_name: String, args: Array = [], types: Array = []) -> 
 			print("SpacetimeDBClient: Error sending CallReducer JSON message: ", err)
 			return SpacetimeDBReducerCall.fail(err)
 
-		return SpacetimeDBReducerCall.create(self, request_id)
+		var handle: SpacetimeDBReducerCall = SpacetimeDBReducerCall.create(self, request_id)
+		_pending_reducer_calls[request_id] = handle
+		return handle
 
 	print("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
 	return SpacetimeDBReducerCall.fail(ERR_CONNECTION_ERROR)
+
+
+func call_procedure(procedure_name: String, args: Array = [], types: Array = [], return_bsatn_type: StringName = &"") -> SpacetimeDBProcedureCall:
+	if not is_connected_db():
+		printerr("SpacetimeDBClient: Cannot call procedure, not connected.")
+		return SpacetimeDBProcedureCall.fail(ERR_CONNECTION_ERROR)
+
+	var args_bytes: PackedByteArray = _serializer._serialize_arguments(args, types)
+	if _serializer.has_error():
+		printerr("Failed to serialize args for %s: %s" % [procedure_name, _serializer.get_last_error()])
+		return SpacetimeDBProcedureCall.fail(ERR_PARSE_ERROR)
+
+	var request_id: int = _next_request_id
+	_next_request_id += 1
+
+	var call_data := CallProcedureMessage.new(procedure_name, args_bytes, request_id, 0)
+	var message_bytes: PackedByteArray = _serializer.serialize_client_message(
+		SpacetimeDBClientMessage.CALL_PROCEDURE,
+		call_data,
+	)
+
+	if _serializer.has_error():
+		printerr("SpacetimeDBClient: Failed to serialize CallProcedure message: %s" % _serializer.get_last_error())
+		return SpacetimeDBProcedureCall.fail(ERR_PARSE_ERROR)
+
+	if debug_mode:
+		print("DEBUG: call_procedure: Calling procedure '%s' with request id '%d'" % [procedure_name, request_id])
+
+	if _connection and _connection._websocket:
+		var err: Error = _connection.send_bytes(message_bytes)
+		if err != OK:
+			print("SpacetimeDBClient: Error sending CallProcedure message: ", err)
+			return SpacetimeDBProcedureCall.fail(err)
+
+		var handle := SpacetimeDBProcedureCall.create(self, request_id, return_bsatn_type)
+		_pending_procedure_calls[request_id] = handle
+		return handle
+
+	print("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
+	return SpacetimeDBProcedureCall.fail(ERR_CONNECTION_ERROR)
 
 
 func wait_for_reducer_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> TransactionUpdateMessage:
@@ -329,10 +386,39 @@ func wait_for_reducer_response(request_id_to_match: int, timeout_seconds: float 
 
 	if not done:
 		printerr("SpacetimeDBClient: Timeout waiting for response for Req ID: %d" % request_id_to_match)
-		self.reducer_call_timeout.emit(request_id_to_match)
 		return null
 
 	print_log("SpacetimeDBClient: Received matching response for Req ID: %d" % request_id_to_match)
+	return result_container[0]
+
+
+func wait_for_procedure_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> PackedByteArray:
+	if request_id_to_match < 0:
+		return PackedByteArray()
+	if _procedure_result_cache.has(request_id_to_match):
+		var cached: PackedByteArray = _procedure_result_cache[request_id_to_match]
+		_procedure_result_cache.erase(request_id_to_match)
+		print_log("SpacetimeDBClient: Procedure cache hit for Req ID: %d" % request_id_to_match)
+		return cached
+	var timer: SceneTreeTimer = get_tree().create_timer(timeout_seconds)
+	var result_container: Array[PackedByteArray] = [PackedByteArray()]
+	var done: bool = false
+	var connection: Callable = func(rid: int, ret_bytes: PackedByteArray) -> void:
+		if rid == request_id_to_match and not done:
+			done = true
+			result_container[0] = ret_bytes
+			_procedure_result_cache.erase(rid)
+			timer.time_left = 0
+
+	procedure_result_received.connect(connection)
+	await timer.timeout
+	procedure_result_received.disconnect(connection)
+
+	if not done:
+		printerr("SpacetimeDBClient: Timeout waiting for procedure response for Req ID: %d" % request_id_to_match)
+		return PackedByteArray()
+
+	print_log("SpacetimeDBClient: Received matching procedure response for Req ID: %d" % request_id_to_match)
 	return result_container[0]
 
 
@@ -365,7 +451,7 @@ func _load_token_or_request() -> void:
 		_rest_api.request_new_token()
 	else:
 		printerr("SpacetimeDBClient: No token available and auto_request_token is false.")
-		emit_signal("connection_error", -1, "Authentication token unavailable")
+		connection_error.emit(-1, "Authentication token unavailable")
 
 
 func _generate_connection_id() -> String:
@@ -392,10 +478,16 @@ func _on_token_received(received_token: String) -> void:
 
 func _on_token_request_failed(error_code: int, response_body: String) -> void:
 	printerr("SpacetimeDBClient: Failed to acquire token. Cannot connect.")
-	emit_signal("connection_error", error_code, "Failed to acquire authentication token")
+	connection_error.emit(error_code, "Failed to acquire authentication token")
 
 
 func _save_token(token_to_save: String) -> void:
+	var dir_path: String = token_save_path.get_base_dir()
+	if not dir_path.is_empty() and not DirAccess.dir_exists_absolute(dir_path):
+		var err: Error = DirAccess.make_dir_recursive_absolute(dir_path)
+		if err != OK:
+			printerr("SpacetimeDBClient: Failed to create directory for token: ", dir_path)
+			return
 	var file: FileAccess = FileAccess.open(token_save_path, FileAccess.WRITE)
 	if file:
 		file.store_string(token_to_save)
@@ -482,6 +574,9 @@ func _process_results_asynchronously() -> void:
 
 
 func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
+	if raw_bytes.size() < 2:
+		printerr("SpacetimeDBClient: Received packet too small (%d bytes), ignoring." % raw_bytes.size())
+		return PackedByteArray()
 	var compression: int = raw_bytes.get(0)
 	var payload: PackedByteArray = raw_bytes.slice(1)
 	match compression:
@@ -521,7 +616,16 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			_token = message.token
 		_connection_id = message.connection_id
 		self.connected.emit(_identity, _token)
-		## TODO: initialise the local_db.
+
+		# Handle reconnection completion
+		if _reconnect_state == _ReconnectState.RECONNECTING:
+			print_log("SpacetimeDBClient: Reconnected. Re-subscribing to %d query sets." % _saved_subscription_queries.size())
+			_reconnect_state = _ReconnectState.IDLE
+			_reconnect_attempt = 0
+			if _saved_subscription_queries.is_empty():
+				reconnected.emit()
+			else:
+				_resubscribe_saved_queries()
 
 	elif message is SubscribeAppliedMessage:
 		_local_db.apply_database_subscription_applied(message)
@@ -536,10 +640,30 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			sub.applied.emit()
 
 	elif message is UnsubscribeAppliedMessage:
-		print_log("SpacetimeDBClient: Received unhandled message type: UnsubscribeAppliedMessage")
+		if not message.tables.is_empty():
+			for table_update: TableUpdateData in message.tables:
+				_local_db.apply_table_update(table_update)
+		var qid: int = message.query_id.id
+		if current_subscriptions.has(qid):
+			var sub: SpacetimeDBSubscription = current_subscriptions[qid]
+			current_subscriptions.erase(qid)
+			sub.end.emit()
+		print_log("SpacetimeDBClient: Unsubscribe applied for query_id %d." % qid)
 
 	elif message is SubscriptionErrorMessage:
-		print_log("SpacetimeDBClient: Received unhandled message type: SubscriptionErrorMessage")
+		printerr("SpacetimeDBClient: Subscription error: %s" % message.error_message)
+		if message.has_query_id():
+			var qid: int = message.query_id.id
+			if pending_subscriptions.has(qid):
+				var sub: SpacetimeDBSubscription = pending_subscriptions[qid]
+				pending_subscriptions.erase(qid)
+				sub.error_message = message.error_message
+				sub.end.emit()
+			elif current_subscriptions.has(qid):
+				var sub: SpacetimeDBSubscription = current_subscriptions[qid]
+				current_subscriptions.erase(qid)
+				sub.error_message = message.error_message
+				sub.end.emit()
 
 	elif message is TransactionUpdateMessage:
 		_handle_transaction_update(message)
@@ -548,19 +672,73 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		var rid: int = message.request_id
 		var outcome: ReducerOutcomeEnum = message.reducer_result
 		var tx_update: TransactionUpdateMessage = null
+		var handle: SpacetimeDBReducerCall = _pending_reducer_calls.get(rid)
+		# Only stamp the handle if it's still PENDING (avoids overwriting a TIMEOUT verdict)
+		var can_stamp: bool = handle and handle.outcome == SpacetimeDBReducerCall.Outcome.PENDING
 		match outcome.value:
 			ReducerOutcomeEnum.Options.ok:
 				tx_update = outcome.get_ok()
 				if tx_update != null:
 					_handle_transaction_update(tx_update)
+				if can_stamp:
+					handle.outcome = SpacetimeDBReducerCall.Outcome.OK
+					handle.transaction_update = tx_update
 			ReducerOutcomeEnum.Options.okEmpty:
-				pass
+				if can_stamp:
+					handle.outcome = SpacetimeDBReducerCall.Outcome.OK_EMPTY
 			ReducerOutcomeEnum.Options.err:
-				print_log("SpacetimeDBClient: Reducer returned error: %s" % str(outcome.get_err()))
+				var err_bytes: PackedByteArray = outcome.get_err()
+				var err_msg: String = err_bytes.get_string_from_utf8()
+				if err_msg.is_empty() and not err_bytes.is_empty():
+					err_msg = "raw error bytes: " + err_bytes.hex_encode()
+				print_log("SpacetimeDBClient: Reducer returned error: %s" % err_msg)
+				if can_stamp:
+					handle.outcome = SpacetimeDBReducerCall.Outcome.ERROR
+					handle.error_message = err_msg
 			ReducerOutcomeEnum.Options.internalError:
-				printerr("SpacetimeDBClient: Reducer internal error: ", outcome.get_internal_error())
+				var err_msg: String = outcome.get_internal_error()
+				printerr("SpacetimeDBClient: Reducer internal error: ", err_msg)
+				if can_stamp:
+					handle.outcome = SpacetimeDBReducerCall.Outcome.INTERNAL_ERROR
+					handle.error_message = err_msg
+		_pending_reducer_calls.erase(rid)
 		_reducer_result_cache[rid] = tx_update
+		# Evict oldest entry to prevent unbounded growth from fire-and-forget calls
+		while _reducer_result_cache.size() > 256:
+			var oldest_key: int
+			for k: int in _reducer_result_cache:
+				oldest_key = k
+				break
+			_reducer_result_cache.erase(oldest_key)
 		reducer_result_received.emit(rid, tx_update)
+
+	elif message is ProcedureResultData:
+		var rid: int = message.request_id
+		var handle: SpacetimeDBProcedureCall = _pending_procedure_calls.get(rid)
+		var can_stamp: bool = handle and handle.outcome == SpacetimeDBProcedureCall.Outcome.PENDING
+		var ret_bytes: PackedByteArray = PackedByteArray()
+
+		match message.status_tag:
+			0: # Returned
+				ret_bytes = message.return_bytes
+				if can_stamp:
+					handle.outcome = SpacetimeDBProcedureCall.Outcome.RETURNED
+					handle.return_bytes = ret_bytes
+			1: # InternalError
+				printerr("SpacetimeDBClient: Procedure internal error: ", message.error_message)
+				if can_stamp:
+					handle.outcome = SpacetimeDBProcedureCall.Outcome.INTERNAL_ERROR
+					handle.error_message = message.error_message
+
+		_pending_procedure_calls.erase(rid)
+		_procedure_result_cache[rid] = ret_bytes
+		while _procedure_result_cache.size() > 256:
+			var oldest_key: int
+			for k: int in _procedure_result_cache:
+				oldest_key = k
+				break
+			_procedure_result_cache.erase(oldest_key)
+		procedure_result_received.emit(rid, ret_bytes)
 
 	else:
 		print_log("SpacetimeDBClient: Unhandled message type: " + message.get_class())
@@ -574,3 +752,201 @@ func _handle_transaction_update(update_sets: TransactionUpdateMessage) -> void:
 			self.database_initialized.emit()
 	# Emit the full transaction update signal regardless of status
 	self.transaction_update_received.emit(update_sets)
+
+
+# --- Reconnection ---
+
+func _on_connection_disconnected() -> void:
+	if _intentional_disconnect:
+		_intentional_disconnect = false
+		disconnected.emit()
+		return
+
+	if connection_options and connection_options.auto_reconnect:
+		print_log("SpacetimeDBClient: Unintentional disconnect, starting auto-reconnect.")
+		_start_reconnection()
+	else:
+		disconnected.emit()
+
+
+func _on_connection_error(code: int, reason: String) -> void:
+	if _intentional_disconnect:
+		_intentional_disconnect = false
+		connection_error.emit(code, reason)
+		return
+
+	if _reconnect_state == _ReconnectState.RECONNECTING:
+		print_log("SpacetimeDBClient: Reconnect attempt %d failed: %s (code %d)" % [_reconnect_attempt, reason, code])
+		_schedule_next_reconnect_attempt()
+	elif connection_options and connection_options.auto_reconnect:
+		print_log("SpacetimeDBClient: Connection error, starting auto-reconnect. Reason: %s" % reason)
+		connection_error.emit(code, reason)
+		_start_reconnection()
+	else:
+		connection_error.emit(code, reason)
+
+
+func _start_reconnection() -> void:
+	if _reconnect_state == _ReconnectState.RECONNECTING:
+		return
+
+	_reconnect_state = _ReconnectState.RECONNECTING
+	_reconnect_attempt = 0
+
+	_saved_subscription_queries.clear()
+	for sub: SpacetimeDBSubscription in current_subscriptions.values():
+		if sub.queries.size() > 0:
+			_saved_subscription_queries.append(sub.queries.duplicate())
+	print_log("SpacetimeDBClient: Saved %d subscription query sets for re-subscription." % _saved_subscription_queries.size())
+
+	_schedule_next_reconnect_attempt()
+
+
+func _schedule_next_reconnect_attempt() -> void:
+	var max_attempts: int = connection_options.max_reconnect_attempts
+
+	if max_attempts > 0 and _reconnect_attempt >= max_attempts:
+		print_log("SpacetimeDBClient: All %d reconnect attempts exhausted." % max_attempts)
+		_reconnect_state = _ReconnectState.IDLE
+		_reconnect_attempt = 0
+		_saved_subscription_queries.clear()
+		reconnect_failed.emit()
+		disconnected.emit()
+		return
+
+	_reconnect_attempt += 1
+	var backoff: float = _calculate_backoff(_reconnect_attempt)
+	var max_str: String = str(max_attempts) if max_attempts > 0 else "inf"
+	print_log("SpacetimeDBClient: Reconnect attempt %d/%s in %.2f seconds." % [_reconnect_attempt, max_str, backoff])
+
+	reconnecting.emit(_reconnect_attempt, max_attempts)
+
+	var tree: SceneTree = get_tree()
+	if not tree:
+		printerr("SpacetimeDBClient: Cannot schedule reconnect — not in scene tree.")
+		_reconnect_state = _ReconnectState.IDLE
+		reconnect_failed.emit()
+		disconnected.emit()
+		return
+
+	_reconnect_timer = tree.create_timer(backoff)
+	if _reconnect_timer:
+		_reconnect_timer.timeout.connect(_attempt_reconnect, CONNECT_ONE_SHOT)
+	else:
+		printerr("SpacetimeDBClient: Failed to create reconnect timer.")
+		_reconnect_state = _ReconnectState.IDLE
+		reconnect_failed.emit()
+		disconnected.emit()
+
+
+func _calculate_backoff(attempt: int) -> float:
+	var base_delay: float = connection_options.reconnect_initial_delay * pow(
+		connection_options.reconnect_backoff_multiplier, attempt - 1
+	)
+	base_delay = minf(base_delay, connection_options.reconnect_max_delay)
+
+	var jitter_range: float = base_delay * connection_options.reconnect_jitter_fraction
+	var jitter_offset: float = randf() * jitter_range
+	return base_delay - jitter_offset
+
+
+func _attempt_reconnect() -> void:
+	_reconnect_timer = null
+
+	if _reconnect_state != _ReconnectState.RECONNECTING:
+		return
+
+	if not _connection or _token.is_empty():
+		printerr("SpacetimeDBClient: Cannot reconnect — missing connection or token.")
+		_reconnect_state = _ReconnectState.IDLE
+		reconnect_failed.emit()
+		disconnected.emit()
+		return
+
+	_prepare_for_reconnect()
+
+	var conn_id: String = _generate_connection_id()
+	_connection.set_token(_token)
+
+	print_log("SpacetimeDBClient: Attempting reconnect (attempt %d)." % _reconnect_attempt)
+	_connection.connect_to_database(base_url, database_name, conn_id)
+
+
+func _prepare_for_reconnect() -> void:
+	if _local_db:
+		_local_db.clear_all_tables()
+
+	_reducer_result_cache.clear()
+	for handle: SpacetimeDBReducerCall in _pending_reducer_calls.values():
+		if handle.outcome == SpacetimeDBReducerCall.Outcome.PENDING:
+			handle.outcome = SpacetimeDBReducerCall.Outcome.DISCONNECTED
+			handle.error_message = "Connection lost during reducer call"
+	_pending_reducer_calls.clear()
+
+	_procedure_result_cache.clear()
+	for handle: SpacetimeDBProcedureCall in _pending_procedure_calls.values():
+		if handle.outcome == SpacetimeDBProcedureCall.Outcome.PENDING:
+			handle.outcome = SpacetimeDBProcedureCall.Outcome.DISCONNECTED
+			handle.error_message = "Connection lost during procedure call"
+	_pending_procedure_calls.clear()
+
+	for sub: SpacetimeDBSubscription in pending_subscriptions.values():
+		sub.end.emit()
+	for sub: SpacetimeDBSubscription in current_subscriptions.values():
+		sub.end.emit()
+	pending_subscriptions.clear()
+	current_subscriptions.clear()
+
+	_received_initial_subscription = false
+	_next_query_id = 0
+	_next_request_id = 0
+
+	if use_threading and _packet_mutex:
+		_packet_mutex.lock()
+		_packet_queue.clear()
+		_packet_mutex.unlock()
+
+		_result_mutex.lock()
+		_result_queue.clear()
+		_result_mutex.unlock()
+
+
+func _cancel_reconnection() -> void:
+	if _reconnect_state == _ReconnectState.IDLE:
+		return
+
+	print_log("SpacetimeDBClient: Cancelling reconnection.")
+	_reconnect_state = _ReconnectState.IDLE
+	_reconnect_attempt = 0
+	_saved_subscription_queries.clear()
+
+	if _reconnect_timer and _reconnect_timer.time_left > 0:
+		if _reconnect_timer.timeout.is_connected(_attempt_reconnect):
+			_reconnect_timer.timeout.disconnect(_attempt_reconnect)
+	_reconnect_timer = null
+
+
+func _resubscribe_saved_queries() -> void:
+	var total_sets: int = _saved_subscription_queries.size()
+	var applied_count: Array[int] = [0]
+
+	for queries: PackedStringArray in _saved_subscription_queries:
+		var sub: SpacetimeDBSubscription = subscribe(queries)
+		if sub.error != OK:
+			printerr("SpacetimeDBClient: Failed to re-subscribe during reconnection: %s" % error_string(sub.error))
+			applied_count[0] += 1
+			if applied_count[0] >= total_sets:
+				_saved_subscription_queries.clear()
+				reconnected.emit()
+			continue
+
+		sub.applied.connect(func() -> void:
+			applied_count[0] += 1
+			print_log("SpacetimeDBClient: Re-subscription applied (%d/%d)." % [applied_count[0], total_sets])
+			if applied_count[0] >= total_sets:
+				_saved_subscription_queries.clear()
+				reconnected.emit()
+		, CONNECT_ONE_SHOT)
+
+	if total_sets == 0:
+		reconnected.emit()

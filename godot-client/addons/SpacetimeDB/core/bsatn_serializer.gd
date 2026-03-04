@@ -215,7 +215,6 @@ func write_rust_enum(rust_enum: RustEnum) -> void:
 
 ## Writes an option value
 func write_option(option_value: Option, bsatn_type: StringName, prop: Dictionary) -> bool:
-	#print("write_option(%s)" % option_value)
 	var prop_name: StringName = prop.name
 
 	if not option_value is Option:
@@ -232,15 +231,8 @@ func write_option(option_value: Option, bsatn_type: StringName, prop: Dictionary
 		if has_error():
 			_set_error("Failed to write Some tag for Option property '%s'." % prop_name)
 			return false
-		if bsatn_type.begins_with("vec"):
-			if option_value.unwrap() is not Array:
-				_set_error("Option type is Vec<T> but the godot type is not an array.")
-				return false
-			var vec_type: StringName = bsatn_type.right(-4)
-			_write_value_from_bsatn_type(option_value.unwrap(), vec_type, prop_name + "[inner]")
-		else:
-			_write_value_from_bsatn_type(option_value.unwrap(), bsatn_type, prop_name + "[inner]")
-		return true
+		_write_value_from_bsatn_type(option_value.unwrap(), bsatn_type, prop_name)
+		return not has_error()
 
 
 ## Writes an array type
@@ -278,7 +270,7 @@ func write_array(v: Array[Variant], bsatn_type: StringName, prop: Dictionary) ->
 			element_type_code = int(main_type_str)
 
 	if element_type_code == TYPE_MAX and not v.is_empty():
-		var first_element: Array[Variant] = v[0]
+		var first_element: Variant = v[0]
 		element_type_code = typeof(first_element)
 		if element_type_code == TYPE_OBJECT:
 			element_class_name = _get_value_class_name(first_element)
@@ -299,14 +291,17 @@ func write_array(v: Array[Variant], bsatn_type: StringName, prop: Dictionary) ->
 
 	# 4. Determine and pre-bind the element writer
 	var element_writer: Callable
-	if element_class_name == &"Option":
+	if bsatn_type.begins_with(&"opt_") or bsatn_type.begins_with(&"vec_"):
+		# Prefixed type — use recursive type-driven serialization for deep nesting
+		element_writer = _write_value_from_bsatn_type.bind(bsatn_type, prop_name + &"[element]")
+	elif element_class_name == &"Option":
 		if bsatn_type.is_empty():
 			_set_error("Array '%s' of Options has empty 'bsatn_type' metadata. Inner type T for Option<T> cannot be determined." % prop_name)
 			return
 		element_writer = write_option.bind(bsatn_type, element_prop_sim)
 	else:
 		var raw_writer: Callable
-		if not bsatn_type.is_empty() and element_type_code != TYPE_ARRAY:
+		if not bsatn_type.is_empty():
 			raw_writer = _get_primitive_writer_from_bsatn_type(bsatn_type)
 			if not raw_writer.is_valid() and debug_mode:
 				push_warning("Array '%s' bsatn_type '%s' doesn't map to a primitive writer. Falling back to element type hint." % [prop_name, bsatn_type])
@@ -333,10 +328,13 @@ func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary
 	var prop_name: StringName = prop.name
 
 	if bsatn_type.is_empty():
-		_set_error("Array-like gd type '%' has empty 'bsatn_type' metadata. Inner component types cannot be determined." % prop_name)
+		_set_error("Array-like gd type '%s' has empty 'bsatn_type' metadata. Inner component types cannot be determined." % prop_name)
 		return
 
 	var result: RegExMatch = _native_arraylike_regex.search(bsatn_type)
+	if result == null:
+		_set_error("Array-like gd type '%s' does not match native array-like pattern from 'bsatn_type' metadata ('%s')" % [prop_name, bsatn_type])
+		return
 	var bsatn_struct_type: StringName = result.get_string("struct")
 	if bsatn_struct_type.is_empty():
 		_set_error("Cannot determine struct type for array-like gd type '%s' from 'bsatn_type' metadata ('%s')" % [prop_name, bsatn_type])
@@ -630,6 +628,32 @@ func _generate_default_type(bsatn_type_name: StringName) -> Variant:
 ## Assumes bsatn_type_str is already to_lower() if it's from metadata.
 func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, context_prop_name_for_prototype: StringName) -> bool:
 	var value_type: int = typeof(value)
+
+	# Vec<T> — recursive array serialization via prefix
+	if bsatn_type_str.begins_with(&"vec_"):
+		if value is not Array:
+			_set_error("Expected Array for BSATN type '%s', got %s" % [bsatn_type_str, type_string(value_type)])
+			return false
+		var element_type: StringName = StringName(String(bsatn_type_str).substr(4))
+		write_u32_le((value as Array).size())
+		if has_error(): return false
+		for i: int in (value as Array).size():
+			if not _write_value_from_bsatn_type(value[i], element_type, &"%s[%d]" % [context_prop_name_for_prototype, i]):
+				return false
+		return true
+
+	# Option<T> — recursive option serialization via prefix
+	if bsatn_type_str.begins_with(&"opt_"):
+		if value is not Option:
+			_set_error("Expected Option for BSATN type '%s', got %s" % [bsatn_type_str, type_string(value_type)])
+			return false
+		if (value as Option).is_none():
+			write_u8(1)
+			return not has_error()
+		write_u8(0)
+		if has_error(): return false
+		var inner_type: StringName = StringName(String(bsatn_type_str).substr(4))
+		return _write_value_from_bsatn_type((value as Option).unwrap(), inner_type, &"%s[inner]" % context_prop_name_for_prototype)
 
 	# 1. Try primitive writer (expects lowercase bsatn_type_str) if not an array
 	if value_type != TYPE_ARRAY:

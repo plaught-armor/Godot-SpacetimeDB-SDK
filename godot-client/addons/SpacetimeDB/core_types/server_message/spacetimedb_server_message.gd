@@ -39,5 +39,7 @@ static func get_script_path(msg_type: int) -> String:
 			return "res://addons/SpacetimeDB/core_types/server_message/one_off_query_response.gd"
 		Type.REDUCER_RESULT:
 			return "res://addons/SpacetimeDB/core_types/server_message/reducer_result.gd"
+		Type.PROCEDURE_RESULT:
+			return "res://addons/SpacetimeDB/core_types/server_message/procedure_result.gd"
 		_:
 			return ""

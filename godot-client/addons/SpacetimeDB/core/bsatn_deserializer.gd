@@ -424,7 +424,10 @@ func _read_array(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_str: String
 
 	# Resolve element reader from pre-bound bsatn_type_str
 	var element_reader: Callable
-	if element_class_name == &"Option":
+	if bsatn_type_str.begins_with(&"opt_") or bsatn_type_str.begins_with(&"vec_"):
+		# Prefixed type — use recursive type-driven deserialization for deep nesting
+		element_reader = _read_value_from_bsatn_type.bind(bsatn_type_str, prop_name)
+	elif element_class_name == &"Option":
 		if bsatn_type_str == &"":
 			_set_error("Array '%s' of Options is missing BSATN_TYPES entry for inner type T" % prop_name, start_pos)
 			return []
@@ -1079,6 +1082,44 @@ func _read_reducer_result_message(spb: StreamPeerBuffer) -> ReducerResultMessage
 	return resource
 
 
+## v2: ProcedureResult { status: ProcedureStatus, timestamp: Timestamp, total_host_execution_duration: TimeDuration, request_id: u32 }
+## ProcedureStatus: 0=Returned(bytes), 1=InternalError(string)
+func _read_procedure_result_message(spb: StreamPeerBuffer) -> ProcedureResultData:
+	var resource := ProcedureResultData.new()
+
+	var status_tag: int = read_u8(spb)
+	if has_error():
+		return null
+	resource.status_tag = status_tag
+
+	match status_tag:
+		0: # Returned(bytes)
+			resource.return_bytes = read_vec_u8(spb)
+			if has_error():
+				return null
+		1: # InternalError(string)
+			resource.error_message = read_string_with_u32_len(spb)
+			if has_error():
+				return null
+		_:
+			_set_error("Unknown ProcedureStatus tag: %d" % status_tag, spb.get_position() - 1)
+			return null
+
+	resource.timestamp = read_timestamp(spb)
+	if has_error():
+		return null
+
+	resource.duration = read_timestamp(spb) # TimeDuration is also i64 micros
+	if has_error():
+		return null
+
+	resource.request_id = read_u32_le(spb)
+	if has_error():
+		return null
+
+	return resource
+
+
 func _read_generic_server_message(msg_type: int, script_path: String, spb: StreamPeerBuffer) -> SpacetimeDBServerMessage:
 	if not ResourceLoader.exists(script_path):
 		_set_error("Script not found for message type 0x%02X: %s" % [msg_type, script_path], 1)
@@ -1130,7 +1171,7 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> SpacetimeDBServerMessa
 		SpacetimeDBServerMessage.REDUCER_RESULT:
 			result = _read_reducer_result_message(spb)
 		SpacetimeDBServerMessage.PROCEDURE_RESULT:
-			result = _read_generic_server_message(msg_type, script_path, spb)
+			result = _read_procedure_result_message(spb)
 		_:
 			_set_error("Unknown server message type: 0x%02X" % msg_type, start_pos)
 			return null

@@ -281,28 +281,97 @@ static func parse_schema(schema: Dictionary, module_name: String) -> SpacetimePa
 			reducer_data["is_scheduled"] = true
 		parsed_reducers_list.append(reducer_data)
 
-	for view_dict :Dictionary in misc_exports:
-		var view : Dictionary = view_dict.get("View", {})
+	var parsed_procedures_list: Array[Dictionary] = []
+	for export_dict: Dictionary in misc_exports:
+		# --- Procedure exports ---
+		var proc: Dictionary = export_dict.get("Procedure", {})
+		if not proc.is_empty():
+			var proc_name: String = proc.get("name", "")
+			if proc_name.is_empty():
+				SpacetimePlugin.print_err("Procedure found with no name: %s" % [proc])
+				continue
+			SpacetimePlugin.print_log("Parsing procedure: %s" % proc_name)
+			var proc_data: Dictionary = {"name": proc_name}
+
+			# Parse params (same as reducer params)
+			var raw_params = proc.get("params", {}).get("elements", [])
+			var proc_params = []
+			for raw_param in raw_params:
+				var data = {"name": raw_param.get("name", {}).get("some", null)}
+				var type = _parse_field_type(raw_param.get("algebraic_type", {}), data, schema_types_raw)
+				data["type"] = type
+
+				var type_idx = 0
+				var type_found = false
+				if type and not (GDNATIVE_PRIMITIVE_TYPES.has(type) or DEFAULT_TYPE_MAP.has(type)):
+					for pt in parsed_types_list:
+						if pt.name == type:
+							type_found = true
+							break
+						type_idx += 1
+				if type_found:
+					data["type_idx"] = type_idx
+				proc_params.append(data)
+			proc_data["params"] = proc_params
+
+			# Parse return type
+			var ret_data: Dictionary = {}
+			var ret_type = _parse_field_type(proc.get("return_type", {}), ret_data, schema_types_raw)
+			proc_data["return_type"] = ret_type
+			proc_data["return_data"] = ret_data
+
+			# Resolve return type_idx for BSATN type lookup
+			if ret_type and not (GDNATIVE_PRIMITIVE_TYPES.has(ret_type) or DEFAULT_TYPE_MAP.has(ret_type)):
+				var ret_type_idx = 0
+				for pt in parsed_types_list:
+					if pt.name == ret_type:
+						proc_data["return_type_idx"] = ret_type_idx
+						break
+					ret_type_idx += 1
+
+			parsed_procedures_list.append(proc_data)
+			continue
+
+		# --- View exports ---
+		var view: Dictionary = export_dict.get("View", {})
 		if view.is_empty():
 			continue
-		var name :String = view["name"]
-		var return_type_dict = view["return_type"]
-		var type_index:int
-		var return_type:Dictionary
-		SpacetimePlugin.print_log("parsing return type for view: %s"% name)
+		var name: String = view.get("name", "")
+		if name.is_empty():
+			SpacetimePlugin.print_err("View found with no name: %s" % [view])
+			continue
+		var return_type_dict: Dictionary = view.get("return_type", {})
+		if return_type_dict.is_empty():
+			SpacetimePlugin.print_err("View '%s' has no return_type" % name)
+			continue
+		var type_index: int = -1
+		var return_type: Dictionary
+		SpacetimePlugin.print_log("parsing return type for view: %s" % name)
 		if return_type_dict.get("Array", {}).is_empty():
-			if not return_type_dict.get("Sum",{}).is_empty():
-				if return_type_dict.get("Sum").get("variants").size() == 2:
-					var option = return_type_dict.get("Sum").get("variants")
-					if not option[0].get("name",{}).is_empty():
-						if option[0].get("name").get("some") == "some":
-							type_index = int(option[0].get("algebraic_type").get("Ref"))
-							return_type = parsed_types_list[type_index]
+			if not return_type_dict.get("Sum", {}).is_empty():
+				var variants: Array = return_type_dict.get("Sum", {}).get("variants", [])
+				if variants.size() == 2:
+					if variants[0].get("name", {}).get("some", "") == "some":
+						var ref_val = variants[0].get("algebraic_type", {}).get("Ref", null)
+						if ref_val != null:
+							type_index = int(ref_val)
+							if type_index >= 0 and type_index < parsed_types_list.size():
+								return_type = parsed_types_list[type_index]
+							else:
+								SpacetimePlugin.print_err("View '%s': Ref index %d out of bounds (types size %d)" % [name, type_index, parsed_types_list.size()])
+								continue
 			else:
 				SpacetimePlugin.print_err("view return type not yet supported in the parser: %s" % [return_type_dict])
 				continue
 		else:
-			type_index = int(return_type_dict["Array"]["Ref"])
+			var ref_val = return_type_dict.get("Array", {}).get("Ref", null)
+			if ref_val == null:
+				SpacetimePlugin.print_err("View '%s': Array return type has no Ref" % name)
+				continue
+			type_index = int(ref_val)
+			if type_index < 0 or type_index >= parsed_types_list.size():
+				SpacetimePlugin.print_err("View '%s': Ref index %d out of bounds (types size %d)" % [name, type_index, parsed_types_list.size()])
+				continue
 			return_type = parsed_types_list[type_index]
 		if return_type.is_empty():
 			SpacetimePlugin.print_err("view return type not found: %s" % [return_type_dict])
@@ -352,6 +421,7 @@ static func parse_schema(schema: Dictionary, module_name: String) -> SpacetimePa
 	SpacetimePlugin.print_log("Schema parser finished")
 	parsed_schema.types = parsed_types_list
 	parsed_schema.reducers = parsed_reducers_list
+	parsed_schema.procedures = parsed_procedures_list
 	parsed_schema.tables = parsed_tables_list
 	parsed_schema.type_map = type_map
 	parsed_schema.meta_type_map = meta_type_map
@@ -406,8 +476,15 @@ static func _validate_gd_native(type_name: String, type_data) -> bool:
 				return false
 
 	if type_data.has("gd_dictlike"):
-		# TODO: Validate Plane type
-		pass
+		if type_name == "Plane":
+			if not type_data.has("struct") or type_data.struct.size() != 4:
+				SpacetimePlugin.print_err("Plane type expects 4 struct elements (normal.x, normal.y, normal.z, d), got %d" % (type_data.get("struct", []).size()))
+				return false
+			for element in type_data.struct:
+				var primitive_type = GDNATIVE_PRIMITIVE_TYPES.get(element.type, null)
+				if primitive_type != "float":
+					SpacetimePlugin.print_err("Plane element '%s' must be a float type, got '%s'" % [element.name, element.type])
+					return false
 
 	return true
 
@@ -462,7 +539,10 @@ static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_t
 		field_type = field_type.Array
 		return _parse_field_type(field_type, data, schema_types)
 	elif field_type.has("Product"):
-		return field_type.Product.get("elements", [])[0].get('name', {}).get('some', null)
+		var elements: Array = field_type.Product.get("elements", [])
+		if elements.is_empty():
+			return ""
+		return elements[0].get('name', {}).get('some', null)
 	elif field_type.has("Sum"):
 		if _is_sum_option(field_type.Sum):
 			var nested_type = data.get("nested_type", [])
@@ -475,8 +555,15 @@ static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_t
 		field_type = field_type.Sum.variants[0].get('algebraic_type', {})
 		return _parse_field_type(field_type, data, schema_types)
 	elif field_type.has("Ref"):
-		return schema_types[field_type.Ref].get("name", {}).get("name", null)
+		var ref_idx: int = int(field_type.Ref)
+		if ref_idx < 0 or ref_idx >= schema_types.size():
+			SpacetimePlugin.print_err("Invalid schema: Ref index %d out of bounds (typespace size %d)" % [ref_idx, schema_types.size()])
+			return ""
+		return schema_types[ref_idx].get("name", {}).get("name", null)
 	else:
+		if field_type.is_empty():
+			SpacetimePlugin.print_err("Invalid schema: Empty algebraic_type encountered")
+			return ""
 		return field_type.keys()[0]
 
 # Recursively parse a sum type
@@ -509,6 +596,13 @@ static func _parse_sum_type(variant_type: Dictionary, data: Dictionary, schema_t
 		variant_type = variant_type.Sum.variants[0].get('algebraic_type', {})
 		return _parse_sum_type(variant_type, data, schema_types)
 	elif variant_type.has("Ref"):
-		return schema_types[variant_type.Ref].get("name", {}).get("name", null)
+		var ref_idx: int = int(variant_type.Ref)
+		if ref_idx < 0 or ref_idx >= schema_types.size():
+			SpacetimePlugin.print_err("Invalid schema: Ref index %d out of bounds (typespace size %d)" % [ref_idx, schema_types.size()])
+			return ""
+		return schema_types[ref_idx].get("name", {}).get("name", null)
 	else:
+		if variant_type.is_empty():
+			SpacetimePlugin.print_err("Invalid schema: Empty algebraic_type in sum variant")
+			return ""
 		return variant_type.keys()[0]

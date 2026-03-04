@@ -1,5 +1,5 @@
 class_name SpacetimeDBSubscription
-extends Node
+extends RefCounted
 
 signal applied
 signal end
@@ -9,6 +9,7 @@ signal _ended_or_timeout(timeout: bool)
 var query_id: int = -1
 var queries: PackedStringArray
 var error: Error = OK
+var error_message: String = ""
 var active: bool:
 	get:
 		return _active
@@ -18,6 +19,8 @@ var ended: bool:
 var _client: SpacetimeDBClient
 var _active: bool = false
 var _ended: bool = false
+var _apply_timer: SceneTreeTimer
+var _end_timer: SceneTreeTimer
 
 
 static func create(
@@ -34,14 +37,23 @@ static func create(
 		func():
 			subscription._active = true
 			subscription._ended = false
-
+			if subscription._apply_timer:
+				subscription._apply_timer.time_left = 0
+				subscription._apply_timer = null
 			subscription._applied_or_timeout.emit(false)
 	)
 	subscription.end.connect(
 		func():
 			subscription._active = false
 			subscription._ended = true
-
+			# Cancel apply timer and unblock wait_for_applied() if still waiting
+			if subscription._apply_timer:
+				subscription._apply_timer.time_left = 0
+				subscription._apply_timer = null
+			subscription._applied_or_timeout.emit(false)
+			if subscription._end_timer:
+				subscription._end_timer.time_left = 0
+				subscription._end_timer = null
 			subscription._ended_or_timeout.emit(false)
 	)
 	return subscription
@@ -60,11 +72,15 @@ func wait_for_applied(timeout_sec: float = 5) -> Error:
 	if _ended:
 		return ERR_DOES_NOT_EXIST
 
-	get_tree().create_timer(timeout_sec).timeout.connect(_on_applied_timeout)
+	_apply_timer = _client.get_tree().create_timer(timeout_sec)
+	_apply_timer.timeout.connect(_on_applied_timeout)
 
 	var is_timeout: bool = await _applied_or_timeout
+	_apply_timer = null
 	if is_timeout:
 		return ERR_TIMEOUT
+	if _ended and not _active:
+		return ERR_DOES_NOT_EXIST
 	return OK
 
 
@@ -72,9 +88,11 @@ func wait_for_end(timeout_sec: float = 5) -> Error:
 	if _ended:
 		return OK
 
-	get_tree().create_timer(timeout_sec).timeout.connect(_on_ended_timeout)
+	_end_timer = _client.get_tree().create_timer(timeout_sec)
+	_end_timer.timeout.connect(_on_ended_timeout)
 
 	var is_timeout: bool = await _ended_or_timeout
+	_end_timer = null
 	if is_timeout:
 		return ERR_TIMEOUT
 	return OK
@@ -88,8 +106,10 @@ func unsubscribe() -> Error:
 
 
 func _on_applied_timeout() -> void:
+	_apply_timer = null
 	_applied_or_timeout.emit(true)
 
 
 func _on_ended_timeout() -> void:
+	_end_timer = null
 	_ended_or_timeout.emit(true)

@@ -7,7 +7,7 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 	var gzip_stream := StreamPeerGZIP.new()
 	if gzip_stream.start_decompression() != OK:
 		printerr("DataDecompressor Error: Failed to start Gzip decompression.")
-		return []
+		return PackedByteArray()
 
 	var last_slice_position: int = 0
 	var decompressed_data: PackedByteArray = PackedByteArray()
@@ -31,5 +31,5 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 			break
 		else:
 			printerr("DataDecompressor Error: Failed while getting partial data.")
-			return []
+			return PackedByteArray()
 	return decompressed_data

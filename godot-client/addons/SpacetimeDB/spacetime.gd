@@ -190,10 +190,11 @@ func _on_generate_schema():
 
 	if not ProjectSettings.has_setting(setting_name):
 		add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
-	while get_editor_interface().get_resource_filesystem().is_scanning():
-		print_log("Waiting for auto scan to finish")
-		continue
-	get_editor_interface().get_resource_filesystem().scan()
+	var filesystem := get_editor_interface().get_resource_filesystem()
+	if filesystem.is_scanning():
+		print_log("Waiting for existing filesystem scan to finish...")
+		await filesystem.sources_changed
+	filesystem.scan()
 	print_log("Code generation complete!")
 
 

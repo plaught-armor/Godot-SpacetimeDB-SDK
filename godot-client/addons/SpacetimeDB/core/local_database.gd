@@ -9,6 +9,8 @@ var _insert_listeners_by_table: Dictionary[StringName, Array] = {}
 var _update_listeners_by_table: Dictionary[StringName, Array] = {}
 var _delete_listeners_by_table: Dictionary[StringName, Array] = {}
 var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = {}
+var _pk_less_tables: Dictionary[StringName, Array] = {}
+var _pk_less_property_cache: Dictionary[StringName, Array] = {}
 
 # #6: Signals use StringName
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -119,6 +121,36 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 	return &""
 
 
+# --- PK-less Row Helpers ---
+func _get_row_properties(table_name_lower: StringName) -> Array:
+	if _pk_less_property_cache.has(table_name_lower):
+		return _pk_less_property_cache[table_name_lower]
+	var schema_key: StringName = table_name_lower.replace("_", "")
+	if not _schema.types.has(schema_key):
+		return []
+	var schema := _schema.get_type(schema_key)
+	var props: Array = []
+	for prop: Dictionary in schema.get_script_property_list():
+		if prop.usage & PROPERTY_USAGE_STORAGE:
+			props.append(prop.name)
+	_pk_less_property_cache[table_name_lower] = props
+	return props
+
+
+func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array) -> bool:
+	for prop_name: StringName in props:
+		if a.get(prop_name) != b.get(prop_name):
+			return false
+	return true
+
+
+func _row_hash(row: _ModuleTableType, props: Array) -> int:
+	var h: int = 0
+	for prop_name: StringName in props:
+		h = h * 31 + hash(row.get(prop_name))
+	return h
+
+
 # --- Applying Updates ---
 func apply_database_subscription_applied(db_update: SubscribeAppliedMessage) -> void:
 	if not db_update:
@@ -156,24 +188,63 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 	var had_any_change: bool = false
 
 	if pk_field == &"":
-		# No PK — emit inserts/deletes as-is without dedup
+		# PK-less table: array-based storage with property-level matching for deletes
+		if not _pk_less_tables.has(table_name_lower):
+			_pk_less_tables[table_name_lower] = []
+		var rows_array: Array = _pk_less_tables[table_name_lower]
+		var props: Array = _get_row_properties(table_name_lower)
+
 		for inserted_row: _ModuleTableType in table_update.inserts:
+			rows_array.append(inserted_row)
 			had_any_change = true
 			if has_insert_listeners:
 				for listener: Callable in insert_listeners:
 					listener.call(inserted_row)
 			row_inserted.emit(table_name_lower, inserted_row)
-		for deleted_row: _ModuleTableType in table_update.deletes:
-			had_any_change = true
-			if has_delete_listeners:
-				for listener: Callable in delete_listeners:
-					listener.call(deleted_row)
-			row_deleted.emit(table_name_lower, deleted_row)
+
+		# Build hash-based multiset of rows to delete: O(m*p) instead of O(n*m*p) scanning
+		if not table_update.deletes.is_empty():
+			var delete_set: Dictionary = {} # hash -> Array of [row, count]
+			for deleted_row: _ModuleTableType in table_update.deletes:
+				var h: int = _row_hash(deleted_row, props)
+				if not delete_set.has(h):
+					delete_set[h] = []
+				var bucket: Array = delete_set[h]
+				var matched: bool = false
+				for entry: Array in bucket:
+					if _rows_equal(entry[0], deleted_row, props):
+						entry[1] += 1
+						matched = true
+						break
+				if not matched:
+					bucket.append([deleted_row, 1])
+
+			# Single pass compact — avoids repeated remove_at() shifts
+			var write_idx: int = 0
+			for read_idx: int in range(rows_array.size()):
+				var row: _ModuleTableType = rows_array[read_idx]
+				var h: int = _row_hash(row, props)
+				var removed: bool = false
+				if delete_set.has(h):
+					for entry: Array in delete_set[h]:
+						if entry[1] > 0 and _rows_equal(row, entry[0], props):
+							entry[1] -= 1
+							removed = true
+							had_any_change = true
+							if has_delete_listeners:
+								for listener: Callable in delete_listeners:
+									listener.call(row)
+							row_deleted.emit(table_name_lower, row)
+							break
+				if not removed:
+					rows_array[write_idx] = row
+					write_idx += 1
+			rows_array.resize(write_idx)
+
 		if had_any_change:
 			for listener: Callable in tx_listeners:
 				listener.call()
-			if not tx_listeners.is_empty():
-				row_transactions_completed.emit(table_name_lower)
+			row_transactions_completed.emit(table_name_lower)
 		return
 
 	for inserted_row: _ModuleTableType in table_update.inserts:
@@ -212,8 +283,7 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 	if had_any_change:
 		for listener: Callable in tx_listeners:
 			listener.call()
-		if not tx_listeners.is_empty():
-			row_transactions_completed.emit(table_name_lower)
+		row_transactions_completed.emit(table_name_lower)
 
 
 
@@ -227,6 +297,10 @@ func get_row_by_pk(table_name: StringName, primary_key_value: Variant) -> _Modul
 
 func get_all_rows(table_name: StringName) -> Array[_ModuleTableType]:
 	var key: StringName = _normalize(table_name)
+	if _pk_less_tables.has(key):
+		var result: Array[_ModuleTableType] = []
+		result.assign(_pk_less_tables[key])
+		return result
 	if not _tables.has(key):
 		return []
 	var result: Array[_ModuleTableType] = []
@@ -235,6 +309,83 @@ func get_all_rows(table_name: StringName) -> Array[_ModuleTableType]:
 
 func count_all_rows(table_name: StringName) -> int:
 	var key: StringName = _normalize(table_name)
+	if _pk_less_tables.has(key):
+		return _pk_less_tables[key].size()
 	if not _tables.has(key):
 		return 0
 	return _tables[key].size()
+
+
+func find_where(table_name: StringName, predicate: Callable) -> Array[_ModuleTableType]:
+	var key: StringName = _normalize(table_name)
+	var result: Array[_ModuleTableType] = []
+	if _pk_less_tables.has(key):
+		for row: _ModuleTableType in _pk_less_tables[key]:
+			if predicate.call(row):
+				result.append(row)
+	elif _tables.has(key):
+		for row: _ModuleTableType in _tables[key].values():
+			if predicate.call(row):
+				result.append(row)
+	return result
+
+
+func first_where(table_name: StringName, predicate: Callable) -> _ModuleTableType:
+	var key: StringName = _normalize(table_name)
+	if _pk_less_tables.has(key):
+		for row: _ModuleTableType in _pk_less_tables[key]:
+			if predicate.call(row):
+				return row
+	elif _tables.has(key):
+		for row: _ModuleTableType in _tables[key].values():
+			if predicate.call(row):
+				return row
+	return null
+
+
+func find_by(table_name: StringName, field: StringName, value: Variant) -> Array[_ModuleTableType]:
+	var key: StringName = _normalize(table_name)
+	var result: Array[_ModuleTableType] = []
+	if _pk_less_tables.has(key):
+		for row: _ModuleTableType in _pk_less_tables[key]:
+			if row.get(field) == value:
+				result.append(row)
+	elif _tables.has(key):
+		for row: _ModuleTableType in _tables[key].values():
+			if row.get(field) == value:
+				result.append(row)
+	return result
+
+
+func first_by(table_name: StringName, field: StringName, value: Variant) -> _ModuleTableType:
+	var key: StringName = _normalize(table_name)
+	if _pk_less_tables.has(key):
+		for row: _ModuleTableType in _pk_less_tables[key]:
+			if row.get(field) == value:
+				return row
+	elif _tables.has(key):
+		for row: _ModuleTableType in _tables[key].values():
+			if row.get(field) == value:
+				return row
+	return null
+
+
+func count_where(table_name: StringName, predicate: Callable) -> int:
+	var key: StringName = _normalize(table_name)
+	var c: int = 0
+	if _pk_less_tables.has(key):
+		for row: _ModuleTableType in _pk_less_tables[key]:
+			if predicate.call(row):
+				c += 1
+	elif _tables.has(key):
+		for row: _ModuleTableType in _tables[key].values():
+			if predicate.call(row):
+				c += 1
+	return c
+
+
+func clear_all_tables() -> void:
+	for table_name: StringName in _tables:
+		_tables[table_name].clear()
+	for table_name: StringName in _pk_less_tables:
+		_pk_less_tables[table_name].clear()

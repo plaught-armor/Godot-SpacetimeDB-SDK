@@ -6,11 +6,29 @@ var identity: MainUserDataIdentityUniqueIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
-	set_meta("table_name", "user_data")
+	_table_name = &"user_data"
 	identity = MainUserDataIdentityUniqueIndex.new(p_local_db)
 
 func iter() -> Array[MainUserData]:
-	var rows: Array = super()
+	var rows: Array[_ModuleTableType] = super()
 	var typed_array: Array[MainUserData] = []
 	typed_array.assign(rows)
 	return typed_array
+
+func find_where(predicate: Callable) -> Array[MainUserData]:
+	var rows: Array = super(predicate)
+	var typed_array: Array[MainUserData] = []
+	typed_array.assign(rows)
+	return typed_array
+
+func first_where(predicate: Callable) -> MainUserData:
+	return super(predicate) as MainUserData
+
+func find_by(field: StringName, value: Variant) -> Array[MainUserData]:
+	var rows: Array = super(field, value)
+	var typed_array: Array[MainUserData] = []
+	typed_array.assign(rows)
+	return typed_array
+
+func first_by(field: StringName, value: Variant) -> MainUserData:
+	return super(field, value) as MainUserData

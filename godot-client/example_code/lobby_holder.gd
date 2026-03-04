@@ -28,10 +28,9 @@ func _on_user_deleted(user: MainUser) -> void:
 	user_leave.emit(user)
 
 func subscibe_on_lobby(lobby_to_sub: int) -> void:
-	var query := [
-		"SELECT * FROM user WHERE online == true AND lobby_id == " + str(lobby_to_sub),
-		"SELECT * FROM user_data WHERE lobby_id == " + str(lobby_to_sub),
-	]
-	var sub := SpacetimeDB.Main.subscribe(query)
+	var sub := SpacetimeDB.Main.subscribe([
+		SpacetimeDBQuery.table("user").where("online", true).where("lobby_id", lobby_to_sub).to_sql(),
+		SpacetimeDBQuery.table("user_data").where("lobby_id", lobby_to_sub).to_sql(),
+	])
 	if sub.error:
 		printerr("Failed to subscribe to lobby")
