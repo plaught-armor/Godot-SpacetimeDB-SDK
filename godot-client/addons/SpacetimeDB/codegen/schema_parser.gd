@@ -68,7 +68,7 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 	"__time_duration_micros__": "i64",
 }
 
-static func parse_schema(schema: Dictionary, module_name: String) -> SpacetimeParsedSchema:
+static func parse_schema(schema: Dictionary, module_name: String, project_enums: Dictionary = {}) -> SpacetimeParsedSchema:
 	var type_map: Dictionary[String, String] = DEFAULT_TYPE_MAP.duplicate() as Dictionary[String, String]
 	type_map.merge(GDNATIVE_PRIMITIVE_TYPES); type_map.merge(GDNATIVE_ARRAYLIKE_TYPES); type_map.merge(GDNATIVE_DICTLIKE_TYPES)
 	var meta_type_map = DEFAULT_META_TYPE_MAP.duplicate()
@@ -136,7 +136,24 @@ static func parse_schema(schema: Dictionary, module_name: String) -> SpacetimePa
 
 			if not type_data.get("is_sum_type"):
 				meta_type_map[type_name] = "u8"
-				type_map[type_name] = "%sTypes.%s" % [module_name.to_pascal_case(), type_name.to_pascal_case()]
+				var pascal_name: String = type_name.to_pascal_case()
+				if project_enums.has(pascal_name):
+					var project_enum: Dictionary = project_enums[pascal_name]
+					var schema_variants: Array[String] = []
+					for v in parsed_variants:
+						schema_variants.append(v.get("name", "").to_snake_case())
+					var project_variants: Array[String] = []
+					for pv in project_enum["variants"]:
+						project_variants.append(pv.to_snake_case())
+					if schema_variants == project_variants:
+						type_map[type_name] = project_enum["path"]
+						type_data["project_enum"] = project_enum["path"]
+						SpacetimePlugin.print_log("Enum '%s' matched project enum '%s'" % [pascal_name, project_enum["path"]])
+					else:
+						type_map[type_name] = "%sTypes.%s" % [module_name.to_pascal_case(), pascal_name]
+						SpacetimePlugin.print_log("Enum '%s' found in project as '%s' but variants differ, generating standalone" % [pascal_name, project_enum["path"]])
+				else:
+					type_map[type_name] = "%sTypes.%s" % [module_name.to_pascal_case(), pascal_name]
 			else:
 				type_map[type_name] = module_name.to_pascal_case() + type_name.to_pascal_case()
 				meta_type_map[type_name] = module_name.to_pascal_case() + type_name.to_pascal_case()
