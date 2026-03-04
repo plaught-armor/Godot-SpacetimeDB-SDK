@@ -13,7 +13,7 @@ func _init(p_module_name: String, p_schema_path: String = "res://spacetime_bindi
 	# Load table row schemas and spacetime types
 	_load_types("%s/types" % p_schema_path, p_module_name.to_snake_case())
 	# Load core types if they are defined as Resources with scripts
-	_load_types("res://addons/SpacetimeDB/core_types/**")
+	_load_types(SpacetimePlugin.ADDON_PATH + "/core_types/**")
 
 
 func get_type(type_name: StringName) -> GDScript:

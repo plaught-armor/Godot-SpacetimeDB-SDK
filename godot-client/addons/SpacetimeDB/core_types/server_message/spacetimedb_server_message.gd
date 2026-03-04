@@ -23,23 +23,25 @@ const REDUCER_RESULT: int = Type.REDUCER_RESULT
 const PROCEDURE_RESULT: int = Type.PROCEDURE_RESULT
 
 
+const _MSG_PATH := SpacetimePlugin.ADDON_PATH + "/core_types/server_message/"
+
 static func get_script_path(msg_type: int) -> String:
 	match msg_type:
 		Type.INITIAL_CONNECTION:
-			return "res://addons/SpacetimeDB/core_types/server_message/initial_connection.gd"
+			return _MSG_PATH + "initial_connection.gd"
 		Type.SUBSCRIBE_APPLIED:
-			return "res://addons/SpacetimeDB/core_types/server_message/subscribe_applied.gd"
+			return _MSG_PATH + "subscribe_applied.gd"
 		Type.UNSUBSCRIBE_APPLIED:
-			return "res://addons/SpacetimeDB/core_types/server_message/unsubscribe_applied.gd"
+			return _MSG_PATH + "unsubscribe_applied.gd"
 		Type.SUBSCRIPTION_ERROR:
-			return "res://addons/SpacetimeDB/core_types/server_message/subscription_error.gd"
+			return _MSG_PATH + "subscription_error.gd"
 		Type.TRANSACTION_UPDATE:
-			return "res://addons/SpacetimeDB/core_types/server_message/transaction_update.gd"
+			return _MSG_PATH + "transaction_update.gd"
 		Type.ONE_OFF_QUERY_RESPONSE:
-			return "res://addons/SpacetimeDB/core_types/server_message/one_off_query_response.gd"
+			return _MSG_PATH + "one_off_query_response.gd"
 		Type.REDUCER_RESULT:
-			return "res://addons/SpacetimeDB/core_types/server_message/reducer_result.gd"
+			return _MSG_PATH + "reducer_result.gd"
 		Type.PROCEDURE_RESULT:
-			return "res://addons/SpacetimeDB/core_types/server_message/procedure_result.gd"
+			return _MSG_PATH + "procedure_result.gd"
 		_:
 			return ""

@@ -1,7 +1,7 @@
 @tool
 class_name SpacetimePluginUI extends Control
 
-const ERROR_LOG_ICON := "res://addons/SpacetimeDB/ui/icons/Error.svg"
+const ERROR_LOG_ICON := SpacetimePlugin.ADDON_PATH + "/ui/icons/Error.svg"
 
 signal plugin_config_changed()
 signal check_uri()

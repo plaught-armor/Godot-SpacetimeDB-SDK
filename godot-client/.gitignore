@@ -2,4 +2,5 @@
 .godot/
 /android/
 spacetime_bindings/codegen_debug
+addons/SpacetimeDB/plugin_config.tres
 desktop.ini

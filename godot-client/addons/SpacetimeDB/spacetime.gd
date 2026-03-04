@@ -2,16 +2,17 @@
 class_name SpacetimePlugin
 extends EditorPlugin
 
+const ADDON_PATH := "res://addons/SpacetimeDB"
 const LEGACY_DATA_PATH := "res://spacetime_data"
 const BINDINGS_PATH := "res://spacetime_bindings"
 const BINDINGS_SCHEMA_PATH := BINDINGS_PATH + "/schema"
 const AUTOLOAD_NAME := "SpacetimeDB"
 const AUTOLOAD_FILE_NAME := "spacetime_autoload.gd"
 const AUTOLOAD_PATH := BINDINGS_SCHEMA_PATH + "/" + AUTOLOAD_FILE_NAME
-const SAVE_PATH := BINDINGS_PATH + "/plugin_config.tres"
-const CONFIG_PATH := "res://addons/SpacetimeDB/plugin.cfg"
+const SAVE_PATH := ADDON_PATH + "/plugin_config.tres"
+const CONFIG_PATH := ADDON_PATH + "/plugin.cfg"
 const UI_PANEL_NAME := "SpacetimeDB"
-const UI_PATH := "res://addons/SpacetimeDB/ui/ui.tscn"
+const UI_PATH := ADDON_PATH + "/ui/ui.tscn"
 
 static var instance: SpacetimePlugin
 
@@ -108,9 +109,6 @@ func load_codegen_data() -> void:
 
 
 func save_codegen_data() -> void:
-	if not FileAccess.file_exists(BINDINGS_PATH):
-		DirAccess.make_dir_absolute(BINDINGS_PATH)
-		get_editor_interface().get_resource_filesystem().scan()
 	if not plugin_config:
 		ui.add_err("Somehow the plugin_config variable is empty")
 		plugin_config = SpacetimeDBPluginConfig.new()
