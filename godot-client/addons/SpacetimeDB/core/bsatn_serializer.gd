@@ -56,7 +56,7 @@ func clear_error() -> void:
 # --- Primitive Value Writers ---
 # These directly write basic types to the internal StreamPeerBuffer.
 func write_i8(v: int) -> void:
-	#print("write_i8(%s)" % v)
+
 	if v < -128 or v > 127:
 		_set_error("Value %d out of range for i8" % v)
 		v = 0
@@ -64,7 +64,7 @@ func write_i8(v: int) -> void:
 
 
 func write_i16_le(v: int) -> void:
-	#print("write_i16_le(%s)" % v)
+
 	if v < -32768 or v > 32767:
 		_set_error("Value %d out of range for i16" % v)
 		v = 0
@@ -72,7 +72,6 @@ func write_i16_le(v: int) -> void:
 
 
 func write_i32_le(v: int) -> void:
-	#print("write_i32_le(%s)" % v)
 	if v < -2147483648 or v > 2147483647:
 		_set_error("Value %d out of range for i32" % v)
 		v = 0
@@ -80,12 +79,10 @@ func write_i32_le(v: int) -> void:
 
 
 func write_i64_le(v: int) -> void:
-	#print("write_i64_le(%s)" % v)
 	_spb.put_u64(v) # put_u64 handles negative i64 correctly via two's complement
 
 
 func write_u8(v: int) -> void:
-	#print("write_u8(%s)" % v)
 	if v < 0 or v > 255:
 		_set_error("Value %d out of range for u8" % v)
 		v = 0
@@ -93,7 +90,6 @@ func write_u8(v: int) -> void:
 
 
 func write_u16_le(v: int) -> void:
-	#print("write_u16_le(%s)" % v)
 	if v < 0 or v > 65535:
 		_set_error("Value %d out of range for u16" % v)
 		v = 0
@@ -101,7 +97,6 @@ func write_u16_le(v: int) -> void:
 
 
 func write_u32_le(v: int) -> void:
-	#print("write_u32_le(%s)" % v)
 	if v < 0 or v > 4294967295:
 		_set_error("Value %d out of range for u32" % v)
 		v = 0
@@ -109,7 +104,6 @@ func write_u32_le(v: int) -> void:
 
 
 func write_u64_le(v: int) -> void:
-	#print("write_u64_le(%s)" % v)
 	if v < 0:
 		_set_error("Value %d out of range for u64" % v)
 		v = 0
@@ -117,12 +111,10 @@ func write_u64_le(v: int) -> void:
 
 
 func write_f32_le(v: float) -> void:
-	#print("write_f32_le(%s)" % v)
 	_spb.put_float(v)
 
 
 func write_f64_le(v: float) -> void:
-	#print("write_f64_le(%s)" % v)
 	_spb.put_double(v)
 
 
@@ -131,12 +123,10 @@ func write_u128(v: PackedByteArray) -> void:
 
 
 func write_bool(v: bool) -> void:
-	#print("write_bool(%s)" % v)
 	_spb.put_u8(1 if v else 0)
 
 
 func write_bytes(v: PackedByteArray) -> void:
-	#print("write_bytes(%s)" % v)
 	if v == null:
 		v = PackedByteArray() # Avoid error on null
 	var result: Error = _spb.put_data(v)
@@ -145,7 +135,6 @@ func write_bytes(v: PackedByteArray) -> void:
 
 
 func write_string_with_u32_len(v: String) -> void:
-	#print("write_string_with_u32_len(%s)" % v)
 	if v == null:
 		v = ""
 	var str_bytes: PackedByteArray = v.to_utf8_buffer()
@@ -163,13 +152,11 @@ func write_connection_id(v: PackedByteArray) -> void:
 
 
 func write_timestamp(v: int) -> void:
-	#print("write_timestamp(%s)" % v)
 	write_i64_le(v) # Timestamps are typically i64
 
 
 # Writes a PackedByteArray prefixed with its u32 length (Vec<u8> format)
 func write_vec_u8(v: PackedByteArray) -> void:
-	#print("write_vec_u8(%s)" % v)
 	if v == null:
 		v = []
 	write_u32_le(v.size())
@@ -180,7 +167,6 @@ func write_vec_u8(v: PackedByteArray) -> void:
 # --- Special Writers ---
 ## Writes a Rust sumtype enum
 func write_rust_enum(rust_enum: RustEnum) -> void:
-	#print("write_rust_enum(%s)" % rust_enum)
 	write_u8(rust_enum.value)
 	var enum_options: Array = rust_enum.get_script().get_script_constant_map().get(&"ENUM_OPTIONS", [])
 	var sub_class: StringName = enum_options[rust_enum.value] if rust_enum.value < enum_options.size() else &""
@@ -237,7 +223,6 @@ func write_option(option_value: Option, bsatn_type: StringName, prop: Dictionary
 
 ## Writes an array type
 func write_array(v: Array[Variant], bsatn_type: StringName, prop: Dictionary) -> void:
-	#print("write_array(%s)" % str(v))
 	var prop_name: StringName = prop.name
 
 	# 1. Write array length (u32)
@@ -324,7 +309,6 @@ func write_array(v: Array[Variant], bsatn_type: StringName, prop: Dictionary) ->
 
 ## Writes a native array-like value
 func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary) -> void:
-	#print("write_native_arraylike(%s)" % v)
 	var prop_name: StringName = prop.name
 
 	if bsatn_type.is_empty():
@@ -572,12 +556,6 @@ func _get_writer_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 					# Writer remains invalid for unsupported types
 					pass
 
-	# --- Debug Print (Optional) ---
-	if debug_mode:
-		var type_name = prop.class_name if prop.class_name != &"" else (type_string(prop.type) if prop.type != TYPE_MAX else "Unknown")
-		print("DEBUG: _get_writer_callable: For '%s' of type '%s', returning: %s" % [prop.name, type_name, writer_callable.get_method() if writer_callable.is_valid() else "INVALID"])
-	# --- End Debug ---
-
 	return writer_callable
 
 
@@ -693,9 +671,6 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 
 
 func _create_serialization_plan(script: Script) -> Array:
-	if debug_mode:
-		print("DEBUG: Creating serialization plan for script: %s" % script.resource_path)
-
 	var bsatn_types: Dictionary = script.get_script_constant_map().get("BSATN_TYPES", { })
 	var plan = []
 	var properties: Array = script.get_script_property_list()
@@ -771,9 +746,6 @@ func _serialize_arguments(args_array: Array, bsatn_types: Array) -> PackedByteAr
 	for i: int in args_array.size():
 		var arg_value: Variant = args_array[i]
 		var bsatn_type: StringName = bsatn_types[i] if i < bsatn_types.size() else &""
-
-		if debug_mode:
-			print("DEBUG: _serialize_arguments: arg[%d] '%s' → bsatn '%s'" % [i, _get_value_class_name(arg_value), bsatn_type])
 
 		if not _write_argument_value(arg_value, bsatn_type, "arg[%d]" % i):
 			_spb = original_main_spb

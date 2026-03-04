@@ -19,6 +19,6 @@ var reconnect_max_delay: float = 30.0      # cap
 var reconnect_backoff_multiplier: float = 2.0
 var reconnect_jitter_fraction: float = 0.5 # 0.0–1.0
 
-func set_all_buffer_size(size: int):
+func set_all_buffer_size(size: int) -> void:
 	inbound_buffer_size = size
 	outbound_buffer_size = size

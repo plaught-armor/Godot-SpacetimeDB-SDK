@@ -190,7 +190,7 @@ func send_bytes(bytes: PackedByteArray) -> Error:
 	return err
 
 
-func connect_to_database(base_url: String, database_name: String, connection_id: String) -> void: # Added connection_id
+func connect_to_database(base_url: String, database_name: String, connection_id: String) -> void:
 	if _is_connected:
 		_print_log("SpacetimeDBConnection: Already connected.")
 		return
@@ -281,5 +281,4 @@ func _handle_game_closing() -> void:
 		_print_log("SpacetimeDBConnection: WS closing")
 		await get_tree().physics_frame
 	get_tree().auto_accept_quit = true
-	print("game closed")
 	get_tree().quit()

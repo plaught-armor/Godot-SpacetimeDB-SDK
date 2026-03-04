@@ -14,8 +14,7 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 	var chunk_size: int = 4096
 
 	while true:
-		var input_result = gzip_stream.put_partial_data(compressed_bytes.slice(last_slice_position, last_slice_position+ chunk_size-1))
-		#print("data decompressor input size: %s with last slice pos %s with arr size %s" % [input_result[1], last_slice_position, compressed_bytes.size()])
+		var input_result = gzip_stream.put_partial_data(compressed_bytes.slice(last_slice_position, last_slice_position + chunk_size - 1))
 		if input_result[0] != OK:
 			printerr("DataDecompressor Error: Failed to input partial data: " + error_string(input_result[0]))
 			break

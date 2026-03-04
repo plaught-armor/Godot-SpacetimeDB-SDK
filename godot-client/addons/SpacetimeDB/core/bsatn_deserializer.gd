@@ -671,9 +671,6 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 
 
 func _create_deserialization_plan(script: Script) -> Array:
-	if debug_mode:
-		print("DEBUG: Creating deserialization plan for script: %s" % script.resource_path)
-
 	var bsatn_types: Dictionary = script.get_script_constant_map().get("BSATN_TYPES", { })
 	var plan: Array[Dictionary] = []
 	var properties: Array[Dictionary] = script.get_script_property_list()

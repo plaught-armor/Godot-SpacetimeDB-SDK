@@ -303,21 +303,17 @@ func call_reducer(reducer_name: String, args: Array = [], types: Array = []) -> 
 		printerr("SpacetimeDBClient: Failed to serialize CallReducer message: %s" % _serializer.get_last_error())
 		return SpacetimeDBReducerCall.fail(ERR_PARSE_ERROR)
 
-	if debug_mode:
-		print("DEBUG: call_reducer: Calling reducer '%s' with request id '%d' and message bytes: %s (argument bytes: %s)" % [reducer_name, request_id, message_bytes, args_bytes])
-
-	# Access the internal _websocket peer directly (might need adjustment if _connection API changes)
-	if _connection and _connection._websocket: # Basic check
+	if _connection and _connection._websocket:
 		var err: Error = _connection.send_bytes(message_bytes)
 		if err != OK:
-			print("SpacetimeDBClient: Error sending CallReducer JSON message: ", err)
+			printerr("SpacetimeDBClient: Error sending CallReducer message: ", err)
 			return SpacetimeDBReducerCall.fail(err)
 
 		var handle: SpacetimeDBReducerCall = SpacetimeDBReducerCall.create(self, request_id)
 		_pending_reducer_calls[request_id] = handle
 		return handle
 
-	print("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
+	printerr("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
 	return SpacetimeDBReducerCall.fail(ERR_CONNECTION_ERROR)
 
 
@@ -344,85 +340,58 @@ func call_procedure(procedure_name: String, args: Array = [], types: Array = [],
 		printerr("SpacetimeDBClient: Failed to serialize CallProcedure message: %s" % _serializer.get_last_error())
 		return SpacetimeDBProcedureCall.fail(ERR_PARSE_ERROR)
 
-	if debug_mode:
-		print("DEBUG: call_procedure: Calling procedure '%s' with request id '%d'" % [procedure_name, request_id])
-
 	if _connection and _connection._websocket:
 		var err: Error = _connection.send_bytes(message_bytes)
 		if err != OK:
-			print("SpacetimeDBClient: Error sending CallProcedure message: ", err)
+			printerr("SpacetimeDBClient: Error sending CallProcedure message: ", err)
 			return SpacetimeDBProcedureCall.fail(err)
 
 		var handle := SpacetimeDBProcedureCall.create(self, request_id, return_bsatn_type)
 		_pending_procedure_calls[request_id] = handle
 		return handle
 
-	print("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
+	printerr("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
 	return SpacetimeDBProcedureCall.fail(ERR_CONNECTION_ERROR)
 
 
 func wait_for_reducer_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> TransactionUpdateMessage:
 	if request_id_to_match < 0:
 		return null
-	# Check if result already arrived before we started waiting
-	if _reducer_result_cache.has(request_id_to_match):
-		var cached: TransactionUpdateMessage = _reducer_result_cache[request_id_to_match]
-		_reducer_result_cache.erase(request_id_to_match)
-		print_log("SpacetimeDBClient: Cache hit for Req ID: %d" % request_id_to_match)
-		return cached
-	var timer: SceneTreeTimer = get_tree().create_timer(timeout_seconds)
-	var result_container: Array[TransactionUpdateMessage] = [null]
-	var done: bool = false
-	var connection: Callable = func(rid: int, tx_update: TransactionUpdateMessage) -> void:
-		if rid == request_id_to_match and not done:
-			done = true
-			result_container[0] = tx_update
-			_reducer_result_cache.erase(rid)
-			timer.time_left = 0
-
-	reducer_result_received.connect(connection)
-	await timer.timeout
-	reducer_result_received.disconnect(connection)
-
-	if not done:
-		printerr("SpacetimeDBClient: Timeout waiting for response for Req ID: %d" % request_id_to_match)
-		return null
-
-	print_log("SpacetimeDBClient: Received matching response for Req ID: %d" % request_id_to_match)
-	return result_container[0]
+	return await _wait_for_response(request_id_to_match, _reducer_result_cache, reducer_result_received, timeout_seconds)
 
 
 func wait_for_procedure_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> PackedByteArray:
 	if request_id_to_match < 0:
 		return PackedByteArray()
-	if _procedure_result_cache.has(request_id_to_match):
-		var cached: PackedByteArray = _procedure_result_cache[request_id_to_match]
-		_procedure_result_cache.erase(request_id_to_match)
-		print_log("SpacetimeDBClient: Procedure cache hit for Req ID: %d" % request_id_to_match)
+	var result: Variant = await _wait_for_response(request_id_to_match, _procedure_result_cache, procedure_result_received, timeout_seconds)
+	return result if result != null else PackedByteArray()
+
+
+func _wait_for_response(request_id: int, cache: Dictionary, sig: Signal, timeout_seconds: float) -> Variant:
+	if cache.has(request_id):
+		var cached: Variant = cache[request_id]
+		cache.erase(request_id)
+		print_log("SpacetimeDBClient: Cache hit for Req ID: %d" % request_id)
 		return cached
 	var timer: SceneTreeTimer = get_tree().create_timer(timeout_seconds)
-	var result_container: Array[PackedByteArray] = [PackedByteArray()]
+	var result_container: Array = [null]
 	var done: bool = false
-	var connection: Callable = func(rid: int, ret_bytes: PackedByteArray) -> void:
-		if rid == request_id_to_match and not done:
+	var connection: Callable = func(rid: int, data: Variant) -> void:
+		if rid == request_id and not done:
 			done = true
-			result_container[0] = ret_bytes
-			_procedure_result_cache.erase(rid)
+			result_container[0] = data
+			cache.erase(rid)
 			timer.time_left = 0
-
-	procedure_result_received.connect(connection)
+	sig.connect(connection)
 	await timer.timeout
-	procedure_result_received.disconnect(connection)
-
+	sig.disconnect(connection)
 	if not done:
-		printerr("SpacetimeDBClient: Timeout waiting for procedure response for Req ID: %d" % request_id_to_match)
-		return PackedByteArray()
-
-	print_log("SpacetimeDBClient: Received matching procedure response for Req ID: %d" % request_id_to_match)
+		printerr("SpacetimeDBClient: Timeout waiting for response for Req ID: %d" % request_id)
+		return null
+	print_log("SpacetimeDBClient: Received matching response for Req ID: %d" % request_id)
 	return result_container[0]
 
 
-# virtual func _init_db()
 func _init_db(local_db: LocalDatabase) -> void:
 	pass
 
