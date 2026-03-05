@@ -156,12 +156,15 @@ func _generate_module_bindings(module_name: String):
 	if not DirAccess.dir_exists_absolute(debug_dir_path):
 		DirAccess.make_dir_recursive_absolute(debug_dir_path)
 
-	var file = FileAccess.open("%s/readme.txt" % [debug_dir_path], FileAccess.WRITE)
-	file.store_string("You can delete this directory and files. It's only used for codegen debugging.")
+	var file := FileAccess.open("%s/readme.txt" % [debug_dir_path], FileAccess.WRITE)
+	if file:
+		file.store_string("You can delete this directory and files. It's only used for codegen debugging.")
 	file = FileAccess.open("%s/schema_%s.json" % [debug_dir_path, module_name], FileAccess.WRITE)
-	file.store_string(JSON.stringify(schema.to_dictionary(), "\t", false))
+	if file:
+		file.store_string(JSON.stringify(schema.to_dictionary(), "\t", false))
 	file = FileAccess.open("%s/unparsed_schema_%s.json" % [debug_dir_path, module_name], FileAccess.WRITE)
-	file.store_string(JSON.stringify(json, "\t", false))
+	if file:
+		file.store_string(JSON.stringify(json, "\t", false))
 	var generated_files := _generate_gdscript_from_schema(module_name, schema)
 	return generated_files
 

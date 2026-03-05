@@ -7,7 +7,6 @@ signal connected(identity: PackedByteArray, token: String)
 signal disconnected
 signal connection_error(code: int, reason: String)
 signal database_initialized # Emitted after InitialSubscription is processed
-signal database_update(table_update: TableUpdateData) # Emitted for each table update
 # From LocalDatabase
 signal row_inserted(table_name: StringName, row: Resource)
 signal row_updated(table_name: StringName, old_row: Resource, new_row: Resource)
@@ -47,6 +46,7 @@ var _result_mutex: Mutex
 var _packet_mutex: Mutex
 var _thread_should_exit: bool = false
 var _message_limit_in_frame: int = 5
+const _MAX_RESULT_CACHE_SIZE: int = 256
 # Cache of reducer results that arrived before anyone called wait_for_reducer_response
 var _reducer_result_cache: Dictionary[int, TransactionUpdateMessage] = { } # request_id -> TransactionUpdateMessage (or null)
 var _pending_reducer_calls: Dictionary[int, SpacetimeDBReducerCall] = {}
@@ -672,13 +672,7 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 					handle.error_message = err_msg
 		_pending_reducer_calls.erase(rid)
 		_reducer_result_cache[rid] = tx_update
-		# Evict oldest entry to prevent unbounded growth from fire-and-forget calls
-		while _reducer_result_cache.size() > 256:
-			var oldest_key: int
-			for k: int in _reducer_result_cache:
-				oldest_key = k
-				break
-			_reducer_result_cache.erase(oldest_key)
+		_evict_oldest(_reducer_result_cache)
 		reducer_result_received.emit(rid, tx_update)
 
 	elif message is ProcedureResultData:
@@ -701,12 +695,7 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 
 		_pending_procedure_calls.erase(rid)
 		_procedure_result_cache[rid] = ret_bytes
-		while _procedure_result_cache.size() > 256:
-			var oldest_key: int
-			for k: int in _procedure_result_cache:
-				oldest_key = k
-				break
-			_procedure_result_cache.erase(oldest_key)
+		_evict_oldest(_procedure_result_cache)
 		procedure_result_received.emit(rid, ret_bytes)
 
 	else:
@@ -919,3 +908,12 @@ func _resubscribe_saved_queries() -> void:
 
 	if total_sets == 0:
 		reconnected.emit()
+
+
+func _evict_oldest(cache: Dictionary) -> void:
+	while cache.size() > _MAX_RESULT_CACHE_SIZE:
+		var oldest_key: int
+		for k: int in cache:
+			oldest_key = k
+			break
+		cache.erase(oldest_key)

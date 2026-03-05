@@ -24,12 +24,12 @@ var _connection_requested: bool = false
 var _options: SpacetimeDBConnectionOptions
 var _db_name: String
 var _debug_mode: bool = false
-var _total_bytes_send: int = 0
-var _second_bytes_send: int = 0
+var _total_bytes_sent: int = 0
+var _second_bytes_sent: int = 0
 var _total_bytes_received: int = 0
 var _second_bytes_received: int = 0
-var _total_messages_send: int = 0
-var _second_messages_send: int = 0
+var _total_messages_sent: int = 0
+var _second_messages_sent: int = 0
 var _total_messages_received: int = 0
 var _second_messages_received: int = 0
 
@@ -81,8 +81,8 @@ func _physics_process(delta: float) -> void:
 				_second_messages_received += 1
 
 				message_received.emit(packet_bytes)
-				total_messages.emit(_total_messages_send, _total_messages_received)
-				total_bytes.emit(_total_bytes_send, _total_bytes_received)
+				total_messages.emit(_total_messages_sent, _total_messages_received)
+				total_bytes.emit(_total_bytes_sent, _total_bytes_received)
 		WebSocketPeer.STATE_CONNECTING:
 			# Still trying to connect
 			pass
@@ -127,8 +127,8 @@ func _notification(what: int) -> void:
 
 
 func get_second_sent_bytes() -> int:
-	var amount: int = _second_bytes_send
-	_second_bytes_send = 0
+	var amount: int = _second_bytes_sent
+	_second_bytes_sent = 0
 	return amount
 
 
@@ -139,8 +139,8 @@ func get_second_received_bytes() -> int:
 
 
 func get_second_sent_packets() -> int:
-	var amount: int = _second_messages_send
-	_second_messages_send = 0
+	var amount: int = _second_messages_sent
+	_second_messages_sent = 0
 	return amount
 
 
@@ -151,15 +151,15 @@ func get_second_received_packets() -> int:
 
 
 func get_sent_kbytes() -> float:
-	return float(float(_total_bytes_send) / 1000.0)
+	return _total_bytes_sent / 1000.0
 
 
 func get_received_kbytes() -> float:
-	return float(float(_total_bytes_received) / 1000.0)
+	return _total_bytes_received / 1000.0
 
 
 func get_sent_packets() -> int:
-	return _total_messages_send
+	return _total_messages_sent
 
 
 func get_received_packets() -> int:
@@ -181,12 +181,12 @@ func set_compression_preference(preference: CompressionPreference) -> void:
 func send_bytes(bytes: PackedByteArray) -> Error:
 	var err: Error = _websocket.send(bytes)
 	if err == OK:
-		_second_bytes_send += bytes.size()
-		_total_bytes_send += bytes.size()
-		_second_messages_send += 1
-		_total_messages_send += 1
-		total_messages.emit(_total_messages_send, _total_messages_received)
-		total_bytes.emit(_total_bytes_send, _total_bytes_received)
+		_second_bytes_sent += bytes.size()
+		_total_bytes_sent += bytes.size()
+		_second_messages_sent += 1
+		_total_messages_sent += 1
+		total_messages.emit(_total_messages_sent, _total_messages_received)
+		total_bytes.emit(_total_bytes_sent, _total_bytes_received)
 	return err
 
 
