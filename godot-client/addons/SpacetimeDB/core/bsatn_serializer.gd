@@ -319,7 +319,7 @@ func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary
 	if result == null:
 		_set_error("Array-like gd type '%s' does not match native array-like pattern from 'bsatn_type' metadata ('%s')" % [prop_name, bsatn_type])
 		return
-	var bsatn_struct_type: StringName = result.get_string("struct")
+	var bsatn_struct_type: String = result.get_string("struct")
 	if bsatn_struct_type.is_empty():
 		_set_error("Cannot determine struct type for array-like gd type '%s' from 'bsatn_type' metadata ('%s')" % [prop_name, bsatn_type])
 		return
@@ -350,12 +350,12 @@ func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary
 			_set_error("Unsupported array-like gd type '%s' ('%s'). Could not assign components array." % [prop_name, type_string(value_type)])
 			return
 
-	var bsatn_types_for_components: StringName = result.get_string("components")
+	var bsatn_types_for_components: String = result.get_string("components")
 	if bsatn_types_for_components.is_empty():
 		_set_error("Cannot determine inner component types for array-like gd type '%s' from 'bsatn_type' metadata ('%s')" % [prop_name, bsatn_type])
 		return
 
-	var bsatn_component_types: Array[StringName] = bsatn_types_for_components.split(",")
+	var bsatn_component_types: PackedStringArray = bsatn_types_for_components.split(",")
 	if bsatn_component_types.size() != components.size():
 		_set_error(
 			"Array-like gd type '%s' expected 'bsatn_type' to have %d component types but has %d" % \
@@ -365,7 +365,7 @@ func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary
 
 	for i: int in range(components.size()):
 		var value = components[i]
-		var bsatn_component_type: StringName = bsatn_component_types[i]
+		var bsatn_component_type: String = bsatn_component_types[i]
 		_write_value_from_bsatn_type(value, bsatn_component_type, prop_name + "[%s]" % i)
 
 
@@ -612,7 +612,7 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 		if value is not Array:
 			_set_error("Expected Array for BSATN type '%s', got %s" % [bsatn_type_str, type_string(value_type)])
 			return false
-		var element_type: StringName = StringName(String(bsatn_type_str).substr(4))
+		var element_type: StringName = bsatn_type_str.substr(4)
 		write_u32_le((value as Array).size())
 		if has_error(): return false
 		for i: int in (value as Array).size():
@@ -630,7 +630,7 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 			return not has_error()
 		write_u8(0)
 		if has_error(): return false
-		var inner_type: StringName = StringName(String(bsatn_type_str).substr(4))
+		var inner_type: StringName = bsatn_type_str.substr(4)
 		return _write_value_from_bsatn_type((value as Option).unwrap(), inner_type, &"%s[inner]" % context_prop_name_for_prototype)
 
 	# 1. Try primitive writer (expects lowercase bsatn_type_str) if not an array

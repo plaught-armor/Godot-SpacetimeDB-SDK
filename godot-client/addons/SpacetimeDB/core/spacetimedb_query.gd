@@ -21,32 +21,32 @@ static func from(t: _ModuleTable) -> SpacetimeDBQuery:
 
 # --- WHERE conditions (all AND'd) ---
 
-func where(field: StringName, value: Variant) -> SpacetimeDBQuery:
+func where(field: String, value: Variant) -> SpacetimeDBQuery:
 	_conditions.append("%s = %s" % [_validate_identifier(field), _format_value(value)])
 	return self
 
 
-func where_ne(field: StringName, value: Variant) -> SpacetimeDBQuery:
+func where_ne(field: String, value: Variant) -> SpacetimeDBQuery:
 	_conditions.append("%s != %s" % [_validate_identifier(field), _format_value(value)])
 	return self
 
 
-func where_gt(field: StringName, value: Variant) -> SpacetimeDBQuery:
+func where_gt(field: String, value: Variant) -> SpacetimeDBQuery:
 	_conditions.append("%s > %s" % [_validate_identifier(field), _format_value(value)])
 	return self
 
 
-func where_lt(field: StringName, value: Variant) -> SpacetimeDBQuery:
+func where_lt(field: String, value: Variant) -> SpacetimeDBQuery:
 	_conditions.append("%s < %s" % [_validate_identifier(field), _format_value(value)])
 	return self
 
 
-func where_gte(field: StringName, value: Variant) -> SpacetimeDBQuery:
+func where_gte(field: String, value: Variant) -> SpacetimeDBQuery:
 	_conditions.append("%s >= %s" % [_validate_identifier(field), _format_value(value)])
 	return self
 
 
-func where_lte(field: StringName, value: Variant) -> SpacetimeDBQuery:
+func where_lte(field: String, value: Variant) -> SpacetimeDBQuery:
 	_conditions.append("%s <= %s" % [_validate_identifier(field), _format_value(value)])
 	return self
 
