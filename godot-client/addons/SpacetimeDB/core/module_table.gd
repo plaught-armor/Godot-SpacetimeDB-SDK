@@ -9,7 +9,7 @@ func _init(db: LocalDatabase) -> void:
 func count() -> int:
 	return _db.count_all_rows(_table_name)
 
-func iter() -> Array[_ModuleTableType]:
+func iter() -> Array:
 	return _db.get_all_rows(_table_name)
 
 func on_insert(listener: Callable) -> void:
@@ -31,7 +31,7 @@ func remove_on_delete(listener: Callable) -> void:
 	_db.unsubscribe_from_deletes(_table_name, listener)
 
 
-func find_where(predicate: Callable) -> Array[_ModuleTableType]:
+func find_where(predicate: Callable) -> Array:
 	return _db.find_where(_table_name, predicate)
 
 
@@ -39,7 +39,7 @@ func first_where(predicate: Callable) -> _ModuleTableType:
 	return _db.first_where(_table_name, predicate)
 
 
-func find_by(field: StringName, value: Variant) -> Array[_ModuleTableType]:
+func find_by(field: StringName, value: Variant) -> Array:
 	return _db.find_by(_table_name, field, value)
 
 
