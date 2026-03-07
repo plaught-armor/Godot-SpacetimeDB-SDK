@@ -1,6 +1,6 @@
 class_name SubscribeMessage extends SpacetimeDBClientMessage
 
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32" }
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32", &"query_id": &"u32" }
 
 @export var request_id: int
 @export var query_id: int
