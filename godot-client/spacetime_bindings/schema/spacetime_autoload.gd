@@ -3,8 +3,8 @@
 extends Node
 #SpacetimeDB Autoload
 
-var Main: MainModuleClient
+var Blackholio: BlackholioModuleClient
 
 func _init() -> void:
-	Main = preload('res://spacetime_bindings/schema/module_main_client.gd').new()
-	add_child(Main)
+	Blackholio = preload('res://spacetime_bindings/schema/module_blackholio_client.gd').new()
+	add_child(Blackholio)

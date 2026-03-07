@@ -1,96 +1,97 @@
-[gd_scene format=3 uid="uid://cd0jglqxoggeg"]
+[gd_scene format=3 uid="uid://c7ooixyfpcdfl"]
 
-[ext_resource type="PackedScene" uid="uid://dly6cualhlp8k" path="res://scenes/stats.tscn" id="1_5vw27"]
-[ext_resource type="Script" uid="uid://b2l7hyu8fw2wg" path="res://main.gd" id="1_h2yge"]
-[ext_resource type="PackedScene" uid="uid://dvenminxkaei3" path="res://scenes/player.tscn" id="2_0xm2m"]
-[ext_resource type="Script" uid="uid://cv6bu0sabs8yh" path="res://example_code/spawner.gd" id="3_h2yge"]
-[ext_resource type="Script" uid="uid://jvk6ou7i2d4s" path="res://addons/SpacetimeDB/nodes/row_receiver/row_receiver.gd" id="5_7mycd"]
-[ext_resource type="Script" uid="uid://j7ves41fl8xj" path="res://spacetime_bindings/schema/types/main_user_data.gd" id="6_5vw27"]
-[ext_resource type="Script" uid="uid://cbeq6brew0wkm" path="res://example_code/LobbyHolder.gd" id="6_7mycd"]
-[ext_resource type="Script" uid="uid://cqp5djsaxa615" path="res://spacetime_bindings/schema/types/main_user.gd" id="8_kek77"]
+[ext_resource type="Script" uid="uid://7os6vnhqnsel" path="res://scripts/main.gd" id="1"]
+[ext_resource type="Script" uid="uid://cf0aiq5wss7i6" path="res://scripts/ui/username_screen.gd" id="2"]
+[ext_resource type="Script" uid="uid://ddv043dnpielv" path="res://scripts/ui/death_screen.gd" id="3"]
+[ext_resource type="Script" uid="uid://corci6id1y164" path="res://scripts/ui/leaderboard.gd" id="4"]
 
-[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_0xm2m"]
-sky_horizon_color = Color(0.662243, 0.671743, 0.686743, 1)
-ground_horizon_color = Color(0.662243, 0.671743, 0.686743, 1)
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_leaderboard"]
+content_margin_left = 8.0
+content_margin_top = 8.0
+content_margin_right = 8.0
+content_margin_bottom = 8.0
+bg_color = Color(0, 0, 0, 0.5)
 
-[sub_resource type="Sky" id="Sky_h2yge"]
-sky_material = SubResource("ProceduralSkyMaterial_0xm2m")
+[node name="Main" type="Node2D" unique_id=2066025383]
+script = ExtResource("1")
 
-[sub_resource type="Environment" id="Environment_1bvp3"]
-background_mode = 2
-sky = SubResource("Sky_h2yge")
-tonemap_mode = 2
-glow_enabled = true
+[node name="WorldBorder" type="Node2D" parent="." unique_id=1339913805]
 
-[sub_resource type="Resource" id="Resource_4c57u"]
-script = ExtResource("6_5vw27")
-metadata/primary_key = "identity"
-metadata/bsatn_type_identity = &"identity"
-metadata/bsatn_type_online = &"bool"
-metadata/bsatn_type_name = &"string"
-metadata/bsatn_type_lobby_id = &"u64"
-metadata/bsatn_type_color = &"color[f32,f32,f32,f32]"
-metadata/bsatn_type_test_vec = &"string"
-metadata/bsatn_type_test_bytes_array = &"u8"
-metadata/bsatn_type_test_dynamic_arraylike = &"vector4[f64,f64,f64,f64]"
-metadata/bsatn_type_last_position = &"vector3[f32,f32,f32]"
-metadata/bsatn_type_direction = &"vector2[f32,f32]"
-metadata/bsatn_type_player_speed = &"f32"
-metadata/bsatn_type_last_update = &"i64"
-metadata/_custom_type_script = "uid://b7lmx1vkhjv8y"
+[node name="EntityContainer" type="Node2D" parent="." unique_id=1977138769]
 
-[sub_resource type="Resource" id="Resource_efxa6"]
-script = ExtResource("8_kek77")
-metadata/primary_key = "identity"
-metadata/bsatn_type_identity = &"identity"
-metadata/bsatn_type_online = &"bool"
-metadata/bsatn_type_lobby_id = &"u64"
-metadata/bsatn_type_damage = &"MainDamage"
-metadata/underlying_type_test_option_string = &"Array"
-metadata/bsatn_type_test_option_string = &"vec_string"
-metadata/underlying_type_test_option_message = &"MainMessage"
-metadata/bsatn_type_test_option_message = &"MainMessage"
-metadata/_custom_type_script = "uid://cpccn08pln75t"
+[node name="Camera2D" type="Camera2D" parent="." unique_id=126881989]
+position = Vector2(500, 500)
 
-[node name="Node3D" type="Node3D" unique_id=1165170212]
+[node name="UI" type="CanvasLayer" parent="." unique_id=150712039]
 
-[node name="Stats" parent="." unique_id=1089744298 instance=ExtResource("1_5vw27")]
+[node name="UsernameScreen" type="CenterContainer" parent="UI" unique_id=2085017660]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("2")
 
-[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=808520082]
-transform = Transform3D(-0.866023, -0.433016, 0.250001, 0, 0.499998, 0.866027, -0.500003, 0.749999, -0.43301, 0, 0, 0)
-shadow_enabled = true
+[node name="VBox" type="VBoxContainer" parent="UI/UsernameScreen" unique_id=384289580]
+layout_mode = 2
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=380336278]
-environment = SubResource("Environment_1bvp3")
+[node name="Title" type="Label" parent="UI/UsernameScreen/VBox" unique_id=1966296046]
+layout_mode = 2
+text = "BLACKHOLIO"
+horizontal_alignment = 1
+vertical_alignment = 1
 
-[node name="CSGBox3D" type="CSGBox3D" parent="." unique_id=1226515004]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.25, 0)
-use_collision = true
-size = Vector3(32, 0.5, 32)
+[node name="NameInput" type="LineEdit" parent="UI/UsernameScreen/VBox" unique_id=764459742]
+layout_mode = 2
+placeholder_text = "Enter your name..."
+alignment = 1
+max_length = 20
 
-[node name="MainClient" type="Node3D" parent="." unique_id=1980141453]
-script = ExtResource("1_h2yge")
+[node name="PlayButton" type="Button" parent="UI/UsernameScreen/VBox" unique_id=1940916041]
+layout_mode = 2
+text = "Play"
 
-[node name="Camera3D" type="Camera3D" parent="." unique_id=517062433]
-transform = Transform3D(1, 0, 0, 0, 0.5, 0.866025, 0, -0.866025, 0.5, 1, 15, 17)
+[node name="DeathScreen" type="CenterContainer" parent="UI" unique_id=779658285]
+visible = false
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("3")
 
-[node name="PlayerSpawner" type="Node3D" parent="." unique_id=288632673 node_paths=PackedStringArray("receiver")]
-script = ExtResource("3_h2yge")
-receiver = NodePath("Receiver [MainUserData]")
-player_scene = ExtResource("2_0xm2m")
+[node name="VBox" type="VBoxContainer" parent="UI/DeathScreen" unique_id=1499278143]
+layout_mode = 2
 
-[node name="Receiver [MainUserData]" type="Node" parent="PlayerSpawner" unique_id=470585541]
-script = ExtResource("5_7mycd")
-table_to_receive = SubResource("Resource_4c57u")
-selected_table_name = "user_data"
-metadata/_custom_type_script = "uid://jvk6ou7i2d4s"
+[node name="DeathLabel" type="Label" parent="UI/DeathScreen/VBox" unique_id=1506471399]
+layout_mode = 2
+text = "You were eaten!"
+horizontal_alignment = 1
 
-[node name="Lobby" type="Node" parent="." unique_id=1187750849 node_paths=PackedStringArray("receiver")]
-script = ExtResource("6_7mycd")
-receiver = NodePath("Receiver [MainUser]")
+[node name="RespawnButton" type="Button" parent="UI/DeathScreen/VBox" unique_id=1143948232]
+layout_mode = 2
+text = "Respawn"
 
-[node name="Receiver [MainUser]" type="Node" parent="Lobby" unique_id=602768812]
-script = ExtResource("5_7mycd")
-table_to_receive = SubResource("Resource_efxa6")
-selected_table_name = "user"
-metadata/_custom_type_script = "uid://jvk6ou7i2d4s"
+[node name="Leaderboard" type="PanelContainer" parent="UI" unique_id=1523017034]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -200.0
+offset_bottom = 300.0
+grow_horizontal = 0
+theme_override_styles/panel = SubResource("StyleBoxFlat_leaderboard")
+script = ExtResource("4")
+
+[node name="MarginContainer" type="MarginContainer" parent="UI/Leaderboard" unique_id=1203123258]
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="UI/Leaderboard/MarginContainer" unique_id=1653594296]
+layout_mode = 2
+
+[node name="Title" type="Label" parent="UI/Leaderboard/MarginContainer/VBox" unique_id=1745468671]
+layout_mode = 2
+text = "Leaderboard"
+horizontal_alignment = 1
+
+[node name="Rows" type="VBoxContainer" parent="UI/Leaderboard/MarginContainer/VBox" unique_id=1690461270]
+layout_mode = 2
