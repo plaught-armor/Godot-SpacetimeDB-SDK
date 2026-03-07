@@ -511,8 +511,6 @@ func _get_writer_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 		# 1. Check for primitive writer with BSATN type
 		if not bsatn_type_str.is_empty():
 			writer_callable = _get_primitive_writer_from_bsatn_type(bsatn_type_str)
-			if not writer_callable.is_valid() and debug_mode:
-				push_warning("Unknown 'bsatn_type' metadata value: '%s' for property '%s'. Falling back to default type." % [bsatn_type_str, prop_name])
 
 		# 2. Fallback to default based on property's Variant.Type
 		if not writer_callable.is_valid():
@@ -555,6 +553,9 @@ func _get_writer_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 				_:
 					# Writer remains invalid for unsupported types
 					pass
+
+		if not writer_callable.is_valid() and not bsatn_type_str.is_empty() and debug_mode:
+			push_warning("Unknown 'bsatn_type' metadata value: '%s' for property '%s'. No suitable writer found." % [bsatn_type_str, prop_name])
 
 	return writer_callable
 

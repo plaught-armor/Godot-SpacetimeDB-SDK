@@ -597,6 +597,9 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				_resubscribe_saved_queries()
 
 	elif message is SubscribeAppliedMessage:
+		print_log("SpacetimeDBClient: SubscribeApplied — tables: %d, query_set_id: %d" % [message.tables.size(), message.query_set_id.id])
+		for t: TableUpdateData in message.tables:
+			print_log("  Table: '%s' inserts=%d deletes=%d" % [t.table_name, t.inserts.size(), t.deletes.size()])
 		_local_db.apply_database_subscription_applied(message)
 		if not _received_initial_subscription:
 			_received_initial_subscription = true
