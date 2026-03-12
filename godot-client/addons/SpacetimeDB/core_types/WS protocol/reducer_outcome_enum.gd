@@ -1,23 +1,34 @@
+## Rust-style enum representing the outcome of a reducer call in the v2 protocol.
+##
+## Variants:[br]
+## [b]ok[/b] — Reducer succeeded; payload is a [TransactionUpdateMessage].[br]
+## [b]okEmpty[/b] — Reducer succeeded with no database changes.[br]
+## [b]err[/b] — Reducer returned an error; payload is a [PackedByteArray].[br]
+## [b]internalError[/b] — Server-side internal error; payload is a [String].[br]
+##
+## Use [method get_ok], [method get_err], or [method get_internal_error] to
+## retrieve the typed payload for the active variant.
 @tool
 class_name ReducerOutcomeEnum extends RustEnum
 
-## v2 ReducerOutcome enum:
-##   Ok(ReducerOk { ret_value: bytes, transaction_update: TransactionUpdate })
-##   OkEmpty
-##   Err(bytes)
-##   InternalError(string)
-
+## Discriminant values for each reducer outcome variant.
 enum Options {
+	## Reducer succeeded with database changes.
 	ok,
+	## Reducer succeeded with no database changes.
 	okEmpty,
+	## Reducer returned an application-level error.
 	err,
+	## Server encountered an internal error while running the reducer.
 	internalError,
 }
 
-## 'ok' data is parsed manually and stored as TransactionUpdateMessage.
-## '' means no data for okEmpty. vec_u8 for err bytes. string for internalError.
+## BSATN type names for each variant's payload, indexed by [enum Options].[br]
+## [code]ReducerOk[/code] is parsed manually into a [TransactionUpdateMessage].
+## Empty string means no payload. [code]vec_u8[/code] for raw bytes.
 const ENUM_OPTIONS: Array[StringName] = [&'ReducerOk', &'', &'vec_u8', &'string']
 
+## Returns the variant name for discriminant [param i], or [code]"Unknown"[/code] if out of range.
 static func parse_enum_name(i: int) -> String:
 	match i:
 		0: return &'ok'
@@ -32,12 +43,15 @@ static func parse_enum_name(i: int) -> String:
 func get_ok() -> TransactionUpdateMessage:
 	return data
 
+## Returns the raw error bytes from the [code]err[/code] variant.
 func get_err() -> PackedByteArray:
 	return data
 
+## Returns the error string from the [code]internalError[/code] variant.
 func get_internal_error() -> String:
 	return data
 
+## Factory method. Creates a [ReducerOutcomeEnum] with the given variant [param p_type] and optional [param p_data].
 static func create(p_type: int, p_data: Variant = null) -> ReducerOutcomeEnum:
 	var result : ReducerOutcomeEnum = ReducerOutcomeEnum.new()
 	result.value = p_type

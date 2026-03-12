@@ -1,3 +1,13 @@
+## Decodes BSATN binary data from SpacetimeDB server messages into GDScript values.
+##
+## Used internally by [SpacetimeDBClient] to parse raw WebSocket packets into
+## typed [SpacetimeDBServerMessage] subclasses. Provides low-level primitive
+## readers ([method read_u8], [method read_i32], [method read_string], etc.)
+## and a plan-based resource deserializer that populates a [Resource]'s exported
+## properties from a byte stream.
+##
+## Check [method has_error] after any deserialization call; if [code]true[/code],
+## retrieve the message via [method get_last_error].
 class_name BSATNDeserializer
 extends RefCounted
 
@@ -46,10 +56,12 @@ func _normalize(name: StringName) -> StringName:
 
 
 #--- Error Handling ---
+
+## Returns [code]true[/code] if the last deserialization operation failed.
 func has_error() -> bool:
 	return _has_error
 
-
+## Returns and clears the last error message. Resets [method has_error] to [code]false[/code].
 func get_last_error() -> String:
 	var err: String = _last_error
 	_last_error = ""
@@ -57,6 +69,7 @@ func get_last_error() -> String:
 	return err
 
 
+## Clears the error state without returning the message.
 func clear_error() -> void:
 	_last_error = ""
 	_has_error = false
@@ -279,6 +292,8 @@ func read_bsatn_row_list(spb: StreamPeerBuffer) -> Array[PackedByteArray]:
 	return rows
 
 
+## Appends [param new_data] to the internal buffer and extracts all complete
+## [SpacetimeDBServerMessage] instances. Returns an array of parsed messages.
 func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[SpacetimeDBServerMessage]:
 	if new_data.is_empty():
 		return []

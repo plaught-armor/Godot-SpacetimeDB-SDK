@@ -1,10 +1,16 @@
+## Client-side in-memory mirror of SpacetimeDB tables.
+##
+## Stores rows keyed by primary key (or in flat arrays for PK-less tables).
+## Processes [TableUpdateData] batches from the server, resolves inserts vs
+## updates via PK matching, and dispatches per-table listener callbacks and
+## signals. Game code normally interacts via [_ModuleTable] wrappers rather
+## than calling [LocalDatabase] directly.
 class_name LocalDatabase extends Node
 
 var _tables: Dictionary[StringName, Dictionary] = {}
-var _primary_key_cache: Dictionary[StringName, StringName] = {}  # #5: also serves as pk_fields cache
+var _primary_key_cache: Dictionary[StringName, StringName] = {}
 var _schema: SpacetimeDBSchema
 var _cached_normalized_table_names: Dictionary[StringName, StringName] = {}
-# #3: Fully typed listener dicts
 var _insert_listeners_by_table: Dictionary[StringName, Array] = {}
 var _update_listeners_by_table: Dictionary[StringName, Array] = {}
 var _delete_listeners_by_table: Dictionary[StringName, Array] = {}
@@ -12,10 +18,13 @@ var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = 
 var _pk_less_tables: Dictionary[StringName, Array] = {}
 var _pk_less_property_cache: Dictionary[StringName, Array] = {}
 
-# #6: Signals use StringName
+## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
+## Emitted after a row is updated (PK match found in inserts + existing data).
 signal row_updated(table_name: StringName, old_row: _ModuleTableType, new_row: _ModuleTableType)
+## Emitted after a row is deleted from a table.
 signal row_deleted(table_name: StringName, row: _ModuleTableType)
+## Emitted once after all inserts/deletes in a single [TableUpdateData] are processed.
 signal row_transactions_completed(table_name: StringName)
 
 func _init(p_schema: SpacetimeDBSchema) -> void:
@@ -34,6 +43,7 @@ func _normalize(table_name: StringName) -> StringName:
 	_cached_normalized_table_names[table_name] = normalized
 	return normalized
 
+## Registers [param callable] to be called with the inserted row for [param table_name].
 func subscribe_to_inserts(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
 	if not _insert_listeners_by_table.has(key):
@@ -41,6 +51,7 @@ func subscribe_to_inserts(table_name: StringName, callable: Callable) -> void:
 	if not _insert_listeners_by_table[key].has(callable):
 		_insert_listeners_by_table[key].append(callable)
 
+## Removes an insert listener for [param table_name].
 func unsubscribe_from_inserts(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
 	if _insert_listeners_by_table.has(key):
@@ -48,6 +59,7 @@ func unsubscribe_from_inserts(table_name: StringName, callable: Callable) -> voi
 		if _insert_listeners_by_table[key].is_empty():
 			_insert_listeners_by_table.erase(key)
 
+## Registers [param callable] to be called with [code](old_row, new_row)[/code] for [param table_name].
 func subscribe_to_updates(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
 	if not _update_listeners_by_table.has(key):
@@ -55,6 +67,7 @@ func subscribe_to_updates(table_name: StringName, callable: Callable) -> void:
 	if not _update_listeners_by_table[key].has(callable):
 		_update_listeners_by_table[key].append(callable)
 
+## Removes an update listener for [param table_name].
 func unsubscribe_from_updates(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
 	if _update_listeners_by_table.has(key):
@@ -62,6 +75,7 @@ func unsubscribe_from_updates(table_name: StringName, callable: Callable) -> voi
 		if _update_listeners_by_table[key].is_empty():
 			_update_listeners_by_table.erase(key)
 
+## Registers [param callable] to be called with the deleted row for [param table_name].
 func subscribe_to_deletes(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
 	if not _delete_listeners_by_table.has(key):
@@ -69,6 +83,7 @@ func subscribe_to_deletes(table_name: StringName, callable: Callable) -> void:
 	if not _delete_listeners_by_table[key].has(callable):
 		_delete_listeners_by_table[key].append(callable)
 
+## Removes a delete listener for [param table_name].
 func unsubscribe_from_deletes(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
 	if _delete_listeners_by_table.has(key):
@@ -76,6 +91,7 @@ func unsubscribe_from_deletes(table_name: StringName, callable: Callable) -> voi
 		if _delete_listeners_by_table[key].is_empty():
 			_delete_listeners_by_table.erase(key)
 
+## Registers [param callable] to be called (no args) after all changes in a batch for [param table_name].
 func subscribe_to_transactions_completed(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
 	if not _transactions_completed_listeners_by_table.has(key):
@@ -83,6 +99,7 @@ func subscribe_to_transactions_completed(table_name: StringName, callable: Calla
 	if not _transactions_completed_listeners_by_table[key].has(callable):
 		_transactions_completed_listeners_by_table[key].append(callable)
 
+## Removes a transactions-completed listener for [param table_name].
 func unsubscribe_from_transactions_completed(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
 	if _transactions_completed_listeners_by_table.has(key):
@@ -151,20 +168,22 @@ func _row_hash(row: _ModuleTableType, props: Array) -> int:
 	return h
 
 
-# --- Applying Updates ---
+## Applies all table updates from a [SubscribeAppliedMessage] to the local store.
 func apply_database_subscription_applied(db_update: SubscribeAppliedMessage) -> void:
 	if not db_update:
 		return
 	for table_update: TableUpdateData in db_update.tables:
 		apply_table_update(table_update)
 
+## Applies all table updates from a [DatabaseUpdateData] to the local store.
 func apply_database_update(db_update: DatabaseUpdateData) -> void:
 	if not db_update:
 		return
 	for table_update: TableUpdateData in db_update.tables:
 		apply_table_update(table_update)
 
-# Fused update + callback dispatch — no intermediary collections, no second pass.
+## Applies a single [TableUpdateData] — processes inserts then deletes, dispatches
+## listener callbacks and signals, and handles both PK-keyed and PK-less tables.
 func apply_table_update(table_update: TableUpdateData) -> void:
 	var table_name_lower: StringName = _normalize(table_update.table_name)
 
@@ -287,14 +306,14 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 
 
 
-# --- Access Methods (#2) ---
-# StringName params + shared _normalize cache — no raw string ops on each call
+## Returns a single row by its primary key [param primary_key_value], or [code]null[/code].
 func get_row_by_pk(table_name: StringName, primary_key_value: Variant) -> _ModuleTableType:
 	var key: StringName = _normalize(table_name)
 	if not _tables.has(key):
 		return null
 	return _tables[key].get(primary_key_value, null)
 
+## Returns all rows in [param table_name] as a typed array.
 func get_all_rows(table_name: StringName) -> Array[_ModuleTableType]:
 	var key: StringName = _normalize(table_name)
 	if _pk_less_tables.has(key):
@@ -307,6 +326,7 @@ func get_all_rows(table_name: StringName) -> Array[_ModuleTableType]:
 	result.assign(_tables[key].values())
 	return result
 
+## Returns the number of rows in [param table_name].
 func count_all_rows(table_name: StringName) -> int:
 	var key: StringName = _normalize(table_name)
 	if _pk_less_tables.has(key):
@@ -316,6 +336,7 @@ func count_all_rows(table_name: StringName) -> int:
 	return _tables[key].size()
 
 
+## Returns all rows in [param table_name] for which [param predicate] returns [code]true[/code].
 func find_where(table_name: StringName, predicate: Callable) -> Array[_ModuleTableType]:
 	var key: StringName = _normalize(table_name)
 	var result: Array[_ModuleTableType] = []
@@ -330,6 +351,7 @@ func find_where(table_name: StringName, predicate: Callable) -> Array[_ModuleTab
 	return result
 
 
+## Returns the first row matching [param predicate], or [code]null[/code].
 func first_where(table_name: StringName, predicate: Callable) -> _ModuleTableType:
 	var key: StringName = _normalize(table_name)
 	if _pk_less_tables.has(key):
@@ -343,6 +365,7 @@ func first_where(table_name: StringName, predicate: Callable) -> _ModuleTableTyp
 	return null
 
 
+## Returns all rows where [param field] equals [param value].
 func find_by(table_name: StringName, field: StringName, value: Variant) -> Array[_ModuleTableType]:
 	var key: StringName = _normalize(table_name)
 	var result: Array[_ModuleTableType] = []
@@ -357,6 +380,7 @@ func find_by(table_name: StringName, field: StringName, value: Variant) -> Array
 	return result
 
 
+## Returns the first row where [param field] equals [param value], or [code]null[/code].
 func first_by(table_name: StringName, field: StringName, value: Variant) -> _ModuleTableType:
 	var key: StringName = _normalize(table_name)
 	if _pk_less_tables.has(key):
@@ -370,6 +394,7 @@ func first_by(table_name: StringName, field: StringName, value: Variant) -> _Mod
 	return null
 
 
+## Returns the count of rows matching [param predicate].
 func count_where(table_name: StringName, predicate: Callable) -> int:
 	var key: StringName = _normalize(table_name)
 	var c: int = 0
@@ -384,6 +409,7 @@ func count_where(table_name: StringName, predicate: Callable) -> int:
 	return c
 
 
+## Erases all rows from every table. Used during reconnection to reset state.
 func clear_all_tables() -> void:
 	for table_name: StringName in _tables:
 		_tables[table_name].clear()

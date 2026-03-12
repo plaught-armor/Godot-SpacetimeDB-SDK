@@ -1,13 +1,29 @@
+## HTTP REST client for SpacetimeDB token acquisition and reducer calls.
+##
+## Handles the [code]/v1/identity[/code] endpoint for authentication tokens and
+## optional REST-based reducer invocation. Used internally by [SpacetimeDBClient];
+## game code normally uses the WebSocket-based reducer path instead.
 class_name SpacetimeDBRestAPI
 extends Node
 
+## Emitted when a new authentication token is received.
 signal token_received(token: String)
+## Emitted when the token request fails.
 signal token_request_failed(error_code: int, response_body: String)
-signal reducer_call_completed(result: Dictionary) # Or specific resource
+## Emitted when a REST-based reducer call succeeds.
+signal reducer_call_completed(result: Dictionary)
+## Emitted when a REST-based reducer call fails.
 signal reducer_call_failed(error_code: int, response_body: String)
 
-# Enum to track the type of the currently pending request
-enum RequestType { NONE, TOKEN, REDUCER_CALL } # Add more if needed for other REST calls
+## Tracks which kind of HTTP request is currently in flight.
+enum RequestType {
+	## No pending request.
+	NONE,
+	## Waiting for a token response.
+	TOKEN,
+	## Waiting for a reducer call response.
+	REDUCER_CALL,
+}
 
 var _http_request: HTTPRequest = HTTPRequest.new()
 var _base_url: String

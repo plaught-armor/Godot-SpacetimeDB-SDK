@@ -1,43 +1,73 @@
+## High-level SpacetimeDB client node.
+##
+## Orchestrates connection, authentication, BSATN (de)serialization, the local
+## database mirror, subscriptions, reducer/procedure calls, and automatic
+## reconnection. Generated module clients (e.g. [code]WorldModuleClient[/code])
+## extend this with typed database and reducer accessors.
 #@tool
 class_name SpacetimeDBClient
 extends Node
 
-# --- Signals ---
+## Emitted after the server sends [IdentityTokenMessage] confirming the connection.
 signal connected(identity: PackedByteArray, token: String)
+## Emitted when the WebSocket is cleanly closed.
 signal disconnected
+## Emitted on connection failure or abnormal close.
 signal connection_error(code: int, reason: String)
-signal database_initialized # Emitted after InitialSubscription is processed
-# From LocalDatabase
+## Emitted after the first [SubscribeAppliedMessage] is processed.
+signal database_initialized
+## Re-emitted from [LocalDatabase] when a row is inserted.
 signal row_inserted(table_name: StringName, row: Resource)
+## Re-emitted from [LocalDatabase] when a row is updated.
 signal row_updated(table_name: StringName, old_row: Resource, new_row: Resource)
+## Re-emitted from [LocalDatabase] when a row is deleted.
 signal row_deleted(table_name: StringName, row: Resource)
+## Re-emitted from [LocalDatabase] after a batch of changes completes.
 signal row_transactions_completed(table_name: StringName)
+## Emitted for every [TransactionUpdateMessage] applied to the local database.
 signal transaction_update_received(update: TransactionUpdateMessage)
-# Fired when a ReducerResultMessage arrives — carries request_id + optional tx_update (null if okEmpty/err)
+## Emitted when a [ReducerResultMessage] arrives. [param tx_update] is [code]null[/code] for okEmpty/err.
 signal reducer_result_received(request_id: int, tx_update: TransactionUpdateMessage)
-# Fired when a ProcedureResultData arrives — carries request_id + return bytes (empty if error)
+## Emitted when a [ProcedureResultData] arrives. [param return_bytes] is empty on error.
 signal procedure_result_received(request_id: int, return_bytes: PackedByteArray)
-# --- Reconnection Signals ---
+## Emitted before each reconnect attempt.
 signal reconnecting(attempt: int, max_attempts: int)
+## Emitted after a successful reconnect and all re-subscriptions are applied.
 signal reconnected
+## Emitted when all reconnect attempts are exhausted.
 signal reconnect_failed
 
 # --- Configuration ---
+## Base URL of the SpacetimeDB server (e.g. [code]http://127.0.0.1:3000[/code]).
 @export var base_url: String = "http://127.0.0.1:3000"
-@export var database_name: String = "quickstart-chat" # Example
+## Name of the database to connect to.
+@export var database_name: String = "quickstart-chat"
+## Path to the generated schema directory (tables, types, reducers).
 @export var schema_path: String = "res://spacetime_bindings/schema"
+## If [code]true[/code], calls [method initialize_and_connect] automatically in [method _ready].
 @export var auto_connect: bool = false
+## If [code]true[/code], automatically requests a new auth token from the REST API when none is saved.
 @export var auto_request_token: bool = true
-@export var token_save_path: String = "user://spacetimedb_token.dat" # Use a more specific name
+## File path where the authentication token is persisted between sessions.
+@export var token_save_path: String = "user://spacetimedb_token.dat"
+## If [code]true[/code], the token is not saved to disk (single-use session).
 @export var one_time_token: bool = false
+## WebSocket compression preference negotiated with the server.
 @export var compression: SpacetimeDBConnection.CompressionPreference
+## If [code]true[/code], enables verbose logging from the client.
 @export var debug_mode: bool = true
+## Active subscriptions keyed by query set id.
 var current_subscriptions: Dictionary[int, SpacetimeDBSubscription]
+## If [code]true[/code], BSATN deserialization runs on a background thread.
 @export var use_threading: bool = true
 
+## Module name used for schema resolution (set by generated subclasses).
 var module_name: String = ""
+## Background thread running the BSATN deserializer (only when [member use_threading] is [code]true[/code]).
 var deserializer_worker: Thread
+## Connection options controlling threading, compression, and reconnection behaviour.
 var connection_options: SpacetimeDBConnectionOptions
+## Subscriptions waiting for a [SubscribeAppliedMessage], keyed by query set id.
 var pending_subscriptions: Dictionary[int, SpacetimeDBSubscription]
 var _packet_queue: Array[PackedByteArray] = []
 var _packet_semaphore: Semaphore
@@ -94,11 +124,15 @@ func _exit_tree() -> void:
 		deserializer_worker = null
 
 
+## Prints [param log_message] to the output console when [member debug_mode] is enabled.
 func print_log(log_message: String) -> void:
 	if debug_mode:
 		print(log_message)
 
 
+## Initializes the schema, serializers, local database, REST API, and connection,[br]
+## then loads or requests a token and connects to the server.[br]
+## Safe to call multiple times — subsequent calls are ignored if already initialized.
 func initialize_and_connect() -> void:
 	if _is_initialized:
 		return
@@ -146,7 +180,8 @@ func initialize_and_connect() -> void:
 	_load_token_or_request()
 
 
-# --- Public API ---
+## Connects to a SpacetimeDB [param database_name] at [param host_url].[br]
+## Pass a [SpacetimeDBConnectionOptions] to configure threading, compression, and reconnection.
 func connect_db(host_url: String, database_name: String, options: SpacetimeDBConnectionOptions = null) -> void:
 	_cancel_reconnection()
 	if not options:
@@ -179,6 +214,7 @@ func connect_db(host_url: String, database_name: String, options: SpacetimeDBCon
 		_load_token_or_request()
 
 
+## Intentionally disconnects from the database. Does not trigger auto-reconnect.
 func disconnect_db() -> void:
 	_intentional_disconnect = true
 	_cancel_reconnection()
@@ -187,19 +223,22 @@ func disconnect_db() -> void:
 		_connection.disconnect_from_server()
 
 
+## Returns [code]true[/code] if the WebSocket is currently open.
 func is_connected_db() -> bool:
 	return _connection and _connection.is_connected_db()
 
 
-# The untyped local database instance, use the generated .Db property for querying
+## Returns the raw [LocalDatabase] instance. Prefer the generated [code].Db[/code] property for typed access.
 func get_local_database() -> LocalDatabase:
 	return _local_db
 
 
+## Returns the 32-byte identity assigned to this client by the server.
 func get_local_identity() -> PackedByteArray:
 	return _identity
 
 
+## Subscribes to one or more SQL [param queries]. Returns a [SpacetimeDBSubscription] handle.
 func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 	if not is_connected_db():
 		printerr("SpacetimeDBClient: Cannot subscribe, not connected.")
@@ -245,6 +284,8 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 	return subscription
 
 
+## Unsubscribes from the query set identified by [param query_id].[br]
+## Returns [constant OK] on success, or an [enum Error] code on failure.
 func unsubscribe(query_id: int) -> Error:
 	if not is_connected_db():
 		printerr("SpacetimeDBClient: Cannot unsubscribe, not connected.")
@@ -279,6 +320,8 @@ func unsubscribe(query_id: int) -> Error:
 	return ERR_CONNECTION_ERROR
 
 
+## Calls a reducer named [param reducer_name] with the given [param args] and BSATN [param types].[br]
+## Returns a [SpacetimeDBReducerCall] handle that resolves when the server responds.
 func call_reducer(reducer_name: String, args: Array = [], types: Array = []) -> SpacetimeDBReducerCall:
 	if not is_connected_db():
 		printerr("SpacetimeDBClient: Cannot call reducer, not connected.")
@@ -317,6 +360,9 @@ func call_reducer(reducer_name: String, args: Array = [], types: Array = []) -> 
 	return SpacetimeDBReducerCall.fail(ERR_CONNECTION_ERROR)
 
 
+## Calls a stored procedure named [param procedure_name] with the given [param args] and BSATN [param types].[br]
+## [param return_bsatn_type] is used by the handle to deserialize the return value.[br]
+## Returns a [SpacetimeDBProcedureCall] handle that resolves when the server responds.
 func call_procedure(procedure_name: String, args: Array = [], types: Array = [], return_bsatn_type: StringName = &"") -> SpacetimeDBProcedureCall:
 	if not is_connected_db():
 		printerr("SpacetimeDBClient: Cannot call procedure, not connected.")
@@ -354,12 +400,14 @@ func call_procedure(procedure_name: String, args: Array = [], types: Array = [],
 	return SpacetimeDBProcedureCall.fail(ERR_CONNECTION_ERROR)
 
 
+## Awaits the reducer result for [param request_id_to_match], returning the [TransactionUpdateMessage] or [code]null[/code] on timeout.
 func wait_for_reducer_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> TransactionUpdateMessage:
 	if request_id_to_match < 0:
 		return null
 	return await _wait_for_response(request_id_to_match, _reducer_result_cache, reducer_result_received, timeout_seconds)
 
 
+## Awaits the procedure result for [param request_id_to_match], returning the BSATN [PackedByteArray] or empty on timeout.
 func wait_for_procedure_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> PackedByteArray:
 	if request_id_to_match < 0:
 		return PackedByteArray()

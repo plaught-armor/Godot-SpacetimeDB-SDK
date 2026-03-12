@@ -1,5 +1,11 @@
+## Utility for decompressing Gzip-encoded WebSocket payloads.
+##
+## Used internally by [SpacetimeDBClient] when the server sends
+## compressed BSATN packets.
 class_name DataDecompressor extends RefCounted
 
+## Decompresses a Gzip-encoded [param compressed_bytes] payload.[br]
+## Returns an empty [PackedByteArray] on failure.
 static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteArray:
 	if compressed_bytes.is_empty():
 		return PackedByteArray()

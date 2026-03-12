@@ -1,3 +1,13 @@
+## Encodes GDScript values into the BSATN binary format for SpacetimeDB wire messages.
+##
+## Used internally by [SpacetimeDBClient] to serialize [SpacetimeDBClientMessage]
+## payloads (subscribe, call_reducer, call_procedure, etc.) into [PackedByteArray]
+## packets. Also provides low-level primitive writers ([method write_u8],
+## [method write_i32], [method write_string], etc.) and a plan-based
+## resource serializer that walks a [Resource]'s exported properties.
+##
+## Check [method has_error] after any serialization call; if [code]true[/code],
+## retrieve the message via [method get_last_error].
 class_name BSATNSerializer
 extends RefCounted
 
@@ -37,10 +47,12 @@ func _init(p_debug_mode: bool = false) -> void:
 
 
 # --- Error Handling ---
+
+## Returns [code]true[/code] if the last serialization operation failed.
 func has_error() -> bool:
 	return _has_error
 
-
+## Returns and clears the last error message. Resets [method has_error] to [code]false[/code].
 func get_last_error() -> String:
 	var e: String = _last_error
 	_last_error = ""
@@ -48,6 +60,7 @@ func get_last_error() -> String:
 	return e
 
 
+## Clears the error state without returning the message.
 func clear_error() -> void:
 	_last_error = ""
 	_has_error = false
@@ -384,7 +397,10 @@ func write_nested_resource(resource: Object, bsatn_type: StringName, prop: Dicti
 
 
 # --- Public API ---
-# Serializes a complete ClientMessage (variant tag + payload resource fields).
+
+## Serializes a complete client message into a [PackedByteArray].[br]
+## Writes the [param variant_tag] byte followed by all exported properties of
+## [param payload_resource] in BSATN format. Check [method has_error] after calling.
 func serialize_client_message(variant_tag: int, payload_resource: SpacetimeDBClientMessage) -> PackedByteArray:
 	# Reset state
 	clear_error()

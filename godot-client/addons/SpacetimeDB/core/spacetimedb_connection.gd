@@ -1,17 +1,36 @@
+## Low-level WebSocket transport for SpacetimeDB.
+##
+## Manages the WebSocket lifecycle (connect, poll, send, close) and emits raw
+## packet data via [signal message_received]. [SpacetimeDBClient] owns an
+## instance and wires its signals for higher-level message handling.
 #@tool
 class_name SpacetimeDBConnection
 extends Node
 
+## Emitted when the WebSocket handshake completes.
 signal connected
+## Emitted on a clean close (normal code).
 signal disconnected
+## Emitted on abnormal close or connection failure.
 signal connection_error(code: int, reason: String)
+## Emitted for each raw BSATN packet received from the server.
 signal message_received(data: PackedByteArray)
+## Emitted after every send/receive with cumulative totals.
 signal total_messages(sent: int, received: int)
+## Emitted after every send/receive with cumulative byte totals.
 signal total_bytes(sent: int, received: int)
 
-enum CompressionPreference { NONE = 0, BROTLI = 1, GZIP = 2 }
+## Payload compression modes for the WebSocket connection.
+enum CompressionPreference {
+	## No compression.
+	NONE = 0,
+	## Brotli (not supported — falls back to Gzip).
+	BROTLI = 1,
+	## Gzip compression.
+	GZIP = 2,
+}
 
-# Protocol constants
+## The BSATN sub-protocol identifier sent during the WebSocket handshake.
 const BSATN_PROTOCOL = "v2.bsatn.spacetimedb"
 
 var version: String = "v1"
@@ -178,6 +197,7 @@ func set_compression_preference(preference: CompressionPreference) -> void:
 		self.preferred_compression = preference
 
 
+## Sends [param bytes] over the WebSocket. Returns [constant OK] on success.
 func send_bytes(bytes: PackedByteArray) -> Error:
 	var err: Error = _websocket.send(bytes)
 	if err == OK:
@@ -190,6 +210,8 @@ func send_bytes(bytes: PackedByteArray) -> Error:
 	return err
 
 
+## Initiates a WebSocket connection to the SpacetimeDB [param database_name]
+## at [param base_url] using the given [param connection_id].
 func connect_to_database(base_url: String, database_name: String, connection_id: String) -> void:
 	if _is_connected:
 		_print_log("SpacetimeDBConnection: Already connected.")
@@ -258,6 +280,7 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		set_physics_process(true)
 
 
+## Closes the WebSocket connection with the given [param code] and [param reason].
 func disconnect_from_server(code: int = 1000, reason: String = "Client initiated disconnect") -> void:
 	if _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED and _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSING:
 		_print_log("SpacetimeDBConnection: Closing connection...")
@@ -266,6 +289,7 @@ func disconnect_from_server(code: int = 1000, reason: String = "Client initiated
 	_connection_requested = false
 
 
+## Returns [code]true[/code] if the WebSocket is currently open.
 func is_connected_db() -> bool:
 	return _is_connected
 

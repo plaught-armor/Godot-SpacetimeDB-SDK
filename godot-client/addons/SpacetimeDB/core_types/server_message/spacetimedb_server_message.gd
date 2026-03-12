@@ -1,6 +1,14 @@
+## Base class for all server-to-client messages in the SpacetimeDB v2 WS protocol.
+##
+## Each message type corresponds to a variant tag on the wire ([member Type]).
+## The SDK's message parser reads the tag byte, then delegates to the matching
+## subclass script resolved via [method get_script_path].
+##
+## Back-compat [code]const[/code] aliases (e.g. [code]SpacetimeDBServerMessage.SUBSCRIBE_APPLIED[/code])
+## are provided so existing code does not need to migrate to the enum form.
 class_name SpacetimeDBServerMessage extends SpacetimeDBMessage
 
-## v2 server message type tags (wire values must match protocol exactly)
+## v2 server message type tags (wire values must match protocol exactly).
 enum Type {
 	INITIAL_CONNECTION = 0x00,
 	SUBSCRIBE_APPLIED = 0x01,
@@ -25,6 +33,8 @@ const PROCEDURE_RESULT: int = Type.PROCEDURE_RESULT
 
 const _MSG_PATH := SpacetimePlugin.ADDON_PATH + "/core_types/server_message/"
 
+## Returns the [code]res://[/code] path to the GDScript file for the given [param msg_type] tag.
+## Returns an empty string if the tag is unknown.
 static func get_script_path(msg_type: int) -> String:
 	match msg_type:
 		Type.INITIAL_CONNECTION:

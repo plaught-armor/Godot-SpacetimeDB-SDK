@@ -1,14 +1,17 @@
+## Server message confirming that a subscription has been applied.
+##
+## Sent in response to a [SubscribeMessage]. Contains the initial snapshot of
+## rows matching the subscribed queries, parsed into [TableUpdateData] entries
+## that the SDK feeds into its local database.
 @tool
 class_name SubscribeAppliedMessage extends SpacetimeDBServerMessage
 
-## v2 protocol: SubscribeApplied { request_id: u32, query_set_id: QuerySetId, rows: QueryRows }
-## QueryRows { tables: Array[SingleTableRows] }
-## SingleTableRows { table: String, rows: BsatnRowList }
-## We parse SingleTableRows into TableUpdateData for compatibility with LocalDatabase.
-
-var request_id: int # u32
-var query_set_id: QueryIdData # maps to query_set_id
-var tables: Array[TableUpdateData] # populated from QueryRows.tables during parsing
+## The [member SubscribeMessage.request_id] echoed back by the server.
+var request_id: int
+## Server-assigned query set id for this subscription group.
+var query_set_id: QueryIdData
+## Initial row snapshot, one [TableUpdateData] per affected table.
+var tables: Array[TableUpdateData]
 
 func _init():
 	query_set_id = QueryIdData.new()

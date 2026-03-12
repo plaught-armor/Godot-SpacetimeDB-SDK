@@ -1,18 +1,32 @@
+## Handle returned by [method SpacetimeDBClient.subscribe].
+##
+## Tracks a subscription's lifecycle from registration through server
+## confirmation and eventual unsubscription. Connect to [signal applied] or
+## [code]await[/code] [method wait_for_applied] to know when the initial
+## row snapshot has been processed.
 class_name SpacetimeDBSubscription
 extends RefCounted
 
+## Emitted when the server confirms the subscription and the initial rows are applied.
 signal applied
+## Emitted when the subscription is ended (unsubscribed or errored).
 signal end
 signal _applied_or_timeout(timeout: bool)
 signal _ended_or_timeout(timeout: bool)
 
+## Client-assigned query set id.
 var query_id: int = -1
+## The SQL queries registered with this subscription.
 var queries: PackedStringArray
+## Immediate error from subscribe, or [constant OK].
 var error: Error = OK
+## Human-readable error from a [SubscriptionErrorMessage], if any.
 var error_message: String = ""
+## [code]true[/code] after [signal applied] fires and before [signal end] fires.
 var active: bool:
 	get:
 		return _active
+## [code]true[/code] after [signal end] fires.
 var ended: bool:
 	get:
 		return _ended
@@ -59,6 +73,7 @@ static func create(
 	return subscription
 
 
+## Creates a pre-failed subscription handle for an immediate client-side error.
 static func fail(error: Error) -> SpacetimeDBSubscription:
 	var subscription: SpacetimeDBSubscription = SpacetimeDBSubscription.new()
 	subscription.error = error
@@ -66,6 +81,9 @@ static func fail(error: Error) -> SpacetimeDBSubscription:
 	return subscription
 
 
+## Awaits until the subscription is applied or [param timeout_sec] elapses.[br]
+## Returns [constant OK] on success, [constant ERR_TIMEOUT] on timeout, or
+## [constant ERR_DOES_NOT_EXIST] if the subscription ended before applying.
 func wait_for_applied(timeout_sec: float = 5) -> Error:
 	if _active:
 		return OK
@@ -84,6 +102,7 @@ func wait_for_applied(timeout_sec: float = 5) -> Error:
 	return OK
 
 
+## Awaits until the subscription ends or [param timeout_sec] elapses.
 func wait_for_end(timeout_sec: float = 5) -> Error:
 	if _ended:
 		return OK
@@ -98,6 +117,7 @@ func wait_for_end(timeout_sec: float = 5) -> Error:
 	return OK
 
 
+## Sends an unsubscribe request to the server. Returns [constant ERR_DOES_NOT_EXIST] if already ended.
 func unsubscribe() -> Error:
 	if _ended:
 		return ERR_DOES_NOT_EXIST

@@ -1,10 +1,19 @@
+## Runtime schema registry that maps table and type names to their [GDScript] classes.
+##
+## Built at initialization from the codegen'd scripts in [code]spacetime_bindings/[/code]
+## and SDK core types. [LocalDatabase] and [BSATNDeserializer] use this to
+## instantiate the correct row type when deserializing server messages.
 class_name SpacetimeDBSchema
 extends Resource
 
+## All known types keyed by normalized name (lowercased, underscores removed).
 var types: Dictionary[StringName, GDScript] = { }
-var tables: Dictionary[StringName, GDScript] = { }  # keyed by normalized (no-underscore) name
-var raw_table_names: Array[StringName] = []           # raw wire names, used once by LocalDatabase._init
-var debug_mode: bool = false # Controls verbose debug printing
+## Subset of [member types] that are actual tables (have [code]table_names[/code] const).
+var tables: Dictionary[StringName, GDScript] = { }
+## Raw wire table names consumed once by [method LocalDatabase._init] then cleared.
+var raw_table_names: Array[StringName] = []
+## Enables verbose debug printing during schema loading.
+var debug_mode: bool = false
 
 
 func _init(p_module_name: String, p_schema_path: String = "res://spacetime_bindings/schema", p_debug_mode: bool = false) -> void:
@@ -16,6 +25,7 @@ func _init(p_module_name: String, p_schema_path: String = "res://spacetime_bindi
 	_load_types(SpacetimePlugin.ADDON_PATH + "/core_types/**")
 
 
+## Returns the [GDScript] for [param type_name] (normalized), or [code]null[/code] if unknown.
 func get_type(type_name: StringName) -> GDScript:
 	return types.get(type_name)
 
