@@ -148,6 +148,20 @@ class SpacetimeDBClient:
 
 Call a procedure with `call_procedure()`, which returns a [`SpacetimeDBProcedureCall`](#spacetimedbprocedurecall-class) instance. It is recommended you use the auto-generated procedure methods. See [Calling procedures](#calling-procedures).
 
+#### `wait_for_procedure_response()` method
+
+```gdscript
+class SpacetimeDBClient:
+    async func wait_for_procedure_response(request_id: int, timeout_seconds: float = 10.0) -> PackedByteArray
+```
+
+| Name            | Description                                                       |
+| --------------- | ----------------------------------------------------------------- |
+| request_id      | The id of the procedure call request to wait for.                 |
+| timeout_seconds | The number of seconds to wait for the response before timing out. |
+
+Waits for the procedure call response and returns the raw BSATN-encoded return bytes, or returns an empty `PackedByteArray` if there is an error or it times out.
+
 ### Signals
 
 | Signal | Description |
