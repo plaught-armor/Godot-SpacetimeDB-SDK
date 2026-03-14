@@ -21,11 +21,12 @@ To install the SpacetimeDB SDK from the AssetLib, follow these steps:
 1. Download the latest `SpacetimeDB-SDK-x.x.x.zip` from the [GitHub releases page](https://github.com/flametime/Godot-SpacetimeDB-SDK/releases).
 2. Extract the zip into your Godot project's root directory. The zip contains an `addons/SpacetimeDB/` folder that will be placed automatically.
 
-## Install from the main branch
+## Install from source
 
-1. Download the [latest main branch build](https://github.com/flametime/Godot-SpacetimeDB-SDK/archive/refs/heads/main.zip).
-2. Extract the downloaded file to a folder on your computer.
-3. Copy the `godot-client/addons/SpacetimeDB` folder to your Godot project's `addons/` directory.
+1. Clone or download the repository:
+    - `git clone https://github.com/flametime/Godot-SpacetimeDB-SDK.git`
+    - or download the [latest main branch build](https://github.com/flametime/Godot-SpacetimeDB-SDK/archive/refs/heads/main.zip) and extract it
+2. Copy the `godot-client/addons/SpacetimeDB` folder to your Godot project's `addons/` directory.
 
 ## Enable the plugin
 
