@@ -2,14 +2,15 @@
 ##
 ## Serialized with variant tag [constant SpacetimeDBClientMessage.UNSUBSCRIBE].
 ## The server responds with an [UnsubscribeAppliedMessage].
-class_name UnsubscribeMessage extends SpacetimeDBClientMessage
+class_name UnsubscribeMessage
+extends SpacetimeDBClientMessage
 
 ## Flags controlling unsubscribe behaviour.
 enum UnsubscribeFlags {
 	## No special behaviour.
 	Default,
 	## Server sends the dropped rows so the client can remove them locally.
-	SendDroppedRows
+	SendDroppedRows,
 }
 
 ## BSATN type hints used by the SDK's binary serializer.
@@ -21,6 +22,7 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32",
 @export var query_id: int
 ## Unsubscribe flags. See [enum UnsubscribeFlags].
 @export var flags: UnsubscribeFlags = UnsubscribeFlags.Default
+
 
 func _init(p_request_id: int = 0, p_query_id: int = 0):
 	request_id = p_request_id

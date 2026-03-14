@@ -37,7 +37,7 @@ var _deserialization_plan_cache: Dictionary[Script, Array] = { }
 var _pending_data: PackedByteArray = []
 var _schema: SpacetimeDBSchema
 var _native_arraylike_regex := RegEx.new()
-var _normalized_name_cache: Dictionary[StringName, StringName] = {}
+var _normalized_name_cache: Dictionary[StringName, StringName] = { }
 
 
 func _init(p_schema: SpacetimeDBSchema, p_debug_mode: bool = false) -> void:
@@ -54,12 +54,13 @@ func _normalize(name: StringName) -> StringName:
 	_normalized_name_cache[name] = normalized
 	return normalized
 
-
 #--- Error Handling ---
+
 
 ## Returns [code]true[/code] if the last deserialization operation failed.
 func has_error() -> bool:
 	return _has_error
+
 
 ## Returns and clears the last error message. Resets [method has_error] to [code]false[/code].
 func get_last_error() -> String:

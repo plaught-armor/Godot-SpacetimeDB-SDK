@@ -13,7 +13,8 @@
 ##     ReducerOutcomeEnum.Options.ok:
 ##         var tx := outcome.get_ok()
 ## [/codeblock]
-class_name RustEnum extends RefCounted
+class_name RustEnum
+extends RefCounted
 
 ## The discriminant tag identifying which variant is active.
 var value: int = 0

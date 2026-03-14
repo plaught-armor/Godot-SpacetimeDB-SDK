@@ -3,7 +3,8 @@
 ## If [member status_tag] is [code]0[/code] (Returned), [member return_bytes]
 ## holds the BSATN-encoded return value. If [code]1[/code] (InternalError),
 ## [member error_message] describes what went wrong.
-class_name ProcedureResultData extends SpacetimeDBServerMessage
+class_name ProcedureResultData
+extends SpacetimeDBServerMessage
 
 ## Client-assigned id from the originating [CallProcedureMessage].
 var request_id: int

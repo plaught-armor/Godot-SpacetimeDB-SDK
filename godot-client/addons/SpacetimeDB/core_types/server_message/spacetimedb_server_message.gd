@@ -6,7 +6,8 @@
 ##
 ## Back-compat [code]const[/code] aliases (e.g. [code]SpacetimeDBServerMessage.SUBSCRIBE_APPLIED[/code])
 ## are provided so existing code does not need to migrate to the enum form.
-class_name SpacetimeDBServerMessage extends SpacetimeDBMessage
+class_name SpacetimeDBServerMessage
+extends SpacetimeDBMessage
 
 ## v2 server message type tags (wire values must match protocol exactly).
 enum Type {
@@ -30,8 +31,8 @@ const ONE_OFF_QUERY_RESPONSE: int = Type.ONE_OFF_QUERY_RESPONSE
 const REDUCER_RESULT: int = Type.REDUCER_RESULT
 const PROCEDURE_RESULT: int = Type.PROCEDURE_RESULT
 
-
 const _MSG_PATH := SpacetimePlugin.ADDON_PATH + "/core_types/server_message/"
+
 
 ## Returns the [code]res://[/code] path to the GDScript file for the given [param msg_type] tag.
 ## Returns an empty string if the tag is unknown.

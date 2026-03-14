@@ -4,7 +4,8 @@
 ## rows matching the subscribed queries, parsed into [TableUpdateData] entries
 ## that the SDK feeds into its local database.
 @tool
-class_name SubscribeAppliedMessage extends SpacetimeDBServerMessage
+class_name SubscribeAppliedMessage
+extends SpacetimeDBServerMessage
 
 ## The [member SubscribeMessage.request_id] echoed back by the server.
 var request_id: int
@@ -12,6 +13,7 @@ var request_id: int
 var query_set_id: QueryIdData
 ## Initial row snapshot, one [TableUpdateData] per affected table.
 var tables: Array[TableUpdateData]
+
 
 func _init():
 	query_set_id = QueryIdData.new()

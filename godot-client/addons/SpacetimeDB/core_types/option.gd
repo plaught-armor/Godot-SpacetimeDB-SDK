@@ -17,11 +17,12 @@
 ## The internal array is clamped to 0 or 1 elements — assigning a multi-element
 ## array via the [member data] setter silently truncates to the first element.
 @tool
-class_name Option extends Resource
+class_name Option
+extends Resource
 
 ## Exported accessor for the internal data array. Setting this with an array
 ## of 1+ elements stores only the first element (Some); an empty array means None.
-@export var data: Array = [] :
+@export var data: Array = []:
 	set(value):
 		if value is Array:
 			if value.size() > 0:
@@ -36,11 +37,13 @@ class_name Option extends Resource
 
 var _internal_data: Array = []
 
+
 ## Creates an Option containing [param value].
 static func some(value: Variant) -> Option:
 	var result = Option.new()
 	result.set_some(value)
 	return result
+
 
 ## Creates an empty Option (None).
 static func none() -> Option:
@@ -48,13 +51,16 @@ static func none() -> Option:
 	result.set_none()
 	return result
 
+
 ## Returns [code]true[/code] if this Option contains a value.
 func is_some() -> bool:
 	return _internal_data.size() > 0
 
+
 ## Returns [code]true[/code] if this Option is empty.
 func is_none() -> bool:
 	return _internal_data.is_empty()
+
 
 ## Returns the contained value. Pushes an error if this Option is None.
 func unwrap() -> Variant:
@@ -63,11 +69,13 @@ func unwrap() -> Variant:
 	push_error("Attempted to unwrap a None Optional value!")
 	return null
 
+
 ## Returns the contained value, or [param default_value] if None.
 func unwrap_or(default_value: Variant) -> Variant:
 	if is_some():
 		return _internal_data[0]
 	return default_value
+
 
 ## Returns the contained value, or calls [param fn] and returns its result if None.
 func unwrap_or_else(fn: Callable) -> Variant:
@@ -76,6 +84,7 @@ func unwrap_or_else(fn: Callable) -> Variant:
 	if fn.is_valid():
 		return fn.call()
 	return null
+
 
 ## Returns the contained value if it matches [param type], otherwise pushes
 ## [param err_msg] (or a default message) as an error and returns [code]null[/code].
@@ -90,13 +99,16 @@ func expect(type: Variant.Type, err_msg: String = "") -> Variant:
 	push_error(err_msg)
 	return null
 
+
 ## Sets this Option to contain [param value].
 func set_some(value: Variant) -> void:
 	self.data = [value]
 
+
 ## Clears this Option to None.
 func set_none() -> void:
 	self.data = []
+
 
 ## Returns a debug string: [code]"Some(value [type: N])"[/code] or [code]"None"[/code].
 func to_string() -> String:

@@ -2,7 +2,8 @@
 ##
 ## Used internally by [SpacetimeDBClient] when the server sends
 ## compressed BSATN packets.
-class_name DataDecompressor extends RefCounted
+class_name DataDecompressor
+extends RefCounted
 
 ## Decompresses a Gzip-encoded [param compressed_bytes] payload.[br]
 ## Returns an empty [PackedByteArray] on failure.

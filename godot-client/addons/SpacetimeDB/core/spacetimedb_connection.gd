@@ -129,10 +129,14 @@ func _notification(what: int) -> void:
 		NOTIFICATION_PREDELETE:
 			if _options and _options.monitor_mode:
 				for suffix: String in [
-					"_second_received_packets", "_second_received_bytes",
-					"_total_received_packets", "_total_received_kbytes",
-					"_second_sent_packets", "_second_sent_bytes",
-					"_total_sent_packets", "_total_sent_kbytes",
+					"_second_received_packets",
+					"_second_received_bytes",
+					"_total_received_packets",
+					"_total_received_kbytes",
+					"_second_sent_packets",
+					"_second_sent_bytes",
+					"_total_sent_packets",
+					"_total_sent_kbytes",
 				]:
 					Performance.remove_custom_monitor("spacetime/" + _db_name + suffix)
 		NOTIFICATION_CRASH:

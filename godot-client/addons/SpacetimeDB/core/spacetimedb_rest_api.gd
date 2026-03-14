@@ -1,7 +1,7 @@
 ## HTTP REST client for SpacetimeDB token acquisition and reducer calls.
 ##
 ## Handles the [code]/v1/identity[/code] endpoint for authentication tokens and
-## optional REST-based reducer invocation. Used internally by [SpacetimeDBClient];
+## optional REST-based reducer invocation. Used internally by [SpacetimeDBClient]
 ## game code normally uses the WebSocket-based reducer path instead.
 class_name SpacetimeDBRestAPI
 extends Node

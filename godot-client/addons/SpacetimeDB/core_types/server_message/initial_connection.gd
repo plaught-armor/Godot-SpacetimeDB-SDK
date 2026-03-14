@@ -4,7 +4,8 @@
 ## this session, and an authentication [member token] that can be persisted
 ## for reconnection.
 @tool
-class_name IdentityTokenMessage extends SpacetimeDBServerMessage
+class_name IdentityTokenMessage
+extends SpacetimeDBServerMessage
 
 ## BSATN type hints used by the SDK's binary deserializer.
 const BSATN_TYPES: Dictionary[StringName, StringName] = { &"identity": &"identity", &"connection_id": &"connection_id", &"token": &"string" }

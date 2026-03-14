@@ -3,7 +3,8 @@
 ## Controls WebSocket behaviour, threading, authentication, reconnection
 ## strategy, and performance monitoring. Create one, tweak the members, and
 ## hand it to [code]connect_db()[/code].
-class_name SpacetimeDBConnectionOptions extends Resource
+class_name SpacetimeDBConnectionOptions
+extends Resource
 
 const CompressionPreference = SpacetimeDBConnection.CompressionPreference
 
@@ -36,6 +37,7 @@ var reconnect_max_delay: float = 30.0
 var reconnect_backoff_multiplier: float = 2.0
 ## Fraction of the computed delay used as random jitter ([code]0.0[/code]–[code]1.0[/code]).
 var reconnect_jitter_fraction: float = 0.5
+
 
 ## Convenience setter — sets both [member inbound_buffer_size] and [member outbound_buffer_size].
 func set_all_buffer_size(size: int) -> void:

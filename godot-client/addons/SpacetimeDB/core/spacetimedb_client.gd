@@ -79,9 +79,9 @@ var _message_limit_in_frame: int = 5
 const _MAX_RESULT_CACHE_SIZE: int = 256
 # Cache of reducer results that arrived before anyone called wait_for_reducer_response
 var _reducer_result_cache: Dictionary[int, TransactionUpdateMessage] = { } # request_id -> TransactionUpdateMessage (or null)
-var _pending_reducer_calls: Dictionary[int, SpacetimeDBReducerCall] = {}
-var _pending_procedure_calls: Dictionary[int, SpacetimeDBProcedureCall] = {}
-var _procedure_result_cache: Dictionary[int, PackedByteArray] = {}
+var _pending_reducer_calls: Dictionary[int, SpacetimeDBReducerCall] = { }
+var _pending_procedure_calls: Dictionary[int, SpacetimeDBProcedureCall] = { }
+var _procedure_result_cache: Dictionary[int, PackedByteArray] = { }
 # --- Components ---
 var _connection: SpacetimeDBConnection
 var _deserializer: BSATNDeserializer
@@ -762,8 +762,8 @@ func _handle_transaction_update(update_sets: TransactionUpdateMessage) -> void:
 	# Emit the full transaction update signal regardless of status
 	self.transaction_update_received.emit(update_sets)
 
-
 # --- Reconnection ---
+
 
 func _on_connection_disconnected() -> void:
 	if _intentional_disconnect:
@@ -850,7 +850,8 @@ func _schedule_next_reconnect_attempt() -> void:
 
 func _calculate_backoff(attempt: int) -> float:
 	var base_delay: float = connection_options.reconnect_initial_delay * pow(
-		connection_options.reconnect_backoff_multiplier, attempt - 1
+		connection_options.reconnect_backoff_multiplier,
+		attempt - 1,
 	)
 	base_delay = minf(base_delay, connection_options.reconnect_max_delay)
 
@@ -949,13 +950,15 @@ func _resubscribe_saved_queries() -> void:
 				reconnected.emit()
 			continue
 
-		sub.applied.connect(func() -> void:
-			applied_count[0] += 1
-			print_log("SpacetimeDBClient: Re-subscription applied (%d/%d)." % [applied_count[0], total_sets])
-			if applied_count[0] >= total_sets:
-				_saved_subscription_queries.clear()
-				reconnected.emit()
-		, CONNECT_ONE_SHOT)
+		sub.applied.connect(
+			func() -> void:
+				applied_count[0] += 1
+				print_log("SpacetimeDBClient: Re-subscription applied (%d/%d)." % [applied_count[0], total_sets])
+				if applied_count[0] >= total_sets:
+					_saved_subscription_queries.clear()
+					reconnected.emit(),
+			CONNECT_ONE_SHOT,
+		)
 
 	if total_sets == 0:
 		reconnected.emit()

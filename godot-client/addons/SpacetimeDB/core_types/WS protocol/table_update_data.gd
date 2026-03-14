@@ -2,10 +2,11 @@
 ##
 ## Maps the v2 protocol's [code]TableUpdate[/code] structure into a flat
 ## inserts/deletes representation. The server sends either
-## [code]PersistentTable(inserts, deletes)[/code] or [code]EventTable(events)[/code];
+## [code]PersistentTable(inserts, deletes)[/code] or [code]EventTable(events)[/code]
 ## the SDK's parser flattens both forms into [member inserts] and [member deletes].
 @tool
-class_name TableUpdateData extends RefCounted
+class_name TableUpdateData
+extends RefCounted
 
 ## The table's identifier as a [StringName] (snake_case form).
 var table_name: StringName

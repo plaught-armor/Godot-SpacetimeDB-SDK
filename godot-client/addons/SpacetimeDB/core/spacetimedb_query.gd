@@ -9,12 +9,14 @@
 ## var sql := SpacetimeDBQuery.table("pawn_info").where("owner", identity).to_sql()
 ## client.subscribe([sql])
 ## [/codeblock]
-class_name SpacetimeDBQuery extends RefCounted
+class_name SpacetimeDBQuery
+extends RefCounted
 
 static var _identifier_regex: RegEx
 
 var _table_name: String
 var _conditions: Array[String] = []
+
 
 ## Creates a query targeting [param name].
 static func table(name: String) -> SpacetimeDBQuery:
@@ -77,8 +79,8 @@ func to_sql() -> String:
 func _to_string() -> String:
 	return to_sql()
 
-
 # --- Value formatting with proper escaping ---
+
 
 static func _format_value(value: Variant) -> String:
 	match typeof(value):
@@ -91,8 +93,8 @@ static func _format_value(value: Variant) -> String:
 		_:
 			return str(value)
 
-
 # --- Identifier validation ---
+
 
 static func _validate_identifier(name: Variant) -> String:
 	var s: String = str(name)

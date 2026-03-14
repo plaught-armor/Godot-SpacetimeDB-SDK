@@ -1,5 +1,6 @@
 @tool
-class_name SpacetimePluginUI extends Control
+class_name SpacetimePluginUI
+extends Control
 
 const ERROR_LOG_ICON := SpacetimePlugin.ADDON_PATH + "/ui/icons/Error.svg"
 
@@ -18,6 +19,7 @@ var _new_module_table_checkbox: CheckBox
 var _generate_button: Button
 var _plugin_config: SpacetimeDBPluginConfig
 
+
 func _enter_tree() -> void:
 	_uri_input = %UriInput
 	_modules_container = %ModulesContainer
@@ -29,6 +31,7 @@ func _enter_tree() -> void:
 	_new_module_table_checkbox = %TablesCheckbox
 	_generate_button = %GenerateButton
 
+
 func _input(event: InputEvent) -> void:
 	if not visible:
 		return
@@ -39,8 +42,10 @@ func _input(event: InputEvent) -> void:
 		elif event.pressed and event.keycode == KEY_K and event.ctrl_pressed and event.alt_pressed:
 			clear_logs()
 
+
 func set_uri(uri: String) -> void:
 	_uri_input.text = uri
+
 
 func update_module_ui():
 	for child in _modules_container.get_children():
@@ -60,30 +65,35 @@ func update_module_ui():
 		_modules_container.add_child(new_module)
 
 		var remove_button: Button = new_module.get_node("VBoxContainer/HBoxContainer/RemoveButton") as Button
-		remove_button.button_down.connect(func():
-			_plugin_config.module_configs.erase(module_config.alias)
-			plugin_config_changed.emit()
-			update_module_ui()
-			)
+		remove_button.button_down.connect(
+			func():
+				_plugin_config.module_configs.erase(module_config.alias)
+				plugin_config_changed.emit()
+				update_module_ui()
+		)
 		new_module.show()
-		reducer_config_box.toggled.connect(func(on:bool):
-			module_config.hide_scheduled_reducers = on
-			plugin_config_changed.emit()
-			)
-		table_config_box.toggled.connect(func(on:bool):
-			module_config.hide_private_tables = on
-			plugin_config_changed.emit()
-			)
-		name_input.text_changed.connect(func(text:String):
-			module_config.name = text
-			plugin_config_changed.emit()
-			)
-		alias_input.text_changed.connect(func(text:String):
-			_plugin_config.module_configs.erase(module_config.alias)
-			module_config.alias = text
-			_plugin_config.module_configs.set(module_config.alias, module_config)
-			plugin_config_changed.emit()
-			)
+		reducer_config_box.toggled.connect(
+			func(on: bool):
+				module_config.hide_scheduled_reducers = on
+				plugin_config_changed.emit()
+		)
+		table_config_box.toggled.connect(
+			func(on: bool):
+				module_config.hide_private_tables = on
+				plugin_config_changed.emit()
+		)
+		name_input.text_changed.connect(
+			func(text: String):
+				module_config.name = text
+				plugin_config_changed.emit()
+		)
+		alias_input.text_changed.connect(
+			func(text: String):
+				_plugin_config.module_configs.erase(module_config.alias)
+				module_config.alias = text
+				_plugin_config.module_configs.set(module_config.alias, module_config)
+				plugin_config_changed.emit()
+		)
 	if _modules_container.get_child_count() == 0:
 		_add_module_hint_label.show()
 		_generate_button.disabled = true
@@ -95,10 +105,12 @@ func update_module_ui():
 func clear_logs():
 	_logs_label.text = ""
 
+
 func copy_selected_logs():
 	var selected_text = _logs_label.get_selected_text()
 	if selected_text:
 		DisplayServer.clipboard_set(selected_text)
+
 
 func add_log(text: Variant) -> void:
 	match typeof(text):
@@ -110,6 +122,7 @@ func add_log(text: Variant) -> void:
 			_logs_label.text += "\n"
 		_:
 			_logs_label.text += "%s\n" % [str(text)]
+
 
 func add_err(text: Variant) -> void:
 	match typeof(text):
@@ -123,6 +136,7 @@ func add_err(text: Variant) -> void:
 		_:
 			_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] %s[/color]\n" % [ERROR_LOG_ICON, str(text)]
 
+
 func destroy() -> void:
 	_uri_input = null
 	_modules_container = null
@@ -132,13 +146,16 @@ func destroy() -> void:
 	_new_module_alias_input = null
 	_generate_button = null
 
+
 func _on_check_uri() -> void:
 	_plugin_config.uri = _uri_input.text
 	update_module_ui()
 	check_uri.emit()
 
+
 func _on_generate_code() -> void:
 	generate_schema.emit()
+
 
 func _on_new_module() -> void:
 	var name := _new_module_name_input.text
@@ -161,6 +178,7 @@ func _on_new_module() -> void:
 
 func _on_clear_logs() -> void:
 	clear_logs()
+
 
 func _on_copy_selected_logs() -> void:
 	copy_selected_logs()

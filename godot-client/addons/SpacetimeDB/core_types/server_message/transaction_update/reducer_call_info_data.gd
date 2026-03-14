@@ -3,7 +3,8 @@
 ## Embedded inside parsed transaction data so the client can identify which
 ## reducer ran, what arguments were passed, and how long execution took.
 @tool
-class_name ReducerCallInfoData extends RefCounted
+class_name ReducerCallInfoData
+extends RefCounted
 
 ## BSATN type hints used by the SDK's binary deserializer.
 const BSATN_TYPES: Dictionary[StringName, StringName] = { &"reducer_id": &"u32", &"request_id": &"u32", &"execution_time": &"i64" }

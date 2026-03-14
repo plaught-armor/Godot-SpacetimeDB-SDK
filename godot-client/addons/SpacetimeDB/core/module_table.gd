@@ -3,41 +3,51 @@
 ## Generated table classes (e.g. [code]WorldPawnStatsTable[/code]) extend this.
 ## Delegates all reads and listener management to [LocalDatabase], providing a
 ## typed, table-scoped API for game code.
-class_name _ModuleTable extends RefCounted
+class_name _ModuleTable
+extends RefCounted
 
 var _db: LocalDatabase
 var _table_name: StringName
 
+
 func _init(db: LocalDatabase) -> void:
 	_db = db
+
 
 ## Returns the total number of rows in this table.
 func count() -> int:
 	return _db.count_all_rows(_table_name)
 
+
 ## Returns all rows in this table as an untyped [Array].
 func iter() -> Array:
 	return _db.get_all_rows(_table_name)
+
 
 ## Registers [param listener] to be called with the new row whenever a row is inserted.
 func on_insert(listener: Callable) -> void:
 	_db.subscribe_to_inserts(_table_name, listener)
 
+
 ## Removes a previously registered insert [param listener].
 func remove_on_insert(listener: Callable) -> void:
 	_db.unsubscribe_from_inserts(_table_name, listener)
+
 
 ## Registers [param listener] to be called with [code](old_row, new_row)[/code] on updates.
 func on_update(listener: Callable) -> void:
 	_db.subscribe_to_updates(_table_name, listener)
 
+
 ## Removes a previously registered update [param listener].
 func remove_on_update(listener: Callable) -> void:
 	_db.unsubscribe_from_updates(_table_name, listener)
 
+
 ## Registers [param listener] to be called with the deleted row on deletes.
 func on_delete(listener: Callable) -> void:
 	_db.subscribe_to_deletes(_table_name, listener)
+
 
 ## Removes a previously registered delete [param listener].
 func remove_on_delete(listener: Callable) -> void:

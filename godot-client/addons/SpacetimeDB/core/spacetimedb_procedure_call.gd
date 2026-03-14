@@ -3,7 +3,8 @@
 ## Tracks the lifecycle of a single stored-procedure call. Poll [member outcome]
 ## or [code]await[/code] [method wait_for_response] to get the result bytes.
 ## Use [method decode] to BSATN-decode the return value.
-class_name SpacetimeDBProcedureCall extends RefCounted
+class_name SpacetimeDBProcedureCall
+extends RefCounted
 
 ## Lifecycle states of a procedure call.
 enum Outcome {

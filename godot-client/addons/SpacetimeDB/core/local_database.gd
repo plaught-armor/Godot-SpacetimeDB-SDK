@@ -5,18 +5,19 @@
 ## updates via PK matching, and dispatches per-table listener callbacks and
 ## signals. Game code normally interacts via [_ModuleTable] wrappers rather
 ## than calling [LocalDatabase] directly.
-class_name LocalDatabase extends Node
+class_name LocalDatabase
+extends Node
 
-var _tables: Dictionary[StringName, Dictionary] = {}
-var _primary_key_cache: Dictionary[StringName, StringName] = {}
+var _tables: Dictionary[StringName, Dictionary] = { }
+var _primary_key_cache: Dictionary[StringName, StringName] = { }
 var _schema: SpacetimeDBSchema
-var _cached_normalized_table_names: Dictionary[StringName, StringName] = {}
-var _insert_listeners_by_table: Dictionary[StringName, Array] = {}
-var _update_listeners_by_table: Dictionary[StringName, Array] = {}
-var _delete_listeners_by_table: Dictionary[StringName, Array] = {}
-var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = {}
-var _pk_less_tables: Dictionary[StringName, Array] = {}
-var _pk_less_property_cache: Dictionary[StringName, Array] = {}
+var _cached_normalized_table_names: Dictionary[StringName, StringName] = { }
+var _insert_listeners_by_table: Dictionary[StringName, Array] = { }
+var _update_listeners_by_table: Dictionary[StringName, Array] = { }
+var _delete_listeners_by_table: Dictionary[StringName, Array] = { }
+var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = { }
+var _pk_less_tables: Dictionary[StringName, Array] = { }
+var _pk_less_property_cache: Dictionary[StringName, Array] = { }
 
 ## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -27,10 +28,11 @@ signal row_deleted(table_name: StringName, row: _ModuleTableType)
 ## Emitted once after all inserts/deletes in a single [TableUpdateData] are processed.
 signal row_transactions_completed(table_name: StringName)
 
+
 func _init(p_schema: SpacetimeDBSchema) -> void:
 	_schema = p_schema
 	for raw_name: StringName in p_schema.raw_table_names:
-		_tables[raw_name.to_lower()] = {}
+		_tables[raw_name.to_lower()] = { }
 	p_schema.raw_table_names.clear() # consumed — free the memory
 
 
@@ -43,6 +45,7 @@ func _normalize(table_name: StringName) -> StringName:
 	_cached_normalized_table_names[table_name] = normalized
 	return normalized
 
+
 ## Registers [param callable] to be called with the inserted row for [param table_name].
 func subscribe_to_inserts(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
@@ -50,6 +53,7 @@ func subscribe_to_inserts(table_name: StringName, callable: Callable) -> void:
 		_insert_listeners_by_table[key] = []
 	if not _insert_listeners_by_table[key].has(callable):
 		_insert_listeners_by_table[key].append(callable)
+
 
 ## Removes an insert listener for [param table_name].
 func unsubscribe_from_inserts(table_name: StringName, callable: Callable) -> void:
@@ -59,6 +63,7 @@ func unsubscribe_from_inserts(table_name: StringName, callable: Callable) -> voi
 		if _insert_listeners_by_table[key].is_empty():
 			_insert_listeners_by_table.erase(key)
 
+
 ## Registers [param callable] to be called with [code](old_row, new_row)[/code] for [param table_name].
 func subscribe_to_updates(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
@@ -66,6 +71,7 @@ func subscribe_to_updates(table_name: StringName, callable: Callable) -> void:
 		_update_listeners_by_table[key] = []
 	if not _update_listeners_by_table[key].has(callable):
 		_update_listeners_by_table[key].append(callable)
+
 
 ## Removes an update listener for [param table_name].
 func unsubscribe_from_updates(table_name: StringName, callable: Callable) -> void:
@@ -75,6 +81,7 @@ func unsubscribe_from_updates(table_name: StringName, callable: Callable) -> voi
 		if _update_listeners_by_table[key].is_empty():
 			_update_listeners_by_table.erase(key)
 
+
 ## Registers [param callable] to be called with the deleted row for [param table_name].
 func subscribe_to_deletes(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
@@ -82,6 +89,7 @@ func subscribe_to_deletes(table_name: StringName, callable: Callable) -> void:
 		_delete_listeners_by_table[key] = []
 	if not _delete_listeners_by_table[key].has(callable):
 		_delete_listeners_by_table[key].append(callable)
+
 
 ## Removes a delete listener for [param table_name].
 func unsubscribe_from_deletes(table_name: StringName, callable: Callable) -> void:
@@ -91,6 +99,7 @@ func unsubscribe_from_deletes(table_name: StringName, callable: Callable) -> voi
 		if _delete_listeners_by_table[key].is_empty():
 			_delete_listeners_by_table.erase(key)
 
+
 ## Registers [param callable] to be called (no args) after all changes in a batch for [param table_name].
 func subscribe_to_transactions_completed(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
@@ -99,6 +108,7 @@ func subscribe_to_transactions_completed(table_name: StringName, callable: Calla
 	if not _transactions_completed_listeners_by_table[key].has(callable):
 		_transactions_completed_listeners_by_table[key].append(callable)
 
+
 ## Removes a transactions-completed listener for [param table_name].
 func unsubscribe_from_transactions_completed(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
@@ -106,6 +116,7 @@ func unsubscribe_from_transactions_completed(table_name: StringName, callable: C
 		_transactions_completed_listeners_by_table[key].erase(callable)
 		if _transactions_completed_listeners_by_table[key].is_empty():
 			_transactions_completed_listeners_by_table.erase(key)
+
 
 # --- Primary Key Handling (#5) ---
 # _primary_key_cache now serves both roles — _cached_pk_fields removed
@@ -175,12 +186,14 @@ func apply_database_subscription_applied(db_update: SubscribeAppliedMessage) -> 
 	for table_update: TableUpdateData in db_update.tables:
 		apply_table_update(table_update)
 
+
 ## Applies all table updates from a [DatabaseUpdateData] to the local store.
 func apply_database_update(db_update: DatabaseUpdateData) -> void:
 	if not db_update:
 		return
 	for table_update: TableUpdateData in db_update.tables:
 		apply_table_update(table_update)
+
 
 ## Applies a single [TableUpdateData] — processes inserts then deletes, dispatches
 ## listener callbacks and signals, and handles both PK-keyed and PK-less tables.
@@ -203,7 +216,7 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 	var has_delete_listeners: bool = not delete_listeners.is_empty()
 
 	var table_dict: Dictionary = _tables[table_name_lower]
-	var inserted_pks_set: Dictionary = {}
+	var inserted_pks_set: Dictionary = { }
 	var had_any_change: bool = false
 
 	if pk_field == &"":
@@ -223,7 +236,7 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 
 		# Build hash-based multiset of rows to delete: O(m*p) instead of O(n*m*p) scanning
 		if not table_update.deletes.is_empty():
-			var delete_set: Dictionary = {} # hash -> Array of [row, count]
+			var delete_set: Dictionary = { } # hash -> Array of [row, count]
 			for deleted_row: _ModuleTableType in table_update.deletes:
 				var h: int = _row_hash(deleted_row, props)
 				if not delete_set.has(h):
@@ -305,13 +318,13 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 		row_transactions_completed.emit(table_name_lower)
 
 
-
 ## Returns a single row by its primary key [param primary_key_value], or [code]null[/code].
 func get_row_by_pk(table_name: StringName, primary_key_value: Variant) -> _ModuleTableType:
 	var key: StringName = _normalize(table_name)
 	if not _tables.has(key):
 		return null
 	return _tables[key].get(primary_key_value, null)
+
 
 ## Returns all rows in [param table_name] as a typed array.
 func get_all_rows(table_name: StringName) -> Array[_ModuleTableType]:
@@ -325,6 +338,7 @@ func get_all_rows(table_name: StringName) -> Array[_ModuleTableType]:
 	var result: Array[_ModuleTableType] = []
 	result.assign(_tables[key].values())
 	return result
+
 
 ## Returns the number of rows in [param table_name].
 func count_all_rows(table_name: StringName) -> int:

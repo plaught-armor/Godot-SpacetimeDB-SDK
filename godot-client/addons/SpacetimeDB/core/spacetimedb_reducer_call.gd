@@ -3,7 +3,8 @@
 ## Tracks the lifecycle of a single reducer call from submission through
 ## server response. Poll [member outcome] or [code]await[/code]
 ## [method wait_for_response] to determine the result.
-class_name SpacetimeDBReducerCall extends RefCounted
+class_name SpacetimeDBReducerCall
+extends RefCounted
 
 ## Lifecycle states of a reducer call.
 enum Outcome {

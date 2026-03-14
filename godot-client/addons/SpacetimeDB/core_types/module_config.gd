@@ -6,6 +6,7 @@
 ## returned by the SpacetimeDB server, used by the codegen pipeline to
 ## generate typed table classes, reducer wrappers, and BSATN bindings.
 extends Resource
+
 class_name SpacetimeDBModuleConfig
 
 ## The module's registered name on the SpacetimeDB server.
@@ -20,4 +21,4 @@ class_name SpacetimeDBModuleConfig
 
 ## Raw JSON schema string from the server's [code]/database/schema[/code] endpoint.
 ## Parsed by [SpacetimeDBSchema] during code generation.
-@export var unparsed_module_schema : String
+@export var unparsed_module_schema: String

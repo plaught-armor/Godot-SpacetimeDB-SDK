@@ -45,12 +45,13 @@ func _init(p_debug_mode: bool = false) -> void:
 
 	_native_arraylike_regex.compile("^(?<struct>.+)\\[(?<components>.*)\\]$")
 
-
 # --- Error Handling ---
+
 
 ## Returns [code]true[/code] if the last serialization operation failed.
 func has_error() -> bool:
 	return _has_error
+
 
 ## Returns and clears the last error message. Resets [method has_error] to [code]false[/code].
 func get_last_error() -> String:
@@ -69,7 +70,6 @@ func clear_error() -> void:
 # --- Primitive Value Writers ---
 # These directly write basic types to the internal StreamPeerBuffer.
 func write_i8(v: int) -> void:
-
 	if v < -128 or v > 127:
 		_set_error("Value %d out of range for i8" % v)
 		v = 0
@@ -77,7 +77,6 @@ func write_i8(v: int) -> void:
 
 
 func write_i16_le(v: int) -> void:
-
 	if v < -32768 or v > 32767:
 		_set_error("Value %d out of range for i16" % v)
 		v = 0
@@ -395,8 +394,8 @@ func write_nested_resource(resource: Object, bsatn_type: StringName, prop: Dicti
 		if not has_error():
 			_set_error("Failed to serialize nested resource '%s' of '%s'." % [prop_name, nested_class_name])
 
-
 # --- Public API ---
+
 
 ## Serializes a complete client message into a [PackedByteArray].[br]
 ## Writes the [param variant_tag] byte followed by all exported properties of
@@ -631,7 +630,8 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 			return false
 		var element_type: StringName = bsatn_type_str.substr(4)
 		write_u32_le((value as Array).size())
-		if has_error(): return false
+		if has_error():
+			return false
 		for i: int in (value as Array).size():
 			if not _write_value_from_bsatn_type(value[i], element_type, &"%s[%d]" % [context_prop_name_for_prototype, i]):
 				return false
@@ -646,7 +646,8 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 			write_u8(1)
 			return not has_error()
 		write_u8(0)
-		if has_error(): return false
+		if has_error():
+			return false
 		var inner_type: StringName = bsatn_type_str.substr(4)
 		return _write_value_from_bsatn_type((value as Option).unwrap(), inner_type, &"%s[inner]" % context_prop_name_for_prototype)
 

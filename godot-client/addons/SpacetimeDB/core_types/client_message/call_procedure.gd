@@ -3,12 +3,13 @@
 ## Serialized with variant tag [constant SpacetimeDBClientMessage.CALL_PROCEDURE].
 ## The [member procedure_name] identifies the procedure and [member args] carries
 ## the BSATN-encoded argument payload.
-class_name CallProcedureMessage extends SpacetimeDBClientMessage
+class_name CallProcedureMessage
+extends SpacetimeDBClientMessage
 
 ## Flags modifying procedure call behaviour.
 enum CallProcedureFlags {
 	## No special flags.
-	Default
+	Default,
 }
 
 ## BSATN type hints used by the SDK's binary serializer.
@@ -22,6 +23,7 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32",
 @export var procedure_name: String
 ## BSATN-encoded procedure arguments.
 @export var args: PackedByteArray
+
 
 func _init(p_procedure_name: String = "", p_args: PackedByteArray = PackedByteArray(), p_request_id: int = 0, p_flags: CallProcedureFlags = CallProcedureFlags.Default):
 	procedure_name = p_procedure_name

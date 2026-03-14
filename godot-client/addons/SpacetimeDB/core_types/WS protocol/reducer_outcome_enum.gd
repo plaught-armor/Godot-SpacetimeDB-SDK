@@ -9,7 +9,8 @@
 ## Use [method get_ok], [method get_err], or [method get_internal_error] to
 ## retrieve the typed payload for the active variant.
 @tool
-class_name ReducerOutcomeEnum extends RustEnum
+class_name ReducerOutcomeEnum
+extends RustEnum
 
 ## Discriminant values for each reducer outcome variant.
 enum Options {
@@ -28,32 +29,41 @@ enum Options {
 ## Empty string means no payload. [code]vec_u8[/code] for raw bytes.
 const ENUM_OPTIONS: Array[StringName] = [&'ReducerOk', &'', &'vec_u8', &'string']
 
+
 ## Returns the variant name for discriminant [param i], or [code]"Unknown"[/code] if out of range.
 static func parse_enum_name(i: int) -> String:
 	match i:
-		0: return &'ok'
-		1: return &'okEmpty'
-		2: return &'err'
-		3: return &'internalError'
+		0:
+			return &'ok'
+		1:
+			return &'okEmpty'
+		2:
+			return &'err'
+		3:
+			return &'internalError'
 		_:
 			printerr("Enum does not have value for %d. This is out of bounds." % i)
 			return &'Unknown'
+
 
 ## Returns the TransactionUpdateMessage from the Ok variant.
 func get_ok() -> TransactionUpdateMessage:
 	return data
 
+
 ## Returns the raw error bytes from the [code]err[/code] variant.
 func get_err() -> PackedByteArray:
 	return data
+
 
 ## Returns the error string from the [code]internalError[/code] variant.
 func get_internal_error() -> String:
 	return data
 
+
 ## Factory method. Creates a [ReducerOutcomeEnum] with the given variant [param p_type] and optional [param p_data].
 static func create(p_type: int, p_data: Variant = null) -> ReducerOutcomeEnum:
-	var result : ReducerOutcomeEnum = ReducerOutcomeEnum.new()
+	var result: ReducerOutcomeEnum = ReducerOutcomeEnum.new()
 	result.value = p_type
 	result.data = p_data
 	return result

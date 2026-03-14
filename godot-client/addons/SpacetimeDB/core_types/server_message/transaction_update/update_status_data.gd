@@ -4,7 +4,8 @@
 ## [DatabaseUpdateData]), [constant StatusType.FAILED] (with an error message),
 ## or [constant StatusType.OUT_OF_ENERGY].
 @tool
-class_name UpdateStatusData extends RefCounted
+class_name UpdateStatusData
+extends RefCounted
 
 ## Possible outcomes for a transaction.
 enum StatusType {
@@ -13,7 +14,7 @@ enum StatusType {
 	## Transaction failed; see [member failure_message].
 	FAILED,
 	## Transaction aborted because the module ran out of energy.
-	OUT_OF_ENERGY
+	OUT_OF_ENERGY,
 }
 
 ## The outcome of this transaction.
