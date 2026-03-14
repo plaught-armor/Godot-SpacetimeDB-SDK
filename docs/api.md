@@ -992,7 +992,7 @@ Since BowOptions in rust is not being used as a sumtype in godot it becomes just
 
 # Technical Details
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/flametime/Godot-SpacetimeDB-SDK)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/plaught-armor/Godot-SpacetimeDB-SDK)
 
 ## Type System & Serialization
 
