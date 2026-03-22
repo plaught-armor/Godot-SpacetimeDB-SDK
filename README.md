@@ -4,7 +4,7 @@
 
 ## SpacetimeDB Godot SDK
 
-> Requires **SpacetimeDB 2.0.0+** (v2 BSATN protocol). Tested with `Godot 4.4.1-stable` to `Godot 4.6.beta3`.
+> Requires **SpacetimeDB 2.0.0+** (v2 BSATN protocol). Tested with `Godot 4.4.1-stable` to `Godot 4.7-stable`.
 
 A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetimedb.com), enabling real-time data synchronization and server interaction directly from your Godot client. Built on the v2 BSATN binary protocol with full codegen support.
 
@@ -27,10 +27,12 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 ### Reducers & Procedures
 
 -   **Structured Reducer Error Handling:** `SpacetimeDBReducerCall` with typed `Outcome` enum (OK, OK_EMPTY, ERROR, INTERNAL_ERROR, TIMEOUT, DISCONNECTED). Generated reducers return the handle directly for inspection.
+-   **Reducer Return Values:** Reducers that return values have their BSATN-encoded return bytes available via `SpacetimeDBReducerCall.ret_value`.
 -   **Procedures:** Full support for SpacetimeDB 2.0 procedures. `SpacetimeDBProcedureCall` with `decode()` for typed return values. Generated wrappers via codegen.
 
 ### Data & Queries
 
+-   **One-Off Queries:** `query_sql()` executes a single SQL query without creating a subscription. Returns result rows directly or use the `one_off_query_received` signal.
 -   **PK-less Table Storage:** Tables without a primary key are stored in the local DB with hash-based batch delete. `get_all_rows()`, `count_all_rows()`, and RowReceiver work on PK-less tables.
 -   **Query Builder:** `SpacetimeDBQuery.table("user").where("online", true).to_sql()` — fluent API with SQL identifier validation and auto-escaping for strings, booleans, and identities.
 -   **Local DB Query Helpers:** `find_where()`, `first_where()`, `find_by()`, `first_by()`, `count_where()` on table wrappers with typed returns and short-circuit evaluation.

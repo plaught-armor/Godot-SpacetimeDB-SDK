@@ -76,12 +76,103 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 	type_map.merge(GDNATIVE_DICTLIKE_TYPES)
 	var meta_type_map = DEFAULT_META_TYPE_MAP.duplicate()
 
-	var schema_tables: Array = schema.get("tables", [])
-	var schema_types_raw: Array = schema.get("types", [])
+	var schema_tables: Array = []
+	var schema_types_raw: Array = []
+	var schema_reducers: Array = []
+	var typespace: Array = []
+	var misc_exports: Array = []
+
+	if schema.has("sections"):
+		# v10 section-based schema format
+		var lifecycle_map: Dictionary = { } # function_name -> lifecycle spec key
+		var schedules_by_table: Dictionary = { } # table source_name -> schedule dict
+		var canonical_names: Dictionary = { } # source_name -> canonical_name
+
+		# First pass: extract lifecycle, schedules, and explicit names
+		for section: Dictionary in schema["sections"]:
+			if section.has("LifeCycleReducers"):
+				for lc: Dictionary in section["LifeCycleReducers"]:
+					var fn_name: String = lc.get("function_name", "")
+					var spec: Dictionary = lc.get("lifecycle_spec", { })
+					if not fn_name.is_empty() and not spec.is_empty():
+						lifecycle_map[fn_name] = spec.keys()[0]
+			elif section.has("Schedules"):
+				for sched: Dictionary in section["Schedules"]:
+					var tbl: String = sched.get("table_name", "")
+					if not tbl.is_empty():
+						schedules_by_table[tbl] = {
+							"reducer_name": sched.get("function_name", ""),
+							"schedule_at_col": sched.get("schedule_at_col", 0),
+						}
+			elif section.has("ExplicitNames"):
+				for entry: Dictionary in section["ExplicitNames"].get("entries", []):
+					var mapping: Dictionary = entry.get("Table", entry.get("Function", entry.get("Index", { })))
+					if not mapping.is_empty():
+						canonical_names[mapping.get("source_name", "")] = mapping.get("canonical_name", "")
+
+		# Second pass: extract content sections
+		for section: Dictionary in schema["sections"]:
+			if section.has("Typespace"):
+				typespace = section["Typespace"].get("types", [])
+			elif section.has("Types"):
+				for td: Dictionary in section["Types"]:
+					var src: String = td.get("source_name", { }).get("source_name", "")
+					schema_types_raw.append({ "name": { "name": src }, "ty": td.get("ty", -1) })
+			elif section.has("Tables"):
+				for td: Dictionary in section["Tables"]:
+					var src: String = td.get("source_name", "")
+					var name: String = canonical_names.get(src, src)
+					var indexes: Array = []
+					for idx: Dictionary in td.get("indexes", []):
+						indexes.append({ "name": idx.get("source_name", { "some": null }), "accessor_name": idx.get("accessor_name", { "some": null }), "algorithm": idx.get("algorithm", { }) })
+					var constraints: Array = []
+					for con: Dictionary in td.get("constraints", []):
+						constraints.append({ "name": con.get("source_name", { "some": null }), "data": con.get("data", { }) })
+					var tbl: Dictionary = {
+						"name": name,
+						"product_type_ref": td.get("product_type_ref", -1),
+						"primary_key": td.get("primary_key", []),
+						"indexes": indexes,
+						"constraints": constraints,
+						"sequences": td.get("sequences", []),
+						"table_type": td.get("table_type", { "User": [] }),
+						"table_access": td.get("table_access", { "Public": [] }),
+						"is_event": td.get("is_event", false),
+					}
+					if schedules_by_table.has(src):
+						tbl["schedule"] = { "some": schedules_by_table[src] }
+					elif schedules_by_table.has(name):
+						tbl["schedule"] = { "some": schedules_by_table[name] }
+					schema_tables.append(tbl)
+			elif section.has("Reducers"):
+				for rd: Dictionary in section["Reducers"]:
+					var src: String = rd.get("source_name", "")
+					var name: String = canonical_names.get(src, src)
+					var r: Dictionary = { "name": name, "params": rd.get("params", { }) }
+					if lifecycle_map.has(src) or lifecycle_map.has(name):
+						r["lifecycle"] = { "some": lifecycle_map.get(src, lifecycle_map.get(name, "")) }
+					else:
+						r["lifecycle"] = { "some": null }
+					schema_reducers.append(r)
+			elif section.has("Procedures"):
+				for pd: Dictionary in section["Procedures"]:
+					var src: String = pd.get("source_name", "")
+					var name: String = canonical_names.get(src, src)
+					misc_exports.append({ "Procedure": { "name": name, "params": pd.get("params", { }), "return_type": pd.get("return_type", { }) } })
+			elif section.has("Views"):
+				for vd: Dictionary in section["Views"]:
+					var src: String = vd.get("source_name", "")
+					var name: String = canonical_names.get(src, src)
+					misc_exports.append({ "View": { "name": name, "return_type": vd.get("return_type", { }) } })
+	else:
+		# v9 flat schema format (SpacetimeDB 2.0.x)
+		schema_tables = schema.get("tables", [])
+		schema_types_raw = schema.get("types", [])
+		schema_reducers = schema.get("reducers", [])
+		typespace = schema.get("typespace", { }).get("types", [])
+		misc_exports = schema.get("misc_exports", [])
+
 	schema_types_raw.sort_custom(func(a, b): return a.get("ty", -1) < b.get("ty", -1))
-	var schema_reducers: Array = schema.get("reducers", [])
-	var typespace: Array = schema.get("typespace", { }).get("types", [])
-	var misc_exports: Array = schema.get("misc_exports", [])
 	var parsed_schema := SpacetimeParsedSchema.new()
 	parsed_schema.module = module_name.to_pascal_case()
 
@@ -215,6 +306,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		var table_data := {
 			"name": table_name_str,
 			"type_idx": target_type_idx,
+			"is_event": table_info.get("is_event", false),
 		}
 
 		if not target_type_def.has("table_names"):

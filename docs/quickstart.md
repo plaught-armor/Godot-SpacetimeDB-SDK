@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-> Requires **SpacetimeDB 2.0.0+** (v2 BSATN protocol). Tested with `Godot 4.4.1-stable` to `Godot 4.6.beta3`.
+> Requires **SpacetimeDB 2.0.0+** (v2 BSATN protocol). Tested with `Godot 4.4.1-stable` to `Godot 4.7-stable`.
 
 -   A SpacetimeDB server running version `2.0.0` or later
 -   A Godot 4.4.1+ project

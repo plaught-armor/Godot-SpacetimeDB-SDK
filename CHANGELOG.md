@@ -2,6 +2,17 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [1.2.0] - 2026-03-22
+
+### Added
+- One-off queries: `query_sql()` method and `one_off_query_received` signal for executing SQL without subscriptions
+- Reducer return values: `SpacetimeDBReducerCall.ret_value` exposes BSATN-encoded return bytes from reducers
+- Schema v10 support: codegen fetches the v10 module definition format when available, with section-based structure, `is_event` table flag, explicit name mappings, and separated lifecycle/schedule sections. Falls back to v9 for older servers (2.0.x).
+
+### Changed
+- `OneOffQueryMessage` now includes `request_id` field matching the v2 protocol
+- Schema fetch now tries `?version=10` first, falls back to `?version=9` automatically
+
 ## [1.1.1] - 2026-03-12
 
 ### Added

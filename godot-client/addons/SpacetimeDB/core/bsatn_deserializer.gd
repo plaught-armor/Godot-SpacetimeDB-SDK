@@ -611,7 +611,9 @@ func _get_reader_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 		var reader: Callable = Callable()
 		if bsatn_type_str != &"":
 			reader = _get_primitive_reader_from_bsatn_type(bsatn_type_str)
-			if not reader.is_valid() and debug_mode:
+			if not reader.is_valid() and _schema.types.has(_normalize(bsatn_type_str)):
+				reader = _read_nested_resource.bind(prop)
+			elif not reader.is_valid() and debug_mode:
 				push_warning("Unknown BSATN_TYPES entry '%s' for property '%s'. Falling back to Variant.Type." % [bsatn_type_str, prop.name])
 		if not reader.is_valid():
 			match prop_type:
@@ -1049,6 +1051,58 @@ func _read_subscription_error_message(spb: StreamPeerBuffer) -> SubscriptionErro
 	return resource
 
 
+## v2: OneOffQueryResult { request_id: u32, result: Result<QueryRows, string> }
+## Result: tag 0 = Ok(QueryRows{tables: Array[SingleTableRows]}), tag 1 = Err(string)
+func _read_one_off_query_result_message(spb: StreamPeerBuffer) -> OneOffQueryResponseMessage:
+	var resource := OneOffQueryResponseMessage.new()
+	resource.request_id = read_u32_le(spb)
+	if has_error():
+		return null
+
+	var result_tag: int = read_u8(spb)
+	if has_error():
+		return null
+
+	match result_tag:
+		0: # Ok(QueryRows)
+			var table_count: int = read_u32_le(spb)
+			if has_error():
+				return null
+			var row_spb: StreamPeerBuffer = StreamPeerBuffer.new()
+			for _i: int in range(table_count):
+				if has_error():
+					return null
+				var table_name: String = read_string_with_u32_len(spb)
+				if has_error():
+					return null
+				var table_update: TableUpdateData = TableUpdateData.new()
+				table_update.table_name = table_name
+				var table_name_lower: StringName = _normalize(table_name)
+				var row_schema_script: GDScript = _schema.get_type(table_name_lower)
+				if row_schema_script:
+					var inserts: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name, row_spb)
+					if has_error():
+						return null
+					table_update.inserts.assign(inserts)
+				else:
+					if debug_mode:
+						push_warning("No schema for '%s' in OneOffQueryResult, skipping rows." % table_name)
+					read_bsatn_row_list(spb)
+					if has_error():
+						return null
+				resource.tables.append(table_update)
+		1: # Err(string)
+			resource.is_error = true
+			resource.error_message = read_string_with_u32_len(spb)
+			if has_error():
+				return null
+		_:
+			_set_error("Invalid Result tag %d in OneOffQueryResult (expected 0=Ok, 1=Err)" % result_tag, spb.get_position() - 1)
+			return null
+
+	return resource
+
+
 ## v2: ReducerResult { request_id: u32, timestamp: Timestamp, result: ReducerOutcome }
 ## ReducerOutcome: 0=Ok(ReducerOk{ret_value,transaction_update}), 1=OkEmpty, 2=Err(bytes), 3=InternalError(string)
 func _read_reducer_result_message(spb: StreamPeerBuffer) -> ReducerResultMessage:
@@ -1071,7 +1125,7 @@ func _read_reducer_result_message(spb: StreamPeerBuffer) -> ReducerResultMessage
 
 	match outcome_tag:
 		ReducerOutcomeEnum.Options.ok:
-			var _ret_value := read_vec_u8(spb) # consume return value bytes
+			resource.ret_value = read_vec_u8(spb)
 			if has_error():
 				return null
 			var tx_update := _read_transaction_update_message(spb)
@@ -1179,8 +1233,7 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> SpacetimeDBServerMessa
 		SpacetimeDBServerMessage.TRANSACTION_UPDATE:
 			result = _read_transaction_update_message(spb)
 		SpacetimeDBServerMessage.ONE_OFF_QUERY_RESPONSE:
-			_set_error("Reader for OneOffQueryResponse not implemented.", spb.get_position() - 1)
-			return null
+			result = _read_one_off_query_result_message(spb)
 		SpacetimeDBServerMessage.REDUCER_RESULT:
 			result = _read_reducer_result_message(spb)
 		SpacetimeDBServerMessage.PROCEDURE_RESULT:

@@ -16,3 +16,5 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32",
 
 ## The reducer's outcome. See [ReducerOutcomeEnum] for variant details.
 var reducer_result: ReducerOutcomeEnum
+## Raw BSATN bytes of the reducer's return value (populated on OK outcomes).
+var ret_value: PackedByteArray = PackedByteArray()

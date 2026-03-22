@@ -2,14 +2,14 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name BlackholioPlayerTable extends _ModuleTable
 
-var identity: BlackholioPlayerIdentityUniqueIndex
 var player_id: BlackholioPlayerPlayerIdUniqueIndex
+var identity: BlackholioPlayerIdentityUniqueIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"player"
-	identity = BlackholioPlayerIdentityUniqueIndex.new(p_local_db)
 	player_id = BlackholioPlayerPlayerIdUniqueIndex.new(p_local_db)
+	identity = BlackholioPlayerIdentityUniqueIndex.new(p_local_db)
 
 func iter() -> Array[BlackholioPlayer]:
 	var rows: Array[_ModuleTableType] = super()

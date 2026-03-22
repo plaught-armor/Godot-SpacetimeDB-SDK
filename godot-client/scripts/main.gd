@@ -1,15 +1,15 @@
 extends Node2D
 
 const PLAYER_COLORS: Array[Color] = [
-	Color(1.0, 0.9, 0.2),    # Yellow
-	Color(0.7, 0.3, 0.9),    # Purple
-	Color(0.9, 0.2, 0.2),    # Red
-	Color(0.2, 0.6, 1.0),    # Blue
-	Color(1.0, 0.5, 0.2),    # Orange
-	Color(0.2, 0.9, 0.8),    # Cyan
-	Color(1.0, 0.4, 0.7),    # Pink
-	Color(0.5, 0.8, 0.2),    # Lime
-	Color(0.9, 0.9, 0.9),    # White
+	Color(1.0, 0.9, 0.2), # Yellow
+	Color(0.7, 0.3, 0.9), # Purple
+	Color(0.9, 0.2, 0.2), # Red
+	Color(0.2, 0.6, 1.0), # Blue
+	Color(1.0, 0.5, 0.2), # Orange
+	Color(0.2, 0.9, 0.8), # Cyan
+	Color(1.0, 0.4, 0.7), # Pink
+	Color(0.5, 0.8, 0.2), # Lime
+	Color(0.9, 0.9, 0.9), # White
 ]
 
 const FOOD_COLORS: Array[Color] = [
@@ -24,11 +24,11 @@ const FOOD_COLORS: Array[Color] = [
 const INPUT_RATE: float = 0.05 # 20Hz
 const WORLD_SCALE: float = 5.0 # Match VISUAL_SCALE so collision radius aligns with visual
 
-var entity_nodes: Dictionary = {} # entity_id (int) -> Node2D
-var circle_to_player: Dictionary = {} # entity_id (int) -> player_id (int)
-var player_circles: Dictionary = {} # player_id (int) -> Array[int] (entity_ids)
-var player_names: Dictionary = {} # player_id (int) -> String
-var player_identities: Dictionary = {} # identity (PackedByteArray) -> player_id (int)
+var entity_nodes: Dictionary = { } # entity_id (int) -> Node2D
+var circle_to_player: Dictionary = { } # entity_id (int) -> player_id (int)
+var player_circles: Dictionary = { } # player_id (int) -> Array[int] (entity_ids)
+var player_names: Dictionary = { } # player_id (int) -> String
+var player_identities: Dictionary = { } # identity (PackedByteArray) -> player_id (int)
 
 var local_identity: PackedByteArray
 var local_player_id: int = -1
@@ -43,7 +43,7 @@ var game_started: bool = false
 @onready var leaderboard: Control = $UI/Leaderboard
 @onready var world_border: Node2D = $WorldBorder
 
-const QUERIES :PackedStringArray= [
+const QUERIES: PackedStringArray = [
 	"SELECT * FROM entity",
 	"SELECT * FROM circle",
 	"SELECT * FROM food",
@@ -62,7 +62,7 @@ func _ready() -> void:
 	SpacetimeDB.Blackholio.connect_db(
 		"http://127.0.0.1:3000",
 		"blackholio",
-		options
+		options,
 	)
 
 	SpacetimeDB.Blackholio.connected.connect(_on_connected)
@@ -88,7 +88,6 @@ func _on_connection_error(code: int, reason: String) -> void:
 
 
 func _subscribe_all() -> void:
-
 	var sub := SpacetimeDB.Blackholio.subscribe(QUERIES)
 	if sub.error:
 		printerr("Subscription failed")
@@ -110,12 +109,14 @@ func _on_subscription_applied() -> void:
 
 	# Load existing state
 	_load_existing_data()
-	print("Loaded: %d entities, %d players, %d circles, %d food" % [
-		SpacetimeDB.Blackholio.db.entity.count(),
-		SpacetimeDB.Blackholio.db.player.count(),
-		SpacetimeDB.Blackholio.db.circle.count(),
-		SpacetimeDB.Blackholio.db.food.count(),
-	])
+	print(
+		"Loaded: %d entities, %d players, %d circles, %d food" % [
+			SpacetimeDB.Blackholio.db.entity.count(),
+			SpacetimeDB.Blackholio.db.player.count(),
+			SpacetimeDB.Blackholio.db.circle.count(),
+			SpacetimeDB.Blackholio.db.food.count(),
+		],
+	)
 
 	# Check if we already have a player with circles
 	if local_player_id >= 0 and player_circles.has(local_player_id) and player_circles[local_player_id].size() > 0:
@@ -154,8 +155,8 @@ func _load_existing_data() -> void:
 	for food in SpacetimeDB.Blackholio.db.food.iter():
 		_mark_as_food(food.entity_id)
 
-
 # --- Entity callbacks ---
+
 
 func _on_entity_insert(entity: Resource) -> void:
 	_spawn_entity_node(entity)
@@ -166,7 +167,7 @@ func _on_entity_update(_old: Resource, new: Resource) -> void:
 	if node and node.has_method("update_target"):
 		node.update_target(
 			Vector2(new.position.x, new.position.y) * WORLD_SCALE,
-			new.mass
+			new.mass,
 		)
 
 
@@ -187,8 +188,8 @@ func _on_entity_delete(entity: Resource) -> void:
 			if pid == local_player_id and player_circles[pid].size() == 0:
 				_on_local_player_died()
 
-
 # --- Circle callbacks ---
+
 
 func _on_circle_insert(circle: Resource) -> void:
 	_register_circle(circle)
@@ -227,8 +228,8 @@ func _register_circle(circle: Resource) -> void:
 		var pname: String = player_names.get(pid, "")
 		node.set_circle_info(pid, pname, color)
 
-
 # --- Food callbacks ---
+
 
 func _on_food_insert(food: Resource) -> void:
 	_mark_as_food(food.entity_id)
@@ -240,8 +241,8 @@ func _mark_as_food(entity_id: int) -> void:
 		var color: Color = FOOD_COLORS[entity_id % FOOD_COLORS.size()]
 		node.set_food(color)
 
-
 # --- Player callbacks ---
+
 
 func _on_player_insert(player: Resource) -> void:
 	_register_player(player)
@@ -261,8 +262,8 @@ func _register_player(player: Resource) -> void:
 	if player.identity == local_identity:
 		local_player_id = pid
 
-
 # --- Consume event ---
+
 
 func _on_consume_event(event: Resource) -> void:
 	var consumed_node: Node2D = entity_nodes.get(event.consumed_entity_id)
@@ -270,8 +271,8 @@ func _on_consume_event(event: Resource) -> void:
 	if consumed_node and consumer_node and consumed_node.has_method("despawn_toward"):
 		consumed_node.despawn_toward(consumer_node.position)
 
-
 # --- Entity spawning ---
+
 
 func _spawn_entity_node(entity: Resource) -> void:
 	if entity_nodes.has(entity.entity_id):
@@ -282,8 +283,8 @@ func _spawn_entity_node(entity: Resource) -> void:
 	entity_container.add_child(node)
 	entity_nodes[entity.entity_id] = node
 
-
 # --- Input ---
+
 
 func _process(delta: float) -> void:
 	if not game_started:
@@ -299,7 +300,7 @@ func _process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not game_started:
+	if not game_started or not SpacetimeDB.Blackholio.is_connected_db():
 		return
 
 	if event.is_action_pressed("split"):
@@ -309,6 +310,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _send_input() -> void:
+	if not SpacetimeDB.Blackholio.is_connected_db():
+		return
 	var screen_center: Vector2 = get_viewport_rect().size / 2.0
 	var mouse_pos: Vector2 = get_viewport().get_mouse_position()
 	var direction: Vector2 = (mouse_pos - screen_center) / (get_viewport_rect().size.y / 3.0)
@@ -316,8 +319,8 @@ func _send_input() -> void:
 	var db_dir := BlackholioDbVector2.create(direction.x, direction.y)
 	SpacetimeDB.Blackholio.reducers.update_player_input(db_dir)
 
-
 # --- Camera ---
+
 
 func _update_camera(delta: float) -> void:
 	if local_player_id < 0 or not player_circles.has(local_player_id):
@@ -352,8 +355,8 @@ func _update_camera(delta: float) -> void:
 	var z: float = lerpf(camera.zoom.x, target_zoom, delta * 2.0)
 	camera.zoom = Vector2(z, z)
 
-
 # --- Death / Respawn ---
+
 
 func _on_local_player_died() -> void:
 	game_started = false
@@ -376,21 +379,27 @@ func on_respawn() -> void:
 	death_screen.visible = false
 	game_started = true
 
-
 # --- World border ---
+
 
 func _draw_world_border() -> void:
 	var line := Line2D.new()
 	var s: float = float(world_size) * WORLD_SCALE
-	line.points = PackedVector2Array([
-		Vector2(0, 0), Vector2(s, 0), Vector2(s, s), Vector2(0, s), Vector2(0, 0)
-	])
+	line.points = PackedVector2Array(
+		[
+			Vector2(0, 0),
+			Vector2(s, 0),
+			Vector2(s, s),
+			Vector2(0, s),
+			Vector2(0, 0),
+		],
+	)
 	line.width = 2.0
 	line.default_color = Color(0.4, 0.4, 0.4, 0.8)
 	world_border.add_child(line)
 
-
 # --- Leaderboard helpers ---
+
 
 func get_leaderboard_data() -> Array:
 	var entries: Array = []
@@ -403,11 +412,13 @@ func get_leaderboard_data() -> Array:
 			if entity:
 				total_mass += entity.mass
 		if total_mass > 0:
-			entries.append({
-				"player_id": pid,
-				"name": player_names.get(pid, "???"),
-				"mass": total_mass,
-				"is_local": pid == local_player_id,
-			})
+			entries.append(
+				{
+					"player_id": pid,
+					"name": player_names.get(pid, "???"),
+					"mass": total_mass,
+					"is_local": pid == local_player_id,
+				},
+			)
 	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.mass > b.mass)
 	return entries

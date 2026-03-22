@@ -130,6 +130,28 @@ class SpacetimeDBClient:
 
 Waits for the reducer call response and returns the received `TransactionUpdateMessage`, or returns `null` if there is an error or it times out.
 
+### One-off queries
+
+#### `query_sql()` method
+
+```gdscript
+class SpacetimeDBClient:
+    async func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdateData]
+```
+
+| Name            | Description                                                       |
+| --------------- | ----------------------------------------------------------------- |
+| query           | A single SQL `SELECT` statement to execute.                       |
+| timeout_seconds | The number of seconds to wait for the response before timing out. |
+
+Executes a single SQL query without creating a subscription. Returns an array of `TableUpdateData` with the result rows (inserts only), or an empty array on error or timeout.
+
+```gdscript
+var results = await SpacetimeDB.MyModule.query_sql("SELECT * FROM player WHERE level > 10")
+for table in results:
+    print("Table: %s, rows: %d" % [table.table_name, table.inserts.size()])
+```
+
 ### Call procedures
 
 #### `call_procedure()` method
@@ -177,6 +199,7 @@ Waits for the procedure call response and returns the raw BSATN-encoded return b
 | `transaction_update_received(update: TransactionUpdateMessage)` | Emitted when a transaction update is received. |
 | `reducer_result_received(request_id: int, tx_update: TransactionUpdateMessage)` | Emitted when a reducer result arrives. |
 | `procedure_result_received(request_id: int, return_bytes: PackedByteArray)` | Emitted when a procedure result arrives. |
+| `one_off_query_received(request_id: int, tables: Array[TableUpdateData], error_message: String)` | Emitted when a one-off query result arrives. |
 | `reconnecting(attempt: int, max_attempts: int)` | Emitted before each reconnection attempt. |
 | `reconnected` | Emitted after a successful reconnection and all subscriptions are restored. |
 | `reconnect_failed` | Emitted when all reconnection attempts are exhausted. |
@@ -712,6 +735,15 @@ class SpacetimeDBReducerCall:
 ```
 
 The `TransactionUpdateMessage` from the server when the outcome is `OK`. `null` for other outcomes.
+
+#### `ret_value` property
+
+```gdscript
+class SpacetimeDBReducerCall:
+    var ret_value: PackedByteArray
+```
+
+Raw BSATN-encoded return value from the reducer. Populated when the outcome is `OK`. Empty for other outcomes or reducers with no return value.
 
 #### `is_ok()` / `is_error()` / `is_completed()` methods
 

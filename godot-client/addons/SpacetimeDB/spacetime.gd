@@ -147,9 +147,18 @@ func _on_generate_schema():
 	var failed = false
 	for module_alias: String in plugin_config.module_configs:
 		var module_config: SpacetimeDBModuleConfig = plugin_config.module_configs[module_alias]
-		var schema_uri := "%s/v1/database/%s/schema?version=9" % [plugin_config.uri, module_config.name]
+		var base_schema_uri := "%s/v1/database/%s/schema" % [plugin_config.uri, module_config.name]
+
+		# Try v10 first, fall back to v9 for older servers
+		var schema_uri := base_schema_uri + "?version=10"
 		http_request.request(schema_uri)
 		var result = await http_request.request_completed
+		if result[1] != 200:
+			print_log("Schema v10 not available (HTTP %d), falling back to v9..." % result[1])
+			schema_uri = base_schema_uri + "?version=9"
+			http_request.request(schema_uri)
+			result = await http_request.request_completed
+
 		if result[1] == 200:
 			var json: String = PackedByteArray(result[3]).get_string_from_utf8()
 			var snake_module_name = module_config.alias.replace("-", "_")

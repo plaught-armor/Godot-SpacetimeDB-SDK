@@ -30,6 +30,8 @@ signal transaction_update_received(update: TransactionUpdateMessage)
 signal reducer_result_received(request_id: int, tx_update: TransactionUpdateMessage)
 ## Emitted when a [ProcedureResultData] arrives. [param return_bytes] is empty on error.
 signal procedure_result_received(request_id: int, return_bytes: PackedByteArray)
+## Emitted when a [OneOffQueryResponseMessage] arrives.
+signal one_off_query_received(request_id: int, tables: Array[TableUpdateData], error_message: String)
 ## Emitted before each reconnect attempt.
 signal reconnecting(attempt: int, max_attempts: int)
 ## Emitted after a successful reconnect and all re-subscriptions are applied.
@@ -82,6 +84,7 @@ var _reducer_result_cache: Dictionary[int, TransactionUpdateMessage] = { } # req
 var _pending_reducer_calls: Dictionary[int, SpacetimeDBReducerCall] = { }
 var _pending_procedure_calls: Dictionary[int, SpacetimeDBProcedureCall] = { }
 var _procedure_result_cache: Dictionary[int, PackedByteArray] = { }
+var _one_off_query_cache: Dictionary[int, Array] = { }
 # --- Components ---
 var _connection: SpacetimeDBConnection
 var _deserializer: BSATNDeserializer
@@ -241,7 +244,7 @@ func get_local_identity() -> PackedByteArray:
 ## Subscribes to one or more SQL [param queries]. Returns a [SpacetimeDBSubscription] handle.
 func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 	if not is_connected_db():
-		printerr("SpacetimeDBClient: Cannot subscribe, not connected.")
+		push_warning("SpacetimeDBClient: Cannot subscribe, not connected.")
 		return SpacetimeDBSubscription.fail(ERR_CONNECTION_ERROR)
 
 	# 1. Generate a request ID
@@ -288,7 +291,7 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 ## Returns [constant OK] on success, or an [enum Error] code on failure.
 func unsubscribe(query_id: int) -> Error:
 	if not is_connected_db():
-		printerr("SpacetimeDBClient: Cannot unsubscribe, not connected.")
+		push_warning("SpacetimeDBClient: Cannot unsubscribe, not connected.")
 		return ERR_CONNECTION_ERROR
 
 	var request_id: int = _next_request_id
@@ -324,7 +327,7 @@ func unsubscribe(query_id: int) -> Error:
 ## Returns a [SpacetimeDBReducerCall] handle that resolves when the server responds.
 func call_reducer(reducer_name: String, args: Array = [], types: Array = []) -> SpacetimeDBReducerCall:
 	if not is_connected_db():
-		printerr("SpacetimeDBClient: Cannot call reducer, not connected.")
+		push_warning("SpacetimeDBClient: Cannot call reducer '%s', not connected." % reducer_name)
 		return SpacetimeDBReducerCall.fail(ERR_CONNECTION_ERROR)
 
 	var args_bytes: PackedByteArray = _serializer._serialize_arguments(args, types)
@@ -365,7 +368,7 @@ func call_reducer(reducer_name: String, args: Array = [], types: Array = []) -> 
 ## Returns a [SpacetimeDBProcedureCall] handle that resolves when the server responds.
 func call_procedure(procedure_name: String, args: Array = [], types: Array = [], return_bsatn_type: StringName = &"") -> SpacetimeDBProcedureCall:
 	if not is_connected_db():
-		printerr("SpacetimeDBClient: Cannot call procedure, not connected.")
+		push_warning("SpacetimeDBClient: Cannot call procedure, not connected.")
 		return SpacetimeDBProcedureCall.fail(ERR_CONNECTION_ERROR)
 
 	var args_bytes: PackedByteArray = _serializer._serialize_arguments(args, types)
@@ -398,6 +401,45 @@ func call_procedure(procedure_name: String, args: Array = [], types: Array = [],
 
 	printerr("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
 	return SpacetimeDBProcedureCall.fail(ERR_CONNECTION_ERROR)
+
+
+## Executes a single SQL query without creating a subscription.[br]
+## Returns an [Array] of [TableUpdateData] with the result rows, or an empty array on error/timeout.[br]
+## Use [signal one_off_query_received] for non-blocking access.
+func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdateData]:
+	if not is_connected_db():
+		push_warning("SpacetimeDBClient: Cannot run one-off query, not connected.")
+		return []
+
+	var request_id: int = _next_request_id
+	_next_request_id += 1
+
+	var payload := OneOffQueryMessage.new(request_id, query)
+	var message_bytes: PackedByteArray = _serializer.serialize_client_message(
+		SpacetimeDBClientMessage.ONEOFF_QUERY,
+		payload,
+	)
+
+	if _serializer.has_error():
+		printerr("SpacetimeDBClient: Failed to serialize OneOffQuery message: %s" % _serializer.get_last_error())
+		return []
+
+	if not (_connection and _connection._websocket):
+		printerr("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
+		return []
+
+	var err: Error = _connection.send_bytes(message_bytes)
+	if err != OK:
+		printerr("SpacetimeDBClient: Error sending OneOffQuery message: %s" % error_string(err))
+		return []
+
+	print_log("SpacetimeDBClient: OneOffQuery sent (request_id=%d): %s" % [request_id, query])
+
+	# Wait for response
+	var result: Variant = await _wait_for_response(request_id, _one_off_query_cache, one_off_query_received, timeout_seconds)
+	if result == null:
+		return []
+	return result as Array[TableUpdateData]
 
 
 ## Awaits the reducer result for [param request_id_to_match], returning the [TransactionUpdateMessage] or [code]null[/code] on timeout.
@@ -703,6 +745,7 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				if can_stamp:
 					handle.outcome = SpacetimeDBReducerCall.Outcome.OK
 					handle.transaction_update = tx_update
+					handle.ret_value = message.ret_value
 			ReducerOutcomeEnum.Options.okEmpty:
 				if can_stamp:
 					handle.outcome = SpacetimeDBReducerCall.Outcome.OK_EMPTY
@@ -725,6 +768,19 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		_reducer_result_cache[rid] = tx_update
 		_evict_oldest(_reducer_result_cache)
 		reducer_result_received.emit(rid, tx_update)
+
+	elif message is OneOffQueryResponseMessage:
+		var rid: int = message.request_id
+		if message.is_error:
+			printerr("SpacetimeDBClient: OneOffQuery error (request_id=%d): %s" % [rid, message.error_message])
+			_one_off_query_cache[rid] = [] as Array[TableUpdateData]
+			_evict_oldest(_one_off_query_cache)
+			one_off_query_received.emit(rid, [] as Array[TableUpdateData], message.error_message)
+		else:
+			print_log("SpacetimeDBClient: OneOffQuery result (request_id=%d): %d tables" % [rid, message.tables.size()])
+			_one_off_query_cache[rid] = message.tables
+			_evict_oldest(_one_off_query_cache)
+			one_off_query_received.emit(rid, message.tables, "")
 
 	elif message is ProcedureResultData:
 		var rid: int = message.request_id
