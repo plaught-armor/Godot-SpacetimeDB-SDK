@@ -24,11 +24,10 @@ const FOOD_COLORS: Array[Color] = [
 const INPUT_RATE: float = 0.05 # 20Hz
 const WORLD_SCALE: float = 5.0 # Match VISUAL_SCALE so collision radius aligns with visual
 
-var entity_nodes: Dictionary = { } # entity_id (int) -> Node2D
-var circle_to_player: Dictionary = { } # entity_id (int) -> player_id (int)
-var player_circles: Dictionary = { } # player_id (int) -> Array[int] (entity_ids)
-var player_names: Dictionary = { } # player_id (int) -> String
-var player_identities: Dictionary = { } # identity (PackedByteArray) -> player_id (int)
+var entity_nodes: Dictionary[int, Node2D] = { }
+var circle_to_player: Dictionary[int, int] = { }
+var player_circles: Dictionary[int, Array] = { }
+var player_names: Dictionary[int, String] = { }
 
 var local_identity: PackedByteArray
 var local_player_id: int = -1
@@ -181,12 +180,7 @@ func _on_entity_delete(entity: Resource) -> void:
 	if circle_to_player.has(entity.entity_id):
 		var pid: int = circle_to_player[entity.entity_id]
 		circle_to_player.erase(entity.entity_id)
-		if player_circles.has(pid):
-			player_circles[pid].erase(entity.entity_id)
-
-			# Check death for local player
-			if pid == local_player_id and player_circles[pid].size() == 0:
-				_on_local_player_died()
+		_remove_circle_from_player(pid, entity.entity_id)
 
 # --- Circle callbacks ---
 
@@ -200,10 +194,7 @@ func _on_circle_delete(circle: Resource) -> void:
 	if circle_to_player.has(eid):
 		var pid: int = circle_to_player[eid]
 		circle_to_player.erase(eid)
-		if player_circles.has(pid):
-			player_circles[pid].erase(eid)
-			if pid == local_player_id and player_circles[pid].size() == 0:
-				_on_local_player_died()
+		_remove_circle_from_player(pid, eid)
 
 	# Reset entity node to default appearance
 	var node: Node2D = entity_nodes.get(eid)
@@ -227,6 +218,15 @@ func _register_circle(circle: Resource) -> void:
 		var color: Color = PLAYER_COLORS[pid % PLAYER_COLORS.size()]
 		var pname: String = player_names.get(pid, "")
 		node.set_circle_info(pid, pname, color)
+
+
+func _remove_circle_from_player(pid: int, eid: int) -> void:
+	if not player_circles.has(pid):
+		return
+	var circles: Array = player_circles[pid]
+	circles.erase(eid)
+	if pid == local_player_id and circles.is_empty():
+		_on_local_player_died()
 
 # --- Food callbacks ---
 
@@ -257,7 +257,6 @@ func _on_player_delete(player: Resource) -> void:
 func _register_player(player: Resource) -> void:
 	var pid: int = player.player_id
 	player_names[pid] = player.name
-	player_identities[player.identity] = pid
 
 	if player.identity == local_identity:
 		local_player_id = pid
@@ -326,14 +325,14 @@ func _update_camera(delta: float) -> void:
 	if local_player_id < 0 or not player_circles.has(local_player_id):
 		return
 
-	var circles: Array = player_circles[local_player_id]
-	if circles.size() == 0:
+	var circle_count: int = player_circles[local_player_id].size()
+	if circle_count == 0:
 		return
 
 	# Calculate center of mass
 	var total_mass: float = 0.0
 	var weighted_pos: Vector2 = Vector2.ZERO
-	for eid: int in circles:
+	for eid: int in player_circles[local_player_id]:
 		var node: Node2D = entity_nodes.get(eid)
 		if node:
 			var entity: Resource = SpacetimeDB.Blackholio.db.entity.entity_id.find(eid)
@@ -349,7 +348,7 @@ func _update_camera(delta: float) -> void:
 	# Zoom based on mass + split bonus
 	var base_zoom: float = 1.0
 	var mass_bonus: float = clampf(total_mass / 50.0, 0.0, 10.0) * 0.05
-	var split_bonus: float = 0.3 if circles.size() >= 2 else 0.0
+	var split_bonus: float = 0.3 if circle_count >= 2 else 0.0
 	var target_zoom: float = base_zoom - mass_bonus - split_bonus
 	target_zoom = clampf(target_zoom, 0.2, 1.0)
 	var z: float = lerpf(camera.zoom.x, target_zoom, delta * 2.0)
@@ -401,13 +400,14 @@ func _draw_world_border() -> void:
 # --- Leaderboard helpers ---
 
 
-func get_leaderboard_data() -> Array:
-	var entries: Array = []
+func get_leaderboard_data() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
 	for pid: int in player_circles:
-		if not player_circles[pid] or player_circles[pid].size() == 0:
+		var circles: Array = player_circles[pid]
+		if circles.is_empty():
 			continue
 		var total_mass: int = 0
-		for eid: int in player_circles[pid]:
+		for eid: int in circles:
 			var entity: Resource = SpacetimeDB.Blackholio.db.entity.entity_id.find(eid)
 			if entity:
 				total_mass += entity.mass

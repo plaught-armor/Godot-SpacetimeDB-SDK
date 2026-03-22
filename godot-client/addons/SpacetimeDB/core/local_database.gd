@@ -144,7 +144,6 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 				_primary_key_cache[table_name_lower] = prop.name
 				return prop.name
 
-	print_debug("LocalDatabase: table %s has no primary_key" % table_name_lower)
 	_primary_key_cache[table_name_lower] = &""
 	return &""
 

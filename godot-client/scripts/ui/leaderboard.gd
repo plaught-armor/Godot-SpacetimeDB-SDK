@@ -20,7 +20,7 @@ func update_leaderboard(game: Node2D) -> void:
 	if not game.has_method("get_leaderboard_data"):
 		return
 
-	var entries: Array = game.get_leaderboard_data()
+	var entries: Array[Dictionary] = game.get_leaderboard_data()
 
 	# Hide all first
 	for label: Label in row_labels:
@@ -34,7 +34,7 @@ func update_leaderboard(game: Node2D) -> void:
 		row_labels[shown].text = "%d. %s - %d" % [i + 1, entry.name, entry.mass]
 		row_labels[shown].add_theme_color_override(
 			"font_color",
-			Color.YELLOW if entry.is_local else Color.WHITE
+			Color.YELLOW if entry.is_local else Color.WHITE,
 		)
 		row_labels[shown].visible = true
 		if entry.is_local:
