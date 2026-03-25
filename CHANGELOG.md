@@ -2,6 +2,17 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [1.3.0] - 2026-03-24
+
+### Breaking
+- **Requires SpacetimeDB 2.1.0+** — schema v9 support has been completely removed. The codegen now exclusively uses schema v10 (`?version=10`), which is only available in SpacetimeDB 2.1.0 and later. Users on SpacetimeDB 2.0.x must upgrade. See [migration guide](docs/migrations/1.3.md).
+
+### Changed
+- Schema parser reads v10 section-based format natively instead of normalizing to v9 shape
+- Codegen string templates hoisted to top-level constants for Godot 4.7 compatibility
+- Removed PK-less table debug noise (`print_debug` for event/PK-less tables)
+- Blackholio example: typed dictionaries, removed dead code, deduplicated circle removal
+
 ## [1.2.0] - 2026-03-22
 
 ### Added
