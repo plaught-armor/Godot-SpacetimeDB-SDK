@@ -74,9 +74,6 @@ func _init(options: SpacetimeDBConnectionOptions, db_name: String):
 
 
 func _physics_process(delta: float) -> void:
-	if _websocket == null:
-		return
-
 	_websocket.poll()
 	var state: WebSocketPeer.State = _websocket.get_ready_state()
 
@@ -139,12 +136,8 @@ func _notification(what: int) -> void:
 					"_total_sent_kbytes",
 				]:
 					Performance.remove_custom_monitor("spacetime/" + _db_name + suffix)
-		NOTIFICATION_CRASH:
-			if _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED and _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSING:
-				get_tree().auto_accept_quit = false
-				_handle_game_closing()
-		NOTIFICATION_WM_CLOSE_REQUEST:
-			if _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED and _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSING:
+		NOTIFICATION_CRASH, NOTIFICATION_WM_CLOSE_REQUEST:
+			if is_websocket_active():
 				get_tree().auto_accept_quit = false
 				_handle_game_closing()
 
@@ -286,7 +279,7 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 
 ## Closes the WebSocket connection with the given [param code] and [param reason].
 func disconnect_from_server(code: int = 1000, reason: String = "Client initiated disconnect") -> void:
-	if _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED and _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSING:
+	if is_websocket_active():
 		_print_log("SpacetimeDBConnection: Closing connection...")
 		_websocket.close(code, reason)
 	_is_connected = false
@@ -296,6 +289,11 @@ func disconnect_from_server(code: int = 1000, reason: String = "Client initiated
 ## Returns [code]true[/code] if the WebSocket is currently open.
 func is_connected_db() -> bool:
 	return _is_connected
+
+
+## Returns [code]true[/code] if the WebSocket peer exists and is not closed.
+func is_websocket_active() -> bool:
+	return _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED
 
 
 func _print_log(log_message: String) -> void:

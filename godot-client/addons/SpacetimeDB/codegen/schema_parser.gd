@@ -15,7 +15,6 @@ const GDNATIVE_PRIMITIVE_TYPES: Dictionary[String, String] = {
 	"Bool": "bool",
 	"Nil": "null", # For Option<()>
 }
-
 const GDNATIVE_ARRAYLIKE_TYPES: Dictionary[String, String] = {
 	"Vector4": "Vector4",
 	"Vector4I": "Vector4i",
@@ -26,11 +25,9 @@ const GDNATIVE_ARRAYLIKE_TYPES: Dictionary[String, String] = {
 	"Quaternion": "Quaternion",
 	"Color": "Color",
 }
-
 const GDNATIVE_DICTLIKE_TYPES: Dictionary[String, String] = {
 	"Plane": "Plane",
 }
-
 const DEFAULT_TYPE_MAP: Dictionary[String, String] = {
 	"__identity__": "PackedByteArray",
 	"__connection_id__": "PackedByteArray",
@@ -38,7 +35,6 @@ const DEFAULT_TYPE_MAP: Dictionary[String, String] = {
 	"__time_duration_micros__": "int",
 	"U128": "PackedByteArray",
 }
-
 const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 	"I8": "i8",
 	"I16": "i16",
@@ -69,12 +65,19 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 }
 
 
+static func _find_type_index(type_name: String, parsed_types_list: Array[Dictionary]) -> int:
+	for i: int in parsed_types_list.size():
+		if parsed_types_list[i].name == type_name:
+			return i
+	return -1
+
+
 static func parse_schema(schema: Dictionary, module_name: String, project_enums: Dictionary = { }) -> SpacetimeParsedSchema:
 	var type_map: Dictionary[String, String] = DEFAULT_TYPE_MAP.duplicate() as Dictionary[String, String]
 	type_map.merge(GDNATIVE_PRIMITIVE_TYPES)
 	type_map.merge(GDNATIVE_ARRAYLIKE_TYPES)
 	type_map.merge(GDNATIVE_DICTLIKE_TYPES)
-	var meta_type_map = DEFAULT_META_TYPE_MAP.duplicate()
+	var meta_type_map: Dictionary = DEFAULT_META_TYPE_MAP.duplicate()
 
 	var schema_tables: Array = []
 	var schema_types_raw: Array = []
@@ -177,7 +180,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		if not type_name:
 			SpacetimePlugin.print_err("Invalid schema: Type name not found for type: %s" % type_info)
 			return parsed_schema
-		var type_data := { "name": type_name }
+		var type_data: Dictionary = { "name": type_name }
 		if _is_gd_native(type_name):
 			_set_gd_native(type_name, type_data)
 
@@ -189,13 +192,13 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			SpacetimePlugin.print_err("Invalid schema: Type index %d out of bounds for typespace (size %d) for type %s" % [ty_idx, typespace.size(), type_name])
 			return parsed_schema
 
-		var current_type_definition = typespace[ty_idx]
+		var current_type_definition: Dictionary = typespace[ty_idx]
 		var struct_def: Dictionary = current_type_definition.get("Product", { })
 		var sum_type_def: Dictionary = current_type_definition.get("Sum", { })
 		if struct_def:
 			var struct_elements: Array[Dictionary] = []
-			for el in struct_def.get("elements", []):
-				var data = {
+			for el: Dictionary in struct_def.get("elements", []):
+				var data: Dictionary = {
 					"name": el.get("name", { }).get("some", null),
 				}
 				var type = _parse_field_type(el.get("algebraic_type", { }), data, schema_types_raw)
@@ -212,11 +215,11 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				return parsed_schema
 			parsed_types_list.append(type_data)
 		elif sum_type_def:
-			var parsed_variants := []
+			var parsed_variants: Array[Dictionary] = []
 			type_data["is_sum_type"] = _is_sum_type(sum_type_def)
 			for v in sum_type_def.get("variants", []):
 				var variant_data := { "name": v.get("name", { }).get("some", null) }
-				var type = _parse_sum_type(v.get("algebraic_type", { }), variant_data, schema_types_raw)
+				var type = _parse_field_type(v.get("algebraic_type", { }), variant_data, schema_types_raw)
 				if not type.is_empty():
 					variant_data["type"] = type
 				parsed_variants.append(variant_data)
@@ -225,7 +228,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 
 			if not type_data.get("is_sum_type"):
 				meta_type_map[type_name] = "u8"
-				var pascal_name: String = type_name.to_pascal_case()
+				var pascal_name: String = type_name if project_enums.has(type_name) else type_name.to_pascal_case()
 				if project_enums.has(pascal_name):
 					var project_enum: Dictionary = project_enums[pascal_name]
 					var schema_variants: Array[String] = []
@@ -263,15 +266,8 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			if not type_name or GDNATIVE_PRIMITIVE_TYPES.has(type_name) or DEFAULT_TYPE_MAP.has(type_name):
 				continue
 
-			var type_idx = 0
-			var type_found = false
-			for pt in parsed_types_list:
-				if pt.name == type_name:
-					type_found = true
-					break
-				type_idx += 1
-
-			if type_found:
+			var type_idx := _find_type_index(type_name, parsed_types_list)
+			if type_idx >= 0:
 				field_type["type_idx"] = type_idx
 
 	var parsed_tables_list: Array[Dictionary] = []
@@ -283,16 +279,11 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			continue
 		var ref_idx = int(ref_idx_raw)
 
-		var target_type_def = null
-		var target_type_idx = 0
-		var original_type_name_for_table = "UNKNOWN_TYPE_FOR_TABLE"
+		var original_type_name_for_table := "UNKNOWN_TYPE_FOR_TABLE"
 		if ref_idx < schema_types_raw.size():
 			original_type_name_for_table = schema_types_raw[ref_idx].get("name", { }).get("name")
-			for pt in parsed_types_list:
-				if pt.name == original_type_name_for_table:
-					target_type_def = pt
-					break
-				target_type_idx += 1
+		var target_type_idx := _find_type_index(original_type_name_for_table, parsed_types_list)
+		var target_type_def: Variant = parsed_types_list[target_type_idx] if target_type_idx >= 0 else null
 
 		if target_type_def == null or not target_type_def.has("struct"):
 			SpacetimePlugin.print_err("Table '%s' refers to an invalid or non-struct type (index %s in original schema, name %s)." % [table_name_str, str(ref_idx), original_type_name_for_table if original_type_name_for_table else "N/A"])
@@ -360,30 +351,23 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		var lifecycle = reducer_info.get("lifecycle", { }).get("some", null)
 		if lifecycle:
 			continue
-		var r_name = reducer_info.get("name", null)
-		if r_name == null:
+		var r_name: String = reducer_info.get("name", "")
+		if r_name.is_empty():
 			SpacetimePlugin.print_err("Reducer found with no name: %s" % [reducer_info])
 			continue
 		var reducer_data: Dictionary = { "name": r_name }
 
-		var reducer_raw_params = reducer_info.get("params", { }).get("elements", [])
-		var reducer_params = []
-		for raw_param in reducer_raw_params:
-			var data = { "name": raw_param.get("name", { }).get("some", null) }
+		var reducer_raw_params: Array = reducer_info.get("params", { }).get("elements", [])
+		var reducer_params: Array[Dictionary] = []
+		for raw_param: Dictionary in reducer_raw_params:
+			var data: Dictionary = { "name": raw_param.get("name", { }).get("some", null) }
 			var type = _parse_field_type(raw_param.get("algebraic_type", { }), data, schema_types_raw)
 			data["type"] = type
 
-			var type_idx = 0
-			var type_found = false
 			if type and not (GDNATIVE_PRIMITIVE_TYPES.has(type) or DEFAULT_TYPE_MAP.has(type)):
-				for pt in parsed_types_list:
-					if pt.name == type:
-						type_found = true
-						break
-					type_idx += 1
-
-			if type_found:
-				data["type_idx"] = type_idx
+				var type_idx := _find_type_index(type, parsed_types_list)
+				if type_idx >= 0:
+					data["type_idx"] = type_idx
 			reducer_params.append(data)
 		reducer_data["params"] = reducer_params
 
@@ -404,40 +388,31 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			var proc_data: Dictionary = { "name": proc_name }
 
 			# Parse params (same as reducer params)
-			var raw_params = proc.get("params", { }).get("elements", [])
-			var proc_params = []
-			for raw_param in raw_params:
-				var data = { "name": raw_param.get("name", { }).get("some", null) }
-				var type = _parse_field_type(raw_param.get("algebraic_type", { }), data, schema_types_raw)
+			var raw_params: Array = proc.get("params", { }).get("elements", [])
+			var proc_params: Array[Dictionary] = []
+			for raw_param: Dictionary in raw_params:
+				var data: Dictionary = { "name": raw_param.get("name", { }).get("some", null) }
+				var type := _parse_field_type(raw_param.get("algebraic_type", { }), data, schema_types_raw)
 				data["type"] = type
 
-				var type_idx = 0
-				var type_found = false
 				if type and not (GDNATIVE_PRIMITIVE_TYPES.has(type) or DEFAULT_TYPE_MAP.has(type)):
-					for pt in parsed_types_list:
-						if pt.name == type:
-							type_found = true
-							break
-						type_idx += 1
-				if type_found:
-					data["type_idx"] = type_idx
+					var type_idx := _find_type_index(type, parsed_types_list)
+					if type_idx >= 0:
+						data["type_idx"] = type_idx
 				proc_params.append(data)
 			proc_data["params"] = proc_params
 
 			# Parse return type
 			var ret_data: Dictionary = { }
-			var ret_type = _parse_field_type(proc.get("return_type", { }), ret_data, schema_types_raw)
+			var ret_type := _parse_field_type(proc.get("return_type", { }), ret_data, schema_types_raw)
 			proc_data["return_type"] = ret_type
 			proc_data["return_data"] = ret_data
 
 			# Resolve return type_idx for BSATN type lookup
 			if ret_type and not (GDNATIVE_PRIMITIVE_TYPES.has(ret_type) or DEFAULT_TYPE_MAP.has(ret_type)):
-				var ret_type_idx = 0
-				for pt in parsed_types_list:
-					if pt.name == ret_type:
-						proc_data["return_type_idx"] = ret_type_idx
-						break
-					ret_type_idx += 1
+				var ret_type_idx := _find_type_index(ret_type, parsed_types_list)
+				if ret_type_idx >= 0:
+					proc_data["return_type_idx"] = ret_type_idx
 
 			parsed_procedures_list.append(proc_data)
 			continue
@@ -541,7 +516,7 @@ static func _is_gd_native(type_name: String) -> bool:
 	return GDNATIVE_PRIMITIVE_TYPES.has(type_name) or GDNATIVE_ARRAYLIKE_TYPES.has(type_name) or GDNATIVE_DICTLIKE_TYPES.has(type_name)
 
 
-static func _set_gd_native(type_name: String, type_data) -> void:
+static func _set_gd_native(type_name: String, type_data: Dictionary) -> void:
 	type_data["gd_native"] = true
 
 	if GDNATIVE_PRIMITIVE_TYPES.has(type_name):
@@ -552,7 +527,7 @@ static func _set_gd_native(type_name: String, type_data) -> void:
 		type_data["gd_dictlike"] = true
 
 
-static func _validate_gd_native(type_name: String, type_data) -> bool:
+static func _validate_gd_native(type_name: String, type_data: Dictionary) -> bool:
 	if type_data.has("gd_primitive"):
 		return true
 
@@ -611,7 +586,7 @@ static func _validate_gd_native(type_name: String, type_data) -> bool:
 	return true
 
 
-static func _is_sum_type(sum_def) -> bool:
+static func _is_sum_type(sum_def: Dictionary) -> bool:
 	var variants = sum_def.get("variants", [])
 	for variant in variants:
 		var type = variant.get("algebraic_type", { })
@@ -623,19 +598,16 @@ static func _is_sum_type(sum_def) -> bool:
 	return false
 
 
-static func _is_sum_option(sum_def) -> bool:
+static func _is_sum_option(sum_def: Dictionary) -> bool:
 	var variants = sum_def.get("variants", [])
 	if variants.size() != 2:
 		return false
 
-	var name1 = variants[0].get("name", { }).get("some", "")
-	var name2 = variants[1].get("name", { }).get("some", "")
+	var found_some := false
+	var found_none := false
+	var none_is_unit := false
 
-	var found_some = false
-	var found_none = false
-	var none_is_unit = false
-
-	for v_idx in range(variants.size()):
+	for v_idx: int in range(variants.size()):
 		var v_name = variants[v_idx].get("name", { }).get("some", "")
 		if v_name == "some":
 			found_some = true
@@ -689,45 +661,3 @@ static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_t
 			SpacetimePlugin.print_err("Invalid schema: Empty algebraic_type encountered")
 			return ""
 		return field_type.keys()[0]
-
-
-# Recursively parse a sum type
-static func _parse_sum_type(variant_type: Dictionary, data: Dictionary, schema_types: Array) -> String:
-	if variant_type.has("Array"):
-		var nested_type = data.get("nested_type", [])
-		nested_type.append(&"Array")
-		data["nested_type"] = nested_type
-		if data.has("is_option"):
-			data["is_array_inside_option"] = true
-		else:
-			data["is_array"] = true
-		variant_type = variant_type.Array
-		return _parse_sum_type(variant_type, data, schema_types)
-	elif variant_type.has("Product"):
-		var variant_type_array = variant_type.Product.get("elements", [])
-		if variant_type_array.size() >= 1:
-			return variant_type_array[0].get('name', { }).get('some', null)
-		else:
-			return ""
-	elif variant_type.has("Sum"):
-		if _is_sum_option(variant_type.Sum):
-			var nested_type = data.get("nested_type", [])
-			nested_type.append(&"Option")
-			data["nested_type"] = nested_type
-			if data.has("is_array"):
-				data["is_option_inside_array"] = true
-			else:
-				data["is_option"] = true
-		variant_type = variant_type.Sum.variants[0].get('algebraic_type', { })
-		return _parse_sum_type(variant_type, data, schema_types)
-	elif variant_type.has("Ref"):
-		var ref_idx: int = int(variant_type.Ref)
-		if ref_idx < 0 or ref_idx >= schema_types.size():
-			SpacetimePlugin.print_err("Invalid schema: Ref index %d out of bounds (typespace size %d)" % [ref_idx, schema_types.size()])
-			return ""
-		return schema_types[ref_idx].get("name", { }).get("name", null)
-	else:
-		if variant_type.is_empty():
-			SpacetimePlugin.print_err("Invalid schema: Empty algebraic_type in sum variant")
-			return ""
-		return variant_type.keys()[0]

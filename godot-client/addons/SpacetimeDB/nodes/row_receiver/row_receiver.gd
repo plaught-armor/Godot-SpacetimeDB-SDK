@@ -15,7 +15,7 @@ signal transactions_completed
 var selected_table_name: StringName:
 	set = set_selected_table_name
 var _derived_table_names: Array[StringName] = []
-var _current_db_instance = null
+var _current_db_instance: LocalDatabase = null
 
 
 func _ready() -> void:
@@ -49,7 +49,7 @@ func _get_property_list() -> Array[Dictionary]:
 	return properties
 
 
-func on_set(schema: _ModuleTableType):
+func on_set(schema: _ModuleTableType) -> void:
 	_derived_table_names.clear()
 
 	if schema == null:
@@ -69,9 +69,9 @@ func on_set(schema: _ModuleTableType):
 			table_to_receive = schema
 			name = "Receiver [%s]" % global_name
 
-			var constant_map = script_resource.get_script_constant_map()
+			var constant_map: Dictionary = script_resource.get_script_constant_map()
 			if constant_map.has("table_names"):
-				var names_value = constant_map["table_names"]
+				var names_value: Variant = constant_map["table_names"]
 				if names_value is Array:
 					for item in names_value:
 						if item is StringName or item is String:
@@ -79,7 +79,7 @@ func on_set(schema: _ModuleTableType):
 		else:
 			name = "Receiver [Unknown Schema Type]"
 
-	var current_selection_still_valid = _derived_table_names.has(selected_table_name)
+	var current_selection_still_valid: bool = _derived_table_names.has(selected_table_name)
 	if not current_selection_still_valid:
 		if not _derived_table_names.is_empty():
 			set_selected_table_name(_derived_table_names[0])
@@ -104,7 +104,7 @@ func get_table_data() -> Array[_ModuleTableType]:
 	return []
 
 
-func _print_log(log_message: String):
+func _print_log(log_message: String) -> void:
 	if debug_mode:
 		print("%s: %s" % [get_path(), log_message])
 
@@ -123,7 +123,7 @@ func _get_db(wait_for_init: bool = false) -> LocalDatabase:
 	return _current_db_instance
 
 
-func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName):
+func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName) -> void:
 	if Engine.is_editor_hint() or table_name_sn == &"":
 		return
 
@@ -148,7 +148,7 @@ func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName):
 	_print_log("Successfully subscribed to table: %s" % table_name_sn)
 
 
-func _unsubscribe_from_table(table_name_sn: StringName):
+func _unsubscribe_from_table(table_name_sn: StringName) -> void:
 	if Engine.is_editor_hint() or table_name_sn == &"":
 		return
 
@@ -164,17 +164,17 @@ func _unsubscribe_from_table(table_name_sn: StringName):
 	db.unsubscribe_from_transactions_completed(table_name_sn, _on_transactions_completed)
 
 
-func _on_insert(row: _ModuleTableType):
+func _on_insert(row: _ModuleTableType) -> void:
 	insert.emit(row)
 
 
-func _on_update(previous: _ModuleTableType, row: _ModuleTableType):
+func _on_update(previous: _ModuleTableType, row: _ModuleTableType) -> void:
 	update.emit(previous, row)
 
 
-func _on_delete(row: _ModuleTableType):
+func _on_delete(row: _ModuleTableType) -> void:
 	delete.emit(row)
 
 
-func _on_transactions_completed():
+func _on_transactions_completed() -> void:
 	transactions_completed.emit()

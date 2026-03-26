@@ -2,6 +2,14 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [1.3.1] - 2026-03-25
+
+### Changed
+- Added type annotations across core files (`local_database.gd`, `schema_parser.gd`, `spacetime.gd`, `row_receiver.gd`, `ui.gd`)
+- Encapsulated WebSocket access behind `is_websocket_active()` in `spacetimedb_client.gd`
+- Schema parser: extracted `_find_type_index()` helper, removed redundant blank lines
+- Removed outdated migration guides (0.2.0, 1.0), kept only 1.3.0
+
 ## [1.3.0] - 2026-03-24
 
 ### Breaking

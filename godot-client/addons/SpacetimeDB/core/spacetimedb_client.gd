@@ -269,7 +269,7 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 	var subscription: SpacetimeDBSubscription = SpacetimeDBSubscription.create(self, query_id, queries)
 
 	# 5. Send the binary message via WebSocket
-	if _connection and _connection._websocket:
+	if _connection and _connection.is_websocket_active():
 		var err: Error = _connection.send_bytes(message_bytes)
 		if err != OK:
 			printerr("SpacetimeDBClient: Error sending Subscribe BSATN message: %s" % error_string(err))
@@ -310,7 +310,7 @@ func unsubscribe(query_id: int) -> Error:
 		return ERR_PARSE_ERROR
 
 	# 3. Send the binary message via WebSocket
-	if _connection and _connection._websocket:
+	if _connection and _connection.is_websocket_active():
 		var err: Error = _connection.send_bytes(message_bytes)
 		if err != OK:
 			printerr("SpacetimeDBClient: Error sending Unsubscribe BSATN message: %s" % error_string(err))
@@ -349,7 +349,7 @@ func call_reducer(reducer_name: String, args: Array = [], types: Array = []) -> 
 		printerr("SpacetimeDBClient: Failed to serialize CallReducer message: %s" % _serializer.get_last_error())
 		return SpacetimeDBReducerCall.fail(ERR_PARSE_ERROR)
 
-	if _connection and _connection._websocket:
+	if _connection and _connection.is_websocket_active():
 		var err: Error = _connection.send_bytes(message_bytes)
 		if err != OK:
 			printerr("SpacetimeDBClient: Error sending CallReducer message: ", err)
@@ -389,7 +389,7 @@ func call_procedure(procedure_name: String, args: Array = [], types: Array = [],
 		printerr("SpacetimeDBClient: Failed to serialize CallProcedure message: %s" % _serializer.get_last_error())
 		return SpacetimeDBProcedureCall.fail(ERR_PARSE_ERROR)
 
-	if _connection and _connection._websocket:
+	if _connection and _connection.is_websocket_active():
 		var err: Error = _connection.send_bytes(message_bytes)
 		if err != OK:
 			printerr("SpacetimeDBClient: Error sending CallProcedure message: ", err)
@@ -424,7 +424,7 @@ func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdat
 		printerr("SpacetimeDBClient: Failed to serialize OneOffQuery message: %s" % _serializer.get_last_error())
 		return []
 
-	if not (_connection and _connection._websocket):
+	if not (_connection and _connection.is_websocket_active()):
 		printerr("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
 		return []
 

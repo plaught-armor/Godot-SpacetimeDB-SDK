@@ -121,16 +121,13 @@ func _on_plugin_config_changed() -> void:
 	save_codegen_data()
 
 
-func _on_check_uri():
-	if plugin_config.uri.ends_with("/"):
-		plugin_config.uri = plugin_config.uri.left(-1)
-		save_codegen_data()
-	var uri = plugin_config.uri
-	uri += "/v1/ping"
+func _on_check_uri() -> void:
+	_sanitize_uri()
+	var uri: String = plugin_config.uri + "/v1/ping"
 	print_log("Pinging... " + uri)
 	http_request.request(uri)
-	var ping_start = Time.get_ticks_usec()
-	var result = await http_request.request_completed
+	var ping_start: int = Time.get_ticks_usec()
+	var result: Array = await http_request.request_completed
 	if result[1] == 0:
 		print_err("Request timeout - " + uri)
 	else:
@@ -138,22 +135,19 @@ func _on_check_uri():
 	print_log("request took: " + str(Time.get_ticks_usec() - ping_start) + " microseconds")
 
 
-func _on_generate_schema():
-	if plugin_config.uri.ends_with("/"):
-		plugin_config.uri = plugin_config.uri.left(-1)
-
+func _on_generate_schema() -> void:
+	_sanitize_uri()
 	print_log("Starting code generation...")
 	print_log("Fetching module schemas...")
-	var failed = false
+	var failed: bool = false
 	for module_alias: String in plugin_config.module_configs:
 		var module_config: SpacetimeDBModuleConfig = plugin_config.module_configs[module_alias]
 		var schema_uri := "%s/v1/database/%s/schema?version=10" % [plugin_config.uri, module_config.name]
 		http_request.request(schema_uri)
-		var result = await http_request.request_completed
+		var result: Array = await http_request.request_completed
 
 		if result[1] == 200:
 			var json: String = PackedByteArray(result[3]).get_string_from_utf8()
-			var snake_module_name = module_config.alias.replace("-", "_")
 			module_config.unparsed_module_schema = json
 			print_log("Fetched schema for module: %s with alias: %s" % [module_config.name, module_config.alias])
 			continue
@@ -197,20 +191,26 @@ func _on_generate_schema():
 	print_log("Code generation complete!")
 
 
+func _sanitize_uri() -> void:
+	if plugin_config.uri.ends_with("/"):
+		plugin_config.uri = plugin_config.uri.left(-1)
+		save_codegen_data()
+
+
 func _cleanup_unused_classes(dir_path: String = "res://schema", files: Array[String] = []) -> void:
-	var dir = DirAccess.open(dir_path)
+	var dir: DirAccess = DirAccess.open(dir_path)
 	if not dir:
 		return
 	print_log("File Cleanup: Scanning folder: " + dir_path)
-	for file in dir.get_files():
+	for file: String in dir.get_files():
 		if not file.ends_with(".gd"):
 			continue
-		var full_path = "%s/%s" % [dir_path, file]
+		var full_path: String = "%s/%s" % [dir_path, file]
 		if not full_path in files:
 			print_log("Removing file: %s" % [full_path])
 			DirAccess.remove_absolute(full_path)
 			if FileAccess.file_exists("%s.uid" % [full_path]):
 				DirAccess.remove_absolute("%s.uid" % [full_path])
-	var subfolders = dir.get_directories()
-	for folder in subfolders:
+	var subfolders: PackedStringArray = dir.get_directories()
+	for folder: String in subfolders:
 		_cleanup_unused_classes(dir_path + "/" + folder, files)

@@ -13,8 +13,7 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 -   [How to install the SpacetimeDB SDK addon](docs/installation.md)
 -   [Quick Start guide](docs/quickstart.md)
 -   [API Reference](docs/api.md)
--   [Migration guide (0.2.x to 1.0)](docs/migrations/1.0.md)
--   [Migration guide (0.1.x to 0.2.0)](docs/migrations/0.2.0.md)
+-   [Migration guide (1.2.x to 1.3.0)](docs/migrations/1.3.md)
 
 ## Features
 

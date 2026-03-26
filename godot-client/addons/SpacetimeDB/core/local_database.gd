@@ -12,12 +12,12 @@ var _tables: Dictionary[StringName, Dictionary] = { }
 var _primary_key_cache: Dictionary[StringName, StringName] = { }
 var _schema: SpacetimeDBSchema
 var _cached_normalized_table_names: Dictionary[StringName, StringName] = { }
-var _insert_listeners_by_table: Dictionary[StringName, Array] = { }
-var _update_listeners_by_table: Dictionary[StringName, Array] = { }
-var _delete_listeners_by_table: Dictionary[StringName, Array] = { }
-var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = { }
-var _pk_less_tables: Dictionary[StringName, Array] = { }
-var _pk_less_property_cache: Dictionary[StringName, Array] = { }
+var _insert_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
+var _update_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
+var _delete_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
+var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
+var _pk_less_tables: Dictionary[StringName, Array] = { } ## Array[_ModuleTableType]
+var _pk_less_property_cache: Dictionary[StringName, Array] = { } ## Array[StringName]
 
 ## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -149,14 +149,14 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 
 
 # --- PK-less Row Helpers ---
-func _get_row_properties(table_name_lower: StringName) -> Array:
+func _get_row_properties(table_name_lower: StringName) -> Array[StringName]:
 	if _pk_less_property_cache.has(table_name_lower):
 		return _pk_less_property_cache[table_name_lower]
 	var schema_key: StringName = table_name_lower.replace("_", "")
 	if not _schema.types.has(schema_key):
 		return []
 	var schema := _schema.get_type(schema_key)
-	var props: Array = []
+	var props: Array[StringName] = []
 	for prop: Dictionary in schema.get_script_property_list():
 		if prop.usage & PROPERTY_USAGE_STORAGE:
 			props.append(prop.name)
@@ -164,14 +164,14 @@ func _get_row_properties(table_name_lower: StringName) -> Array:
 	return props
 
 
-func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array) -> bool:
+func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array[StringName]) -> bool:
 	for prop_name: StringName in props:
 		if a.get(prop_name) != b.get(prop_name):
 			return false
 	return true
 
 
-func _row_hash(row: _ModuleTableType, props: Array) -> int:
+func _row_hash(row: _ModuleTableType, props: Array[StringName]) -> int:
 	var h: int = 0
 	for prop_name: StringName in props:
 		h = h * 31 + hash(row.get(prop_name))
@@ -223,7 +223,7 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 		if not _pk_less_tables.has(table_name_lower):
 			_pk_less_tables[table_name_lower] = []
 		var rows_array: Array = _pk_less_tables[table_name_lower]
-		var props: Array = _get_row_properties(table_name_lower)
+		var props: Array[StringName] = _get_row_properties(table_name_lower)
 
 		for inserted_row: _ModuleTableType in table_update.inserts:
 			rows_array.append(inserted_row)

@@ -47,7 +47,7 @@ func set_uri(uri: String) -> void:
 	_uri_input.text = uri
 
 
-func update_module_ui():
+func update_module_ui() -> void:
 	for child in _modules_container.get_children():
 		_modules_container.remove_child(child)
 		child.queue_free()
@@ -102,12 +102,12 @@ func update_module_ui():
 		_generate_button.disabled = false
 
 
-func clear_logs():
+func clear_logs() -> void:
 	_logs_label.text = ""
 
 
-func copy_selected_logs():
-	var selected_text = _logs_label.get_selected_text()
+func copy_selected_logs() -> void:
+	var selected_text: String = _logs_label.get_selected_text()
 	if selected_text:
 		DisplayServer.clipboard_set(selected_text)
 
@@ -160,8 +160,8 @@ func _on_generate_code() -> void:
 func _on_new_module() -> void:
 	var name := _new_module_name_input.text
 	var alias := _new_module_alias_input.text
-	var table_config = _new_module_table_checkbox.button_pressed
-	var reducer_config = _new_module_reducer_checkbox.button_pressed
+	var table_config: bool = _new_module_table_checkbox.button_pressed
+	var reducer_config: bool = _new_module_reducer_checkbox.button_pressed
 	if alias.is_empty():
 		alias = name
 	var module_config: SpacetimeDBModuleConfig = _plugin_config.module_configs.get(alias, SpacetimeDBModuleConfig.new())
