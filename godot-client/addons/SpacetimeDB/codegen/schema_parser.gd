@@ -72,6 +72,14 @@ static func _find_type_index(type_name: String, parsed_types_list: Array[Diction
 	return -1
 
 
+## Returns the index of the struct field with [param field_name], or -1 if absent.
+static func _find_struct_field_index(struct_fields: Array, field_name: String) -> int:
+	for i: int in struct_fields.size():
+		if struct_fields[i].get("name", "") == field_name:
+			return i
+	return -1
+
+
 static func parse_schema(schema: Dictionary, module_name: String, project_enums: Dictionary = { }) -> SpacetimeParsedSchema:
 	var type_map: Dictionary[String, String] = DEFAULT_TYPE_MAP.duplicate() as Dictionary[String, String]
 	type_map.merge(GDNATIVE_PRIMITIVE_TYPES)
@@ -92,6 +100,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 	var lifecycle_map: Dictionary = { } # function_name -> lifecycle spec key
 	var schedules_by_table: Dictionary = { } # table source_name -> schedule dict
 	var canonical_names: Dictionary = { } # source_name -> canonical_name
+	var view_pk_by_view: Dictionary = { } # view source_name -> primary key column name
 
 	# First pass: extract lifecycle, schedules, and explicit names
 	for section: Dictionary in schema["sections"]:
@@ -114,6 +123,14 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				var mapping: Dictionary = entry.get("Table", entry.get("Function", entry.get("Index", { })))
 				if not mapping.is_empty():
 					canonical_names[mapping.get("source_name", "")] = mapping.get("canonical_name", "")
+		elif section.has("ViewPrimaryKeys"):
+			# Schema V10 (SpacetimeDB 2.2.0+): primary keys for procedural views.
+			# Single-column only for now; columns is a Vec to allow future composites.
+			for vpk: Dictionary in section["ViewPrimaryKeys"]:
+				var view_src: String = vpk.get("view_source_name", "")
+				var pk_cols: Array = vpk.get("columns", [])
+				if not view_src.is_empty() and not pk_cols.is_empty():
+					view_pk_by_view[view_src] = String(pk_cols[0])
 
 	# Second pass: extract content sections
 	for section: Dictionary in schema["sections"]:
@@ -168,7 +185,9 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			for vd: Dictionary in section["Views"]:
 				var src: String = vd.get("source_name", "")
 				var name: String = canonical_names.get(src, src)
-				misc_exports.append({ "View": { "name": name, "return_type": vd.get("return_type", { }) } })
+				# ViewPrimaryKeys keys by view source name, so look up by src (not canonical name).
+				var view_pk_name: String = view_pk_by_view.get(src, "")
+				misc_exports.append({ "View": { "name": name, "return_type": vd.get("return_type", { }), "primary_key_name": view_pk_name } })
 
 	schema_types_raw.sort_custom(func(a, b): return a.get("ty", -1) < b.get("ty", -1))
 	var parsed_schema := SpacetimeParsedSchema.new()
@@ -461,6 +480,18 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		if return_type.is_empty():
 			SpacetimePlugin.print_err("view return type not found: %s" % [return_type_dict])
 			continue
+
+		# Resolve the view's primary key (Schema V10, SpacetimeDB 2.2.0+).
+		# ViewPrimaryKeys gives a column name; map it to a field index in the struct.
+		var view_pk_name: String = view.get("primary_key_name", "")
+		var view_pk_idx: int = 0
+		if not view_pk_name.is_empty():
+			view_pk_idx = _find_struct_field_index(return_type.get("struct", []), view_pk_name)
+			if view_pk_idx < 0:
+				SpacetimePlugin.print_err("View '%s': primary key column '%s' not found in struct" % [name, view_pk_name])
+				view_pk_idx = 0
+				view_pk_name = ""
+
 		if return_type.get("table_names", []).is_empty():
 			return_type = {
 				"name": return_type["name"],
@@ -469,8 +500,8 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 					"%s" % name,
 				],
 				&"table_name": "%s" % name,
-				&"primary_key": 0,
-				&"primary_key_name": "",
+				&"primary_key": view_pk_idx,
+				&"primary_key_name": view_pk_name,
 				&"is_public": [
 					true,
 				],
@@ -482,6 +513,8 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			var is_public_list = return_type["is_public"]
 			is_public_list.append(true)
 			return_type["is_public"] = is_public_list
+			return_type["primary_key"] = view_pk_idx
+			return_type["primary_key_name"] = view_pk_name
 		parsed_types_list[type_index] = return_type
 
 		var tables_of_same_type: Array = parsed_tables_list.filter(func(table: Dictionary): return table.get("type_idx", -1) == type_index)
@@ -490,8 +523,8 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			new_table_dict = {
 				"name": name,
 				"type_idx": type_index,
-				"primary_key": 0,
-				"primary_key_name": "",
+				"primary_key": view_pk_idx,
+				"primary_key_name": view_pk_name,
 				"unique_indexes": [],
 				"is_public": true,
 			}
