@@ -313,8 +313,18 @@ func _print_log(log_message: String) -> void:
 
 func _handle_game_closing() -> void:
 	disconnect_from_server()
+	var tree: SceneTree = get_tree()
+	var physics_dt: float = 1.0 / maxf(float(Engine.physics_ticks_per_second), 1.0)
+	var max_wait: float = 3.0
+	var elapsed: float = 0.0
 	while _websocket.get_ready_state() == WebSocketPeer.STATE_CLOSING:
 		_print_log("SpacetimeDBConnection: WS closing")
-		await get_tree().physics_frame
-	get_tree().auto_accept_quit = true
-	get_tree().quit()
+		await tree.physics_frame
+		if not is_instance_valid(self):
+			return
+		elapsed = minf(elapsed + physics_dt, max_wait + 1.0)
+		if elapsed >= max_wait:
+			_print_log("SpacetimeDBConnection: WS close wait exceeded cap, forcing quit")
+			break
+	tree.auto_accept_quit = true
+	tree.quit()

@@ -702,7 +702,6 @@ func _create_deserialization_plan(script: Script) -> Array:
 
 		if not reader_callable.is_valid():
 			_set_error("Unsupported property or missing reader for '%s' in script '%s'" % [prop_name, script.resource_path], -1)
-			_deserialization_plan_cache[script] = []
 			return []
 
 		plan.append(

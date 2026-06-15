@@ -26,7 +26,13 @@ func _ready() -> void:
 		push_error("The table_to_receive is not set on %s" % get_path())
 		return
 
+	call_deferred(&"_init_subscription")
+
+
+func _init_subscription() -> void:
 	var db: LocalDatabase = await _get_db(true)
+	if not is_instance_valid(self) or not is_inside_tree():
+		return
 	_subscribe_to_table(db, selected_table_name)
 
 
@@ -132,9 +138,13 @@ func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName) -> void:
 	if get_parent() and not get_parent().is_node_ready():
 		_print_log("Waiting for parent before subscribing")
 		await get_parent().ready
+		if not is_instance_valid(self) or not is_inside_tree():
+			return
 
 	# Emit data that was inserted before we subscribed
 	var existing_data: Array[_ModuleTableType] = await get_table_data()
+	if not is_instance_valid(self) or not is_inside_tree():
+		return
 	if existing_data.size() > 0:
 		for row: _ModuleTableType in existing_data:
 			_on_insert(row)

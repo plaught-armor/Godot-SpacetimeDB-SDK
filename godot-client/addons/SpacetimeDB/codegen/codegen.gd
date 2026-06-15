@@ -97,6 +97,26 @@ static func _safe_name(field_name: String) -> String:
 	return field_name
 
 
+## Formats a single table name as a BSATN StringName literal.
+static func _format_table_name_literal(x: String) -> String:
+	return "&'%s'" % x
+
+
+## Formats a [name, type] pair as a typed `create()` parameter.
+static func _format_create_param(x: Array) -> String:
+	return "p_%s: %s" % [x[0], x[1]]
+
+
+## Formats an enum variant name as an `Options` member line.
+static func _format_enum_variant_member(x: Dictionary) -> String:
+	return "\t%s," % [x.get("name", "")]
+
+
+## Extracts a safe parameter name from a reducer/procedure param dict.
+static func _param_dict_to_safe_name(x: Dictionary) -> String:
+	return _safe_name(x.get("name", ""))
+
+
 ## Returns the BSATN type string for a single parameter definition.
 func _param_to_bsatn_type(schema: SpacetimeParsedSchema, param: Dictionary) -> String:
 	var original_type: String = param.get("type", "Variant")
@@ -150,10 +170,14 @@ func generate_bindings() -> Array[String]:
 	var autoload_content: String = _generate_autoload_gdscript(_plugin_config.module_configs.keys())
 	var autoload_output_file_path: String = "%s/%s" % [_schema_path, SpacetimePlugin.AUTOLOAD_FILE_NAME]
 	var autoload_file: FileAccess = FileAccess.open(autoload_output_file_path, FileAccess.WRITE)
-	if autoload_file:
-		autoload_file.store_string(autoload_content)
-		autoload_file.close()
-		generated_files.append(autoload_output_file_path)
+	if autoload_file == null:
+		SpacetimePlugin.print_err(
+			"failed to open %s: %s" % [autoload_output_file_path, FileAccess.get_open_error()]
+		)
+		return generated_files
+	autoload_file.store_string(autoload_content)
+	autoload_file.close()
+	generated_files.append(autoload_output_file_path)
 
 	SpacetimePlugin.print_log("Generated files:")
 	for generated_file in generated_files:
@@ -239,14 +263,29 @@ func _generate_module_bindings(module_name: String):
 	if not DirAccess.dir_exists_absolute(debug_dir_path):
 		DirAccess.make_dir_recursive_absolute(debug_dir_path)
 
-	var file: FileAccess = FileAccess.open("%s/readme.txt" % [debug_dir_path], FileAccess.WRITE)
-	if file:
+	var readme_path: String = "%s/readme.txt" % [debug_dir_path]
+	var file: FileAccess = FileAccess.open(readme_path, FileAccess.WRITE)
+	if file == null:
+		SpacetimePlugin.print_err(
+			"failed to open %s: %s" % [readme_path, FileAccess.get_open_error()]
+		)
+	else:
 		file.store_string("You can delete this directory and files. It's only used for codegen debugging.")
-	file = FileAccess.open("%s/schema_%s.json" % [debug_dir_path, module_name], FileAccess.WRITE)
-	if file:
+	var schema_dbg_path: String = "%s/schema_%s.json" % [debug_dir_path, module_name]
+	file = FileAccess.open(schema_dbg_path, FileAccess.WRITE)
+	if file == null:
+		SpacetimePlugin.print_err(
+			"failed to open %s: %s" % [schema_dbg_path, FileAccess.get_open_error()]
+		)
+	else:
 		file.store_string(JSON.stringify(schema.to_dictionary(), "\t", false))
-	file = FileAccess.open("%s/unparsed_schema_%s.json" % [debug_dir_path, module_name], FileAccess.WRITE)
-	if file:
+	var unparsed_dbg_path: String = "%s/unparsed_schema_%s.json" % [debug_dir_path, module_name]
+	file = FileAccess.open(unparsed_dbg_path, FileAccess.WRITE)
+	if file == null:
+		SpacetimePlugin.print_err(
+			"failed to open %s: %s" % [unparsed_dbg_path, FileAccess.get_open_error()]
+		)
+	else:
 		file.store_string(JSON.stringify(json, "\t", false))
 	var generated_files: Array[String] = _generate_gdscript_from_schema(module_name, schema)
 	return generated_files
@@ -285,10 +324,14 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			DirAccess.make_dir_recursive_absolute(folder_path)
 
 		var file: FileAccess = FileAccess.open(output_file_path, FileAccess.WRITE)
-		if file:
-			file.store_string(content)
-			file.close()
-			generated_files.append(output_file_path)
+		if file == null:
+			SpacetimePlugin.print_err(
+				"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()]
+			)
+			return generated_files
+		file.store_string(content)
+		file.close()
+		generated_files.append(output_file_path)
 
 	for table_def in schema.tables:
 		var table_name = table_def.get("name", null)
@@ -310,10 +353,14 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 				DirAccess.make_dir_recursive_absolute(folder_path)
 
 			var file: FileAccess = FileAccess.open(output_file_path, FileAccess.WRITE)
-			if file:
-				file.store_string(content)
-				file.close()
-				generated_files.append(output_file_path)
+			if file == null:
+				SpacetimePlugin.print_err(
+					"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()]
+				)
+				return generated_files
+			file.store_string(content)
+			file.close()
+			generated_files.append(output_file_path)
 
 		var content: String = _generate_table_gdscript(schema, table_def)
 
@@ -325,55 +372,79 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			DirAccess.make_dir_recursive_absolute(folder_path)
 
 		var file: FileAccess = FileAccess.open(output_file_path, FileAccess.WRITE)
-		if file:
-			file.store_string(content)
-			file.close()
-			generated_files.append(output_file_path)
+		if file == null:
+			SpacetimePlugin.print_err(
+				"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()]
+			)
+			return generated_files
+		file.store_string(content)
+		file.close()
+		generated_files.append(output_file_path)
 
 	var module_content: String = _generate_module_client_gdscript(module_name, schema)
 	var output_file_name_module: String = "module_%s_client.gd" % schema.module.to_snake_case()
 	var output_file_path_module: String = "%s/%s" % [_schema_path, output_file_name_module]
 	var file_module: FileAccess = FileAccess.open(output_file_path_module, FileAccess.WRITE)
-	if file_module:
-		file_module.store_string(module_content)
-		file_module.close()
-		generated_files.append(output_file_path_module)
+	if file_module == null:
+		SpacetimePlugin.print_err(
+			"failed to open %s: %s" % [output_file_path_module, FileAccess.get_open_error()]
+		)
+		return generated_files
+	file_module.store_string(module_content)
+	file_module.close()
+	generated_files.append(output_file_path_module)
 
 	var db_content: String = _generate_db_gdscript(module_name, schema)
 	var db_output_file_name: String = "module_%s_db.gd" % schema.module.to_snake_case()
 	var db_output_file_path: String = "%s/%s" % [_schema_path, db_output_file_name]
 	var db_file: FileAccess = FileAccess.open(db_output_file_path, FileAccess.WRITE)
-	if db_file:
-		db_file.store_string(db_content)
-		db_file.close()
-		generated_files.append(db_output_file_path)
+	if db_file == null:
+		SpacetimePlugin.print_err(
+			"failed to open %s: %s" % [db_output_file_path, FileAccess.get_open_error()]
+		)
+		return generated_files
+	db_file.store_string(db_content)
+	db_file.close()
+	generated_files.append(db_output_file_path)
 
 	var reducers_content: String = _generate_reducers_gdscript(module_name, schema)
 	var output_file_name_reducers: String = "module_%s_reducers.gd" % schema.module.to_snake_case()
 	var output_file_path_reducers: String = "%s/%s" % [_schema_path, output_file_name_reducers]
 	var file_reducers: FileAccess = FileAccess.open(output_file_path_reducers, FileAccess.WRITE)
-	if file_reducers:
-		file_reducers.store_string(reducers_content)
-		file_reducers.close()
-		generated_files.append(output_file_path_reducers)
+	if file_reducers == null:
+		SpacetimePlugin.print_err(
+			"failed to open %s: %s" % [output_file_path_reducers, FileAccess.get_open_error()]
+		)
+		return generated_files
+	file_reducers.store_string(reducers_content)
+	file_reducers.close()
+	generated_files.append(output_file_path_reducers)
 
 	var procedures_content: String = _generate_procedures_gdscript(module_name, schema)
 	var output_file_name_procedures: String = "module_%s_procedures.gd" % schema.module.to_snake_case()
 	var output_file_path_procedures: String = "%s/%s" % [_schema_path, output_file_name_procedures]
 	var file_procedures: FileAccess = FileAccess.open(output_file_path_procedures, FileAccess.WRITE)
-	if file_procedures:
-		file_procedures.store_string(procedures_content)
-		file_procedures.close()
-		generated_files.append(output_file_path_procedures)
+	if file_procedures == null:
+		SpacetimePlugin.print_err(
+			"failed to open %s: %s" % [output_file_path_procedures, FileAccess.get_open_error()]
+		)
+		return generated_files
+	file_procedures.store_string(procedures_content)
+	file_procedures.close()
+	generated_files.append(output_file_path_procedures)
 
 	var types_content: String = _generate_types_gdscript(module_name, schema)
 	var output_file_name_types: String = "module_%s_types.gd" % schema.module.to_snake_case()
 	var output_file_path_types: String = "%s/%s" % [_schema_path, output_file_name_types]
 	var file_types: FileAccess = FileAccess.open(output_file_path_types, FileAccess.WRITE)
-	if file_types:
-		file_types.store_string(types_content)
-		file_types.close()
-		generated_files.append(output_file_path_types)
+	if file_types == null:
+		SpacetimePlugin.print_err(
+			"failed to open %s: %s" % [output_file_path_types, FileAccess.get_open_error()]
+		)
+		return generated_files
+	file_types.store_string(types_content)
+	file_types.close()
+	generated_files.append(output_file_path_types)
 
 	return generated_files
 
@@ -474,7 +545,7 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 			"class_name %s extends %s\n\n" % [_class_name, _extends_class] +
 			"const module_name : String = \"%s\"\n" % schema.module +
 			"const table_names: Array[StringName] = [%s]\n" %
-			[", ".join(table_names.map(func(x): return "&'%s'" % x))])
+			[", ".join(table_names.map(_format_table_name_literal))])
 
 	var class_fields: Array = []
 	var field_lines: String = ""
@@ -544,7 +615,7 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 		content += "const BSATN_TYPES: Dictionary[StringName, StringName] = { %s }\n" % ", ".join(bsatn_type_entries)
 	content += "\n" + field_lines + "\n" + create_func_documentation_comment
 	content += ("static func create(%s) -> %s:\n" %
-			[", ".join(class_fields.map(func(x): return "p_%s: %s" % [x[0], x[1]])), _class_name] +
+			[", ".join(class_fields.map(_format_create_param)), _class_name] +
 			"\tvar result: %s = %s.new()\n" % [_class_name, _class_name])
 	for field_data in class_fields:
 		var f_name: String = field_data[0]
@@ -556,11 +627,7 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 func _generate_enum_gdscript(schema: SpacetimeParsedSchema, type_def: Dictionary) -> String:
 	var enum_name: String = type_def.get("name", "")
 	var variants: Array = type_def.get("enum", [""])
-	var variant_names: String = "\n".join(
-		variants.map(
-			func(x): return "\t%s," % [x.get("name", "")]
-		),
-	)
+	var variant_names: String = "\n".join(variants.map(_format_enum_variant_member))
 
 	var _class_name: String = schema.module.to_pascal_case() + enum_name.to_pascal_case()
 	var enum_options_list: Array = variants.map(func(x): return _variant_to_enum_option(x, schema.meta_type_map))
@@ -741,7 +808,7 @@ func _generate_reducers_gdscript(module_name: String, schema: SpacetimeParsedSch
 		else:
 			params_str = ", ".join(params_str_parts)
 
-		var param_names_list = reducer.get("params", []).map(func(x): return _safe_name(x.get("name", "")))
+		var param_names_list = reducer.get("params", []).map(_param_dict_to_safe_name)
 		var param_names_str = ""
 		if not param_names_list.is_empty():
 			param_names_str = ", ".join(param_names_list)
@@ -806,7 +873,7 @@ func _generate_procedures_gdscript(module_name: String, schema: SpacetimeParsedS
 		else:
 			params_str = ", ".join(params_str_parts)
 
-		var param_names_list = proc.get("params", []).map(func(x): return _safe_name(x.get("name", "")))
+		var param_names_list = proc.get("params", []).map(_param_dict_to_safe_name)
 		var param_names_str = ""
 		if not param_names_list.is_empty():
 			param_names_str = ", ".join(param_names_list)

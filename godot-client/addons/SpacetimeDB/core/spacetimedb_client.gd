@@ -440,6 +440,8 @@ func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdat
 
 
 ## Awaits the reducer result for [param request_id_to_match], returning the [TransactionUpdateMessage] or [code]null[/code] on timeout.
+## [br][b]Warning:[/b] a [code]null[/code] return is ambiguous — it can mean a timeout, an [code]okEmpty[/code] outcome, or a server-side error.
+## Callers that need the actual outcome should use the [SpacetimeDBReducerCall] returned by generated reducer wrappers and call [code]SpacetimeDBReducerCall.wait_for_response[/code] instead.
 func wait_for_reducer_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> TransactionUpdateMessage:
 	if request_id_to_match < 0:
 		return null
@@ -786,6 +788,11 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				if can_stamp:
 					handle.outcome = SpacetimeDBReducerCall.Outcome.INTERNAL_ERROR
 					handle.error_message = err_msg
+			_:
+				push_error("SpacetimeDBClient: unknown status_tag %d" % outcome.value)
+				if can_stamp:
+					handle.outcome = SpacetimeDBReducerCall.Outcome.INTERNAL_ERROR
+					handle.error_message = "unknown reducer outcome tag %d" % outcome.value
 		_pending_reducer_calls.erase(rid)
 		_reducer_result_cache[rid] = tx_update
 		_evict_oldest(_reducer_result_cache)
@@ -821,6 +828,11 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				if can_stamp:
 					handle.outcome = SpacetimeDBProcedureCall.Outcome.INTERNAL_ERROR
 					handle.error_message = message.error_message
+			_:
+				push_error("SpacetimeDBClient: unknown status_tag %d" % message.status_tag)
+				if can_stamp:
+					handle.outcome = SpacetimeDBProcedureCall.Outcome.INTERNAL_ERROR
+					handle.error_message = "unknown procedure status_tag %d" % message.status_tag
 
 		_pending_procedure_calls.erase(rid)
 		_procedure_result_cache[rid] = ret_bytes

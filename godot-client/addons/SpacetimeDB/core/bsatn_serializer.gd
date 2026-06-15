@@ -206,7 +206,7 @@ func write_rust_enum(rust_enum: RustEnum) -> void:
 		_write_value_from_bsatn_type(data, opt_type, &"")
 		return
 	if not sub_class.is_empty():
-		if not data:
+		if data == null:
 			data = _generate_default_type(sub_class)
 		_write_value_from_bsatn_type(data, sub_class, &"")
 
@@ -727,8 +727,11 @@ func _create_serialization_plan(script: Script) -> Array:
 
 # Serializes the fields of a Resource instance sequentially.
 func _serialize_resource_fields(resource: Object) -> bool:
+	if resource == null:
+		_set_error("Cannot serialize fields of null or scriptless resource")
+		return false
 	var script: Script = resource.get_script()
-	if not resource or not script:
+	if not script:
 		_set_error("Cannot serialize fields of null or scriptless resource")
 		return false
 

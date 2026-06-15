@@ -47,29 +47,8 @@ static func create(
 	subscription.query_id = p_query_id
 	subscription.queries = p_queries
 
-	subscription.applied.connect(
-		func():
-			subscription._active = true
-			subscription._ended = false
-			if subscription._apply_timer:
-				subscription._apply_timer.time_left = 0
-				subscription._apply_timer = null
-			subscription._applied_or_timeout.emit(false)
-	)
-	subscription.end.connect(
-		func():
-			subscription._active = false
-			subscription._ended = true
-			# Cancel apply timer and unblock wait_for_applied() if still waiting
-			if subscription._apply_timer:
-				subscription._apply_timer.time_left = 0
-				subscription._apply_timer = null
-			subscription._applied_or_timeout.emit(false)
-			if subscription._end_timer:
-				subscription._end_timer.time_left = 0
-				subscription._end_timer = null
-			subscription._ended_or_timeout.emit(false)
-	)
+	subscription.applied.connect(subscription._on_applied)
+	subscription.end.connect(subscription._on_end)
 	return subscription
 
 
@@ -123,6 +102,29 @@ func unsubscribe() -> Error:
 		return ERR_DOES_NOT_EXIST
 
 	return _client.unsubscribe(query_id)
+
+
+func _on_applied() -> void:
+	_active = true
+	_ended = false
+	if _apply_timer:
+		_apply_timer.time_left = 0
+		_apply_timer = null
+	_applied_or_timeout.emit(false)
+
+
+func _on_end() -> void:
+	_active = false
+	_ended = true
+	# Cancel apply timer and unblock wait_for_applied() if still waiting
+	if _apply_timer:
+		_apply_timer.time_left = 0
+		_apply_timer = null
+	_applied_or_timeout.emit(false)
+	if _end_timer:
+		_end_timer.time_left = 0
+		_end_timer = null
+	_ended_or_timeout.emit(false)
 
 
 func _on_applied_timeout() -> void:

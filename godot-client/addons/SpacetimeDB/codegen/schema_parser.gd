@@ -220,7 +220,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				var data: Dictionary = {
 					"name": el.get("name", { }).get("some", null),
 				}
-				var type = _parse_field_type(el.get("algebraic_type", { }), data, schema_types_raw)
+				var type: String = _parse_field_type(el.get("algebraic_type", { }), data, schema_types_raw)
 				if not type.is_empty():
 					data["type"] = type
 				struct_elements.append(data)
@@ -238,7 +238,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			type_data["is_sum_type"] = _is_sum_type(sum_type_def)
 			for v in sum_type_def.get("variants", []):
 				var variant_data: Dictionary = { "name": v.get("name", { }).get("some", null) }
-				var type = _parse_field_type(v.get("algebraic_type", { }), variant_data, schema_types_raw)
+				var type: String = _parse_field_type(v.get("algebraic_type", { }), variant_data, schema_types_raw)
 				if not type.is_empty():
 					variant_data["type"] = type
 				parsed_variants.append(variant_data)
@@ -380,7 +380,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		var reducer_params: Array[Dictionary] = []
 		for raw_param: Dictionary in reducer_raw_params:
 			var data: Dictionary = { "name": raw_param.get("name", { }).get("some", null) }
-			var type = _parse_field_type(raw_param.get("algebraic_type", { }), data, schema_types_raw)
+			var type: String = _parse_field_type(raw_param.get("algebraic_type", { }), data, schema_types_raw)
 			data["type"] = type
 
 			if type and not (GDNATIVE_PRIMITIVE_TYPES.has(type) or DEFAULT_TYPE_MAP.has(type)):

@@ -94,12 +94,15 @@ After generating schema files, please restart Godot.
 
 
 func _exit_tree():
-	ui.destroy()
+	if is_instance_valid(ui):
+		ui.destroy()
 	ui = null
-	remove_dock(dock)
-	dock.queue_free()
+	if is_instance_valid(dock):
+		remove_dock(dock)
+		dock.queue_free()
 	dock = null
-	http_request.queue_free()
+	if is_instance_valid(http_request):
+		http_request.queue_free()
 	http_request = null
 
 	if ProjectSettings.has_setting("autoload/" + AUTOLOAD_NAME):
