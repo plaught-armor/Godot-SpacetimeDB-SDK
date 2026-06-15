@@ -47,7 +47,7 @@ func _get_property_list() -> Array[Dictionary]:
 		properties.append(
 			{
 				"name": "selected_table_name",
-				"type": TYPE_STRING,
+				"type": TYPE_STRING_NAME,
 				"hint": PROPERTY_HINT_ENUM,
 				"hint_string": hint_string_for_enum,
 			},
@@ -79,7 +79,7 @@ func on_set(schema: _ModuleTableType) -> void:
 			if constant_map.has("table_names"):
 				var names_value: Variant = constant_map["table_names"]
 				if names_value is Array:
-					for item in names_value:
+					for item: Variant in names_value:
 						if item is StringName or item is String:
 							_derived_table_names.push_back(StringName(item))
 		else:
@@ -97,7 +97,7 @@ func on_set(schema: _ModuleTableType) -> void:
 		property_list_changed.emit()
 
 
-func set_selected_table_name(value: StringName):
+func set_selected_table_name(value: StringName) -> void:
 	if selected_table_name == value:
 		return
 	selected_table_name = value
@@ -119,12 +119,13 @@ func _get_db(wait_for_init: bool = false) -> LocalDatabase:
 	if _current_db_instance == null or not is_instance_valid(_current_db_instance):
 		var constants: Dictionary = (table_to_receive.get_script() as GDScript).get_script_constant_map()
 		var module_name: String = constants.get("module_name", "").to_pascal_case()
-		_current_db_instance = SpacetimeDB[module_name].get_local_database()
+		var client: SpacetimeDBClient = SpacetimeDB[module_name]
+		_current_db_instance = client.get_local_database()
 
 		if _current_db_instance == null and wait_for_init:
 			_print_log("Waiting for db to be initialized...")
-			await SpacetimeDB[module_name].database_initialized
-			_current_db_instance = SpacetimeDB[module_name].get_local_database()
+			await client.database_initialized
+			_current_db_instance = client.get_local_database()
 			_print_log("Db initialized")
 	return _current_db_instance
 

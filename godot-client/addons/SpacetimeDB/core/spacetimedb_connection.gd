@@ -61,7 +61,7 @@ var _total_messages_received: int = 0
 var _second_messages_received: int = 0
 
 
-func _init(options: SpacetimeDBConnectionOptions, db_name: String):
+func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
 	_options = options
 	_db_name = db_name
 	if options.monitor_mode:
@@ -81,7 +81,7 @@ func _init(options: SpacetimeDBConnectionOptions, db_name: String):
 	set_physics_process(false) # Don't process until connect is called
 
 
-func _physics_process(delta: float) -> void:
+func _physics_process(_delta: float) -> void:
 	_websocket.poll()
 	var state: WebSocketPeer.State = _websocket.get_ready_state()
 

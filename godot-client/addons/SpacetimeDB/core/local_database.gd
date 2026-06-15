@@ -139,7 +139,7 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 
 	var properties: Array = schema.get_script_property_list()
 	for prop: Dictionary in properties:
-		if prop.usage & PROPERTY_USAGE_STORAGE:
+		if (prop.usage & PROPERTY_USAGE_STORAGE):
 			if prop.name == &"identity" or prop.name == &"id":
 				_primary_key_cache[table_name_lower] = prop.name
 				return prop.name
@@ -205,11 +205,13 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 
 	var pk_field: StringName = _get_primary_key_field(table_name_lower)
 
-	# Hoist listener array lookups once per table_update, not per row
-	var insert_listeners: Array = _insert_listeners_by_table.get(table_name_lower, [])
-	var update_listeners: Array = _update_listeners_by_table.get(table_name_lower, [])
-	var delete_listeners: Array = _delete_listeners_by_table.get(table_name_lower, [])
-	var tx_listeners: Array = _transactions_completed_listeners_by_table.get(table_name_lower, [])
+	# Hoist listener array lookups once per table_update, not per row.
+	# Duplicate so a listener that unsubscribes mid-dispatch can't mutate
+	# the array we're iterating.
+	var insert_listeners: Array = _insert_listeners_by_table.get(table_name_lower, []).duplicate()
+	var update_listeners: Array = _update_listeners_by_table.get(table_name_lower, []).duplicate()
+	var delete_listeners: Array = _delete_listeners_by_table.get(table_name_lower, []).duplicate()
+	var tx_listeners: Array = _transactions_completed_listeners_by_table.get(table_name_lower, []).duplicate()
 	var has_insert_listeners: bool = not insert_listeners.is_empty()
 	var has_update_listeners: bool = not update_listeners.is_empty()
 	var has_delete_listeners: bool = not delete_listeners.is_empty()
@@ -334,9 +336,9 @@ func get_all_rows(table_name: StringName) -> Array[_ModuleTableType]:
 		return result
 	if not _tables.has(key):
 		return []
-	var result: Array[_ModuleTableType] = []
-	result.assign(_tables[key].values())
-	return result
+	var pk_result: Array[_ModuleTableType] = []
+	pk_result.assign(_tables[key].values())
+	return pk_result
 
 
 ## Returns the number of rows in [param table_name].

@@ -20,8 +20,12 @@ var _conditions: Array[String] = []
 
 ## Creates a query targeting [param name].
 static func table(name: String) -> SpacetimeDBQuery:
+	var validated: String = _validate_identifier(name)
+	if validated.is_empty():
+		push_error("SpacetimeDBQuery.table: invalid or empty table name '%s'." % name)
+		return null
 	var q: SpacetimeDBQuery = SpacetimeDBQuery.new()
-	q._table_name = _validate_identifier(name)
+	q._table_name = validated
 	return q
 
 
@@ -89,7 +93,18 @@ static func _format_value(value: Variant) -> String:
 		TYPE_BOOL:
 			return "true" if value else "false"
 		TYPE_PACKED_BYTE_ARRAY:
-			return "'0x%s'" % (value as PackedByteArray).hex_encode()
+			# SpacetimeDB hex literal: bare 0x... (not a quoted string).
+			return "0x%s" % (value as PackedByteArray).hex_encode()
+		TYPE_FLOAT:
+			var f: float = value
+			if is_nan(f):
+				push_error("SpacetimeDBQuery: NaN cannot be represented in SQL.")
+				return "NULL"
+			if is_inf(f):
+				push_error("SpacetimeDBQuery: Infinity cannot be represented in SQL.")
+				return "NULL"
+			# Lossless round-trip for double; locale-independent.
+			return "%.17g" % f
 		_:
 			return str(value)
 
@@ -107,6 +122,6 @@ static func _validate_identifier(name: Variant) -> String:
 	return s
 
 
-## Formats a 32-byte identity as a hex-encoded SQL literal (e.g. [code]'0x...'[/code]).
+## Formats a 32-byte identity as a SpacetimeDB hex literal (e.g. [code]0x...[/code]).
 static func identity(bytes: PackedByteArray) -> String:
-	return "'0x%s'" % bytes.hex_encode()
+	return "0x%s" % bytes.hex_encode()

@@ -22,6 +22,8 @@ func _initialize() -> void:
 	var http_request: HTTPRequest = HTTPRequest.new()
 	http_request.timeout = 4
 	root.add_child(http_request)
+	# Unbounded wait — one frame for the HTTPRequest node to enter the tree.
+	# Headless context: process_frame always fires, no deadline needed.
 	await process_frame
 
 	var ok: bool = await SpacetimePlugin.generate_schema(http_request, plugin_config)

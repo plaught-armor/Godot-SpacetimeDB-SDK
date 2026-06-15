@@ -106,9 +106,11 @@ var _reconnect_attempt: int = 0
 var _intentional_disconnect: bool = false
 var _saved_subscription_queries: Array[PackedStringArray] = []
 var _reconnect_timer: SceneTreeTimer = null
+var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 
 func _ready() -> void:
+	_rng.randomize()
 	if auto_connect:
 		initialize_and_connect()
 
@@ -517,9 +519,8 @@ func _load_token_or_request() -> void:
 func _generate_connection_id() -> String:
 	var random_bytes: PackedByteArray = []
 	random_bytes.resize(16)
-	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	for i: int in 16:
-		random_bytes[i] = rng.randi_range(0, 255)
+		random_bytes[i] = _rng.randi_range(0, 255)
 	return random_bytes.hex_encode() # Return as hex string
 
 
@@ -947,7 +948,7 @@ func _calculate_backoff(attempt: int) -> float:
 
 	var jitter_range: float = base_delay * connection_options.reconnect_jitter_fraction
 	var jitter_offset: float = randf() * jitter_range
-	return base_delay - jitter_offset
+	return maxf(0.0, base_delay - jitter_offset)
 
 
 func _attempt_reconnect() -> void:
@@ -1040,24 +1041,26 @@ func _resubscribe_saved_queries() -> void:
 				reconnected.emit()
 			continue
 
-		sub.applied.connect(
-			func() -> void:
-				applied_count[0] += 1
-				print_log("SpacetimeDBClient: Re-subscription applied (%d/%d)." % [applied_count[0], total_sets])
-				if applied_count[0] >= total_sets:
-					_saved_subscription_queries.clear()
-					reconnected.emit(),
-			CONNECT_ONE_SHOT,
-		)
+		var settled: Array[bool] = [false]
+		var on_settled: Callable = func() -> void:
+			if settled[0]:
+				return
+			settled[0] = true
+			applied_count[0] += 1
+			print_log("SpacetimeDBClient: Re-subscription settled (%d/%d)." % [applied_count[0], total_sets])
+			if applied_count[0] >= total_sets:
+				_saved_subscription_queries.clear()
+				reconnected.emit()
+		sub.applied.connect(on_settled, CONNECT_ONE_SHOT)
+		sub.end.connect(on_settled, CONNECT_ONE_SHOT)
 
 	if total_sets == 0:
 		reconnected.emit()
 
 
 func _evict_oldest(cache: Dictionary) -> void:
-	while cache.size() > _MAX_RESULT_CACHE_SIZE:
-		var oldest_key: int
-		for k: int in cache:
-			oldest_key = k
+	while cache.size() > _MAX_RESULT_CACHE_SIZE and not cache.is_empty():
+		# Grab the first (oldest-inserted) key via iteration — no keys() array alloc.
+		for oldest_key: Variant in cache:
+			cache.erase(oldest_key)
 			break
-		cache.erase(oldest_key)

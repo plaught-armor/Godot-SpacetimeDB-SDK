@@ -139,8 +139,6 @@ func write_bool(v: bool) -> void:
 
 
 func write_bytes(v: PackedByteArray) -> void:
-	if v == null:
-		v = PackedByteArray() # Avoid error on null
 	var result: Error = _spb.put_data(v)
 	if result != OK:
 		_set_error("StreamPeerBuffer.put_data failed with code %d" % result)
@@ -181,27 +179,30 @@ func write_vec_u8(v: PackedByteArray) -> void:
 func write_rust_enum(rust_enum: RustEnum) -> void:
 	write_u8(rust_enum.value)
 	var enum_options: Array = rust_enum.get_script().get_script_constant_map().get(&"ENUM_OPTIONS", [])
-	var sub_class: StringName = enum_options[rust_enum.value] if rust_enum.value < enum_options.size() else &""
+	if rust_enum.value < 0 or rust_enum.value >= enum_options.size():
+		_set_error("RustEnum value %d out of range for ENUM_OPTIONS (size %d)." % [rust_enum.value, enum_options.size()])
+		return
+	var sub_class: StringName = enum_options[rust_enum.value]
 	var data: Variant = rust_enum.data
-	if sub_class.begins_with("vec"):
+	if sub_class.begins_with("vec_"):
 		if data is not Array:
 			_set_error("Sum type of rust enum is Vec<T> but the godot type is not an array.")
 			return
 		var vec_type: StringName = sub_class.right(-4)
 		# If it's an Option type, we need to remove the opt prefix for the serializer
 		# This is a special case, the enum needs more info for the deserializer
-		if vec_type.begins_with("opt"):
+		if vec_type.begins_with("opt_"):
 			vec_type = vec_type.right(-4)
 		_write_value_from_bsatn_type(data, vec_type, &"")
 		return
-	if sub_class.begins_with("opt"):
+	if sub_class.begins_with("opt_"):
 		if data is not Option:
 			_set_error("Sum type of rust enum is Option<T> but the godot type is not an Option.")
 			return
 		var opt_type: StringName = sub_class.right(-4)
 		# If it's a Vec type, we need to remove the vec prefix for the serializer
 		# This is a special case, the enum needs more info for the deserializer
-		if opt_type.begins_with("vec"):
+		if opt_type.begins_with("vec_"):
 			opt_type = opt_type.right(-4)
 		_write_value_from_bsatn_type(data, opt_type, &"")
 		return
@@ -376,7 +377,7 @@ func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary
 		return
 
 	for i: int in range(components.size()):
-		var value = components[i]
+		var value: Variant = components[i]
 		var bsatn_component_type: String = bsatn_component_types[i]
 		_write_value_from_bsatn_type(value, bsatn_component_type, prop_name + "[%s]" % i)
 
@@ -661,8 +662,8 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 			return true
 
 	# 2. Create a temporary "prototype" dictionary for the value
-	var value_class_name = _get_value_class_name(value)
-	var prop_sim = {
+	var value_class_name: String = _get_value_class_name(value)
+	var prop_sim: Dictionary = {
 		"name": context_prop_name_for_prototype,
 		"type": value_type,
 		"class_name": value_class_name,
@@ -675,7 +676,7 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 	var writer_callable: Callable = _get_writer_callable_for_property(prop_sim, bsatn_type_str)
 
 	if not writer_callable.is_valid() and not has_error():
-		_set_error("Unsupported BSATN type '%s' or missing writer for value '%s'" % [bsatn_type_str, prop_sim.class_name])
+		_set_error("Unsupported BSATN type '%s' or missing writer for value '%s'" % [bsatn_type_str, prop_sim["class_name"]])
 
 	if has_error():
 		return false
@@ -690,13 +691,13 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 
 func _create_serialization_plan(script: Script) -> Array:
 	var bsatn_types: Dictionary = script.get_script_constant_map().get("BSATN_TYPES", { })
-	var plan = []
+	var plan: Array = []
 	var properties: Array = script.get_script_property_list()
-	for prop in properties:
-		if not (prop.usage & PROPERTY_USAGE_STORAGE):
+	for prop: Dictionary in properties:
+		if not (prop["usage"] & PROPERTY_USAGE_STORAGE):
 			continue
 
-		var prop_name: StringName = prop.name
+		var prop_name: StringName = prop["name"]
 		var bsatn_type_str: StringName = bsatn_types.get(prop_name, &"").to_lower()
 
 		var writer_callable: Callable = _get_writer_callable_for_property(prop, bsatn_type_str)
@@ -739,18 +740,20 @@ func _serialize_resource_fields(resource: Object) -> bool:
 		write_rust_enum(resource)
 		return true
 
-	var plan = _serialization_plan_cache.get(script)
+	var plan: Array = _serialization_plan_cache.get(script)
 	if plan == null:
 		plan = _create_serialization_plan(script)
 		if has_error():
 			return false
 
-	for instruction in plan:
-		instruction.writer.call(resource.get(instruction.name))
+	for instruction: Dictionary in plan:
+		var instr_writer: Callable = instruction["writer"]
+		var instr_name: StringName = instruction["name"]
+		instr_writer.call(resource.get(instr_name))
 		if has_error():
-			if not _last_error.contains(str(instruction.name)):
-				var existing_error = get_last_error()
-				_set_error("Failed writing '%s' in '%s'. Cause: %s" % [instruction.name, resource.get_script().get_global_name(), existing_error])
+			if not _last_error.contains(str(instr_name)):
+				var existing_error: String = get_last_error()
+				_set_error("Failed writing '%s' in '%s'. Cause: %s" % [instr_name, resource.get_script().get_global_name(), existing_error])
 			return false
 
 	return true # All fields serialized successfully
@@ -777,11 +780,11 @@ func _serialize_arguments(args_array: Array, bsatn_types: Array) -> PackedByteAr
 
 
 ## Helper to write a single *argument* value.
-func _write_argument_value(value, bsatn_type: StringName = &"", context_prop_name_for_error: StringName = &"") -> bool:
+func _write_argument_value(value: Variant, bsatn_type: StringName = &"", context_prop_name_for_error: StringName = &"") -> bool:
 	# 1. Create a temporary "prototype" dictionary for the argument
-	var value_type = typeof(value)
-	var value_class_name = _get_value_class_name(value)
-	var prop_sim = {
+	var value_type: int = typeof(value)
+	var value_class_name: String = _get_value_class_name(value)
+	var prop_sim: Dictionary = {
 		"name": context_prop_name_for_error,
 		"type": value_type,
 		"class_name": value_class_name,
@@ -793,7 +796,7 @@ func _write_argument_value(value, bsatn_type: StringName = &"", context_prop_nam
 	var writer_callable: Callable = _get_writer_callable_for_property(prop_sim, bsatn_type)
 
 	if not writer_callable.is_valid() and not has_error():
-		_set_error("Unsupported argument type '%s' or missing writer for '%s' with 'bsatn_type' metadata ('%s')" % [prop_sim.class_name, prop_sim.name, bsatn_type])
+		_set_error("Unsupported argument type '%s' or missing writer for '%s' with 'bsatn_type' metadata ('%s')" % [prop_sim["class_name"], prop_sim["name"], bsatn_type])
 
 	if has_error():
 		return false

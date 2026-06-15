@@ -302,9 +302,9 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		if ref_idx < schema_types_raw.size():
 			original_type_name_for_table = schema_types_raw[ref_idx].get("name", { }).get("name")
 		var target_type_idx: int = _find_type_index(original_type_name_for_table, parsed_types_list)
-		var target_type_def: Variant = parsed_types_list[target_type_idx] if target_type_idx >= 0 else null
+		var target_type_def: Dictionary = parsed_types_list[target_type_idx] if target_type_idx >= 0 else {}
 
-		if target_type_def == null or not target_type_def.has("struct"):
+		if target_type_def.is_empty() or not target_type_def.has("struct"):
 			SpacetimePlugin.print_err("Table '%s' refers to an invalid or non-struct type (index %s in original schema, name %s)." % [table_name_str, str(ref_idx), original_type_name_for_table if original_type_name_for_table else "N/A"])
 			continue
 
@@ -671,8 +671,14 @@ static func _is_sum_option(sum_def: Dictionary) -> bool:
 	return found_some and found_none and none_is_unit
 
 
+const _PARSE_FIELD_TYPE_MAX_DEPTH: int = 32
+
+
 # Recursively parse a field type
-static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_types: Array) -> String:
+static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_types: Array, depth: int = 0) -> String:
+	if depth > _PARSE_FIELD_TYPE_MAX_DEPTH:
+		SpacetimePlugin.print_err("_parse_field_type recursion exceeded %d levels; aborting" % _PARSE_FIELD_TYPE_MAX_DEPTH)
+		return ""
 	if field_type.has("Array"):
 		var nested_type = data.get("nested_type", [])
 		nested_type.append(&"Array")
@@ -682,7 +688,7 @@ static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_t
 		else:
 			data["is_array"] = true
 		field_type = field_type.Array
-		return _parse_field_type(field_type, data, schema_types)
+		return _parse_field_type(field_type, data, schema_types, depth + 1)
 	elif field_type.has("Product"):
 		var elements: Array = field_type.Product.get("elements", [])
 		if elements.is_empty():
@@ -698,7 +704,7 @@ static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_t
 			else:
 				data["is_option"] = true
 		field_type = field_type.Sum.variants[0].get('algebraic_type', { })
-		return _parse_field_type(field_type, data, schema_types)
+		return _parse_field_type(field_type, data, schema_types, depth + 1)
 	elif field_type.has("Ref"):
 		var ref_idx: int = int(field_type.Ref)
 		if ref_idx < 0 or ref_idx >= schema_types.size():

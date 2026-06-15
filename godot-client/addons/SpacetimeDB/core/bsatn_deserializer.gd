@@ -186,8 +186,9 @@ func read_string_with_u32_len(spb: StreamPeerBuffer) -> String:
 	if has_error():
 		return ""
 	var str_result: String = str_bytes.get_string_from_utf8()
-	# More robust check for UTF-8 decoding errors
-	if str_result == "" and length > 0 and (str_bytes.get_string_from_ascii() == "" or str_bytes.find(0) != -1):
+	# Empty result for non-empty bytes that also fail ASCII decode = malformed UTF-8.
+	# (A legitimate embedded NUL is valid UTF-8 and is intentionally allowed.)
+	if str_result == "" and length > 0 and str_bytes.get_string_from_ascii() == "":
 		_set_error("Failed to decode UTF-8 string length %d" % length, start_pos)
 		return ""
 	return str_result
@@ -247,7 +248,6 @@ func read_bsatn_row_list(spb: StreamPeerBuffer) -> Array[PackedByteArray]:
 			if row_size == 0:
 				if data_len != 0:
 					_set_error("FixedSize row_size is 0 but data_len is %d" % data_len, start_pos)
-					read_bytes(spb, data_len)
 				return []
 			var data: PackedByteArray = read_bytes(spb, data_len)
 			if has_error():
@@ -674,7 +674,7 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 	if _schema.types.has(schema_key):
 		var script: GDScript = _schema.get_type(schema_key)
 		if script and script.can_instantiate():
-			var nested_instance = script.new()
+			var nested_instance: Object = script.new()
 			if not _populate_resource_from_bytes(nested_instance, spb):
 				if not has_error():
 					_set_error("Failed to populate nested resource of type '%s' (schema key '%s') for context '%s'" % [bsatn_type_str, schema_key, context_prop_name], start_pos)
@@ -927,7 +927,7 @@ func _read_subscripton_applied_message(spb: StreamPeerBuffer) -> SubscribeApplie
 		var row_schema_script: GDScript = _schema.get_type(table_name_lower)
 
 		if row_schema_script:
-			var inserts = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name, row_spb)
+			var inserts: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name, row_spb)
 			if has_error():
 				return null
 			table_update.inserts.assign(inserts)

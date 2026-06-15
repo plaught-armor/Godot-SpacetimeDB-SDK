@@ -37,9 +37,8 @@ func _init(base_url: String, debug_mode: bool) -> void:
 	self._base_url = base_url
 	self._debug_mode = debug_mode
 	add_child(_http_request)
-	# Connect the signal ONCE
-	if not _http_request.is_connected("request_completed", Callable(self, "_on_request_completed")):
-		_http_request.request_completed.connect(_on_request_completed)
+	# Fresh HTTPRequest — no prior connections to guard against.
+	_http_request.request_completed.connect(_on_request_completed)
 
 
 func print_log(log_message: String) -> void:
@@ -100,14 +99,14 @@ func call_reducer(database: String, reducer_name: String, args: Dictionary) -> v
 		reducer_call_failed.emit(error, "Failed to initiate request")
 
 
-func _handle_token_response(result_code: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
+func _handle_token_response(result_code: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	# (Logic for handling token response - remains the same as before)
+	var body_text: String = body.get_string_from_utf8()
 	if result_code != HTTPRequest.RESULT_SUCCESS:
 		printerr("SpacetimeDBRestAPI: Token request failed. Result code: ", result_code)
-		token_request_failed.emit(result_code, body.get_string_from_utf8())
+		token_request_failed.emit(result_code, body_text)
 		return
 
-	var body_text: String = body.get_string_from_utf8()
 	var json: Variant = JSON.parse_string(body_text)
 
 	if response_code >= 400 or json == null:
@@ -126,15 +125,15 @@ func _handle_token_response(result_code: int, response_code: int, headers: Packe
 		token_request_failed.emit(response_code, "Invalid token format in response")
 
 
-func _handle_reducer_response(result_code: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
+func _handle_reducer_response(result_code: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	# (Logic for handling reducer response - remains the same as before)
+	var body_text: String = body.get_string_from_utf8()
 	if result_code != HTTPRequest.RESULT_SUCCESS or response_code >= 400:
 		printerr("SpacetimeDBRestAPI: Reducer call failed. Result: %d, Code: %d" % [result_code, response_code])
-		printerr("SpacetimeDBRestAPI: Response body: ", body.get_string_from_utf8())
-		reducer_call_failed.emit(response_code, body.get_string_from_utf8())
+		printerr("SpacetimeDBRestAPI: Response body: ", body_text)
+		reducer_call_failed.emit(response_code, body_text)
 		return
 
-	var body_text: String = body.get_string_from_utf8()
 	var json: Variant = JSON.parse_string(body_text)
 	if json == null:
 		printerr("SpacetimeDBRestAPI: Failed to parse reducer response JSON: ", body_text)

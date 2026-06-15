@@ -30,8 +30,8 @@ enum Options {
 const ENUM_OPTIONS: Array[StringName] = [&'ReducerOk', &'', &'vec_u8', &'string']
 
 
-## Returns the variant name for discriminant [param i], or [code]"Unknown"[/code] if out of range.
-static func parse_enum_name(i: int) -> String:
+## Returns the variant name for discriminant [param i], or [code]&"Unknown"[/code] if out of range.
+static func parse_enum_name(i: int) -> StringName:
 	match i:
 		0:
 			return &'ok'

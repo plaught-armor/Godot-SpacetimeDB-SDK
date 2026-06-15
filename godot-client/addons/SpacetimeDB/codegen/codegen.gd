@@ -154,10 +154,10 @@ static func _variant_to_enum_option(variant: Dictionary, meta_type_map: Dictiona
 	return "&'%s'" % rust_type if not rust_type.is_empty() else "&''"
 
 
-## Safely accesses schema.types by index, returning null if out of bounds.
-static func _get_type_def(schema: SpacetimeParsedSchema, type_idx: int):
+## Safely accesses schema.types by index, returning an empty Dictionary if out of bounds.
+static func _get_type_def(schema: SpacetimeParsedSchema, type_idx: int) -> Dictionary:
 	if type_idx < 0 or type_idx >= schema.types.size():
-		return null
+		return {}
 	return schema.types[type_idx]
 
 
@@ -223,8 +223,11 @@ func _scan_project_enums() -> Dictionary:
 
 
 func _collect_enums_from_script(cls_name: String, cls_path: String, result: Dictionary) -> void:
-	var script = load(cls_path)
-	if not script or not script is GDScript:
+	var script: Script = load(cls_path) as Script
+	if script == null:
+		SpacetimePlugin.print_err("failed to load script for enum scan: %s" % cls_path)
+		return
+	if not script is GDScript:
 		return
 	var constants: Dictionary = script.get_script_constant_map()
 	for const_name: String in constants:
@@ -245,7 +248,7 @@ func _collect_enums_from_script(cls_name: String, cls_path: String, result: Dict
 				}
 
 
-func _generate_module_bindings(module_name: String):
+func _generate_module_bindings(module_name: String) -> Array[String]:
 	var json = JSON.parse_string(_plugin_config.module_configs[module_name].unparsed_module_schema)
 	var project_enums: Dictionary = _scan_project_enums()
 	var schema: SpacetimeParsedSchema = SpacetimeSchemaParser.parse_schema(json, module_name, project_enums)
@@ -271,6 +274,7 @@ func _generate_module_bindings(module_name: String):
 		)
 	else:
 		file.store_string("You can delete this directory and files. It's only used for codegen debugging.")
+		file.close()
 	var schema_dbg_path: String = "%s/schema_%s.json" % [debug_dir_path, module_name]
 	file = FileAccess.open(schema_dbg_path, FileAccess.WRITE)
 	if file == null:
@@ -279,6 +283,7 @@ func _generate_module_bindings(module_name: String):
 		)
 	else:
 		file.store_string(JSON.stringify(schema.to_dictionary(), "\t", false))
+		file.close()
 	var unparsed_dbg_path: String = "%s/unparsed_schema_%s.json" % [debug_dir_path, module_name]
 	file = FileAccess.open(unparsed_dbg_path, FileAccess.WRITE)
 	if file == null:
@@ -287,6 +292,7 @@ func _generate_module_bindings(module_name: String):
 		)
 	else:
 		file.store_string(JSON.stringify(json, "\t", false))
+		file.close()
 	var generated_files: Array[String] = _generate_gdscript_from_schema(module_name, schema)
 	return generated_files
 
@@ -534,7 +540,7 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 	var primary_key_name: String = ""
 	var table_name: String = type_def.get("table_name", "")
 	var _class_name: String = schema.module.to_pascal_case() + struct_name.to_pascal_case()
-	var _extends_class = "Resource"
+	var _extends_class: String = "Resource"
 	if table_name:
 		_extends_class = "_ModuleTableType"
 		if table_names.size() != 0:
@@ -564,7 +570,7 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 		var documentation_comment: String = ""
 		var nested_type: Array = field.get("nested_type", []).duplicate()
 		nested_type.append(schema.type_map.get(original_type_name, "Variant"))
-		var add_meta_for_field = false
+		var add_meta_for_field: bool = false
 
 		var parser_nested_type: Array = field.get("nested_type", [])
 		if not parser_nested_type.is_empty():
@@ -585,10 +591,10 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 		elif field_type and field_type.has("gd_arraylike"):
 			create_func_documentation_comment += format_cfdc.call(i, field_name, nested_type)
 			gd_field_type = schema.type_map.get(original_type_name, "Variant")
-			var outer_bsatn_type = schema.meta_type_map.get(original_type_name, original_type_name)
+			var outer_bsatn_type: String = schema.meta_type_map.get(original_type_name, original_type_name)
 			var inner_meta_bsatn_types: Array[String] = []
 			for el in field_type.struct:
-				var inner_bsatn_type = schema.meta_type_map.get(el.type, "f32")
+				var inner_bsatn_type: String = schema.meta_type_map.get(el.type, "f32")
 				inner_meta_bsatn_types.append(inner_bsatn_type)
 			bsatn_meta_type_string = "%s[%s]" % [outer_bsatn_type, ",".join(inner_meta_bsatn_types)]
 			add_meta_for_field = true
@@ -603,7 +609,7 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 		if add_meta_for_field and not bsatn_meta_type_string.is_empty():
 			bsatn_type_entries.append("&\"%s\": &\"%s\"" % [field_name, bsatn_meta_type_string])
 
-		var field_line = "@export var %s: %s %s\n" % [field_name, gd_field_type, documentation_comment]
+		var field_line: String = "@export var %s: %s %s\n" % [field_name, gd_field_type, documentation_comment]
 		field_lines += field_line.rstrip(" \n") + "\n"
 		class_fields.append([field_name, gd_field_type])
 
@@ -637,7 +643,7 @@ func _generate_enum_gdscript(schema: SpacetimeParsedSchema, type_def: Dictionary
 			"class_name %s extends RustEnum\n\n" % _class_name +
 			"enum Options {\n%s\n}\n\n" % variant_names +
 			"const ENUM_OPTIONS: Array[StringName] = [%s]\n\n" % enum_options_entries +
-			"static func parse_enum_name(i: int) -> String:\n" +
+			"static func parse_enum_name(i: int) -> StringName:\n" +
 			"\tmatch i:\n")
 	for i in range(variants.size()):
 		content += "\t\t%d: return &'%s'\n" % [i, variants[i].get("name", "")]
@@ -809,7 +815,7 @@ func _generate_reducers_gdscript(module_name: String, schema: SpacetimeParsedSch
 			params_str = ", ".join(params_str_parts)
 
 		var param_names_list = reducer.get("params", []).map(_param_dict_to_safe_name)
-		var param_names_str = ""
+		var param_names_str: String = ""
 		if not param_names_list.is_empty():
 			param_names_str = ", ".join(param_names_list)
 
@@ -874,7 +880,7 @@ func _generate_procedures_gdscript(module_name: String, schema: SpacetimeParsedS
 			params_str = ", ".join(params_str_parts)
 
 		var param_names_list = proc.get("params", []).map(_param_dict_to_safe_name)
-		var param_names_str = ""
+		var param_names_str: String = ""
 		if not param_names_list.is_empty():
 			param_names_str = ", ".join(param_names_list)
 

@@ -46,7 +46,7 @@ func _enter_tree():
 	instance = self
 
 	if not is_instance_valid(dock):
-		var scene = load(UI_PATH)
+		var scene: PackedScene = load(UI_PATH) as PackedScene
 		if scene:
 			if not is_instance_valid(ui):
 				ui = scene.instantiate() as SpacetimePluginUI
@@ -71,8 +71,10 @@ func _enter_tree():
 	http_request.timeout = 4
 	add_child(http_request)
 
-	var config_file = ConfigFile.new()
-	config_file.load(CONFIG_PATH)
+	var config_file: ConfigFile = ConfigFile.new()
+	var cfg_load_err: int = config_file.load(CONFIG_PATH)
+	if cfg_load_err != OK:
+		printerr("SpacetimePlugin: Failed to load plugin.cfg (err %d) at %s" % [cfg_load_err, CONFIG_PATH])
 
 	var version: String = config_file.get_value("plugin", "version", "0.0.0")
 	var author: String = config_file.get_value("plugin", "author", "??")
@@ -139,6 +141,8 @@ func _on_check_uri() -> void:
 	http_request.request(uri)
 	var ping_start: int = Time.get_ticks_usec()
 	var result: Array = await http_request.request_completed
+	if not is_instance_valid(http_request) or not is_inside_tree():
+		return
 	if result[1] == 0:
 		print_err("Request timeout - " + uri)
 	else:
@@ -149,6 +153,8 @@ func _on_check_uri() -> void:
 func _on_generate_schema() -> void:
 	_sanitize_uri()
 	if not await generate_schema(http_request, plugin_config):
+		return
+	if not is_inside_tree():
 		return
 	_register_autoload()
 
@@ -167,6 +173,8 @@ static func generate_schema(
 		var schema_uri: String = "%s/v1/database/%s/schema?version=10" % [config.uri, module_config.name]
 		request.request(schema_uri)
 		var result: Array = await request.request_completed
+		if not is_instance_valid(request):
+			return false
 
 		if result[1] == 200:
 			var json: String = PackedByteArray(result[3]).get_string_from_utf8()

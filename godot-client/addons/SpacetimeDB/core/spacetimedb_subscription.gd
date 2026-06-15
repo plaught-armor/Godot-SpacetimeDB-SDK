@@ -73,6 +73,9 @@ func wait_for_applied(timeout_sec: float = 5) -> Error:
 	_apply_timer.timeout.connect(_on_applied_timeout)
 
 	var is_timeout: bool = await _applied_or_timeout
+	# Client may have been freed during the await (C5 / H8).
+	if not is_instance_valid(_client):
+		return ERR_DOES_NOT_EXIST
 	_apply_timer = null
 	if is_timeout:
 		return ERR_TIMEOUT
@@ -90,6 +93,9 @@ func wait_for_end(timeout_sec: float = 5) -> Error:
 	_end_timer.timeout.connect(_on_ended_timeout)
 
 	var is_timeout: bool = await _ended_or_timeout
+	# Client may have been freed during the await (C5 / H8).
+	if not is_instance_valid(_client):
+		return ERR_DOES_NOT_EXIST
 	_end_timer = null
 	if is_timeout:
 		return ERR_TIMEOUT

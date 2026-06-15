@@ -111,7 +111,8 @@ func set_none() -> void:
 
 
 ## Returns a debug string: [code]"Some(value [type: N])"[/code] or [code]"None"[/code].
-func to_string() -> String:
+## Hooks into Godot's [code]str()[/code]/print conversion via [method Object._to_string].
+func _to_string() -> String:
 	if is_some():
 		return "Some(%s [type: %s])" % [_internal_data[0], typeof(_internal_data[0])]
 	else:
