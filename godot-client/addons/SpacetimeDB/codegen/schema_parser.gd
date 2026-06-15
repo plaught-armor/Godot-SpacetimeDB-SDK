@@ -464,6 +464,22 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 							else:
 								SpacetimePlugin.print_err("View '%s': Ref index %d out of bounds (types size %d)" % [name, type_index, parsed_types_list.size()])
 								continue
+			elif not return_type_dict.get("Product", { }).is_empty():
+				# Query<T> views encode their return as a single-element product
+				# { __query__: Ref(T) } (QUERY_VIEW_RETURN_TAG). Unwrap to the row type.
+				var elements: Array = return_type_dict.get("Product", { }).get("elements", [])
+				if elements.size() == 1 and elements[0].get("name", { }).get("some", "") == "__query__":
+					var ref_val = elements[0].get("algebraic_type", { }).get("Ref", null)
+					if ref_val != null:
+						type_index = int(ref_val)
+						if type_index >= 0 and type_index < parsed_types_list.size():
+							return_type = parsed_types_list[type_index]
+						else:
+							SpacetimePlugin.print_err("View '%s': Ref index %d out of bounds (types size %d)" % [name, type_index, parsed_types_list.size()])
+							continue
+				else:
+					SpacetimePlugin.print_err("View '%s': unsupported product return type: %s" % [name, return_type_dict])
+					continue
 			else:
 				SpacetimePlugin.print_err("view return type not yet supported in the parser: %s" % [return_type_dict])
 				continue

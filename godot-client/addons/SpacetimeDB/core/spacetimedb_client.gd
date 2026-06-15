@@ -176,6 +176,12 @@ func initialize_and_connect() -> void:
 	_connection.name = "Connection"
 	add_child(_connection)
 
+	# Ensure the deserializer thread + sync primitives exist before any WS frame
+	# arrives. connect_db() already calls this, but initialize_and_connect() can be
+	# invoked directly, in which case use_threading defaults true and the message
+	# handler would hit a null _packet_mutex on the first frame.
+	_setup_threading()
+
 	_is_initialized = true
 	print_log("SpacetimeDBClient: Initialization complete.")
 
@@ -199,16 +205,7 @@ func connect_db(host_url: String, database_name: String, options: SpacetimeDBCon
 	self.debug_mode = options.debug_mode
 	self.use_threading = options.threading
 
-	if OS.has_feature("web") and use_threading == true:
-		push_error("Threads are not supported on Web. Threading has been disabled.")
-		use_threading = false
-
-	if use_threading:
-		_packet_mutex = Mutex.new()
-		_packet_semaphore = Semaphore.new()
-		_result_mutex = Mutex.new()
-		deserializer_worker = Thread.new()
-		deserializer_worker.start(_thread_loop)
+	_setup_threading()
 
 	if not _is_initialized:
 		initialize_and_connect()
@@ -465,17 +462,19 @@ func _wait_for_response(request_id: int, cache: Dictionary, sig: Signal, timeout
 		return cached
 	var timer: SceneTreeTimer = get_tree().create_timer(timeout_seconds)
 	var result_container: Array = [null]
-	var done: bool = false
+	# done lives in a container because GDScript lambdas capture local primitives
+	# by value (godot#69014); a bare `var done` would never reflect the mutation.
+	var done_ref: Array[bool] = [false]
 	var connection: Callable = func(rid: int, data: Variant) -> void:
-		if rid == request_id and not done:
-			done = true
+		if rid == request_id and not done_ref[0]:
+			done_ref[0] = true
 			result_container[0] = data
 			cache.erase(rid)
 			timer.time_left = 0
 	sig.connect(connection)
 	await timer.timeout
 	sig.disconnect(connection)
-	if not done:
+	if not done_ref[0]:
 		printerr("SpacetimeDBClient: Timeout waiting for response for Req ID: %d" % request_id)
 		return null
 	print_log("SpacetimeDBClient: Received matching response for Req ID: %d" % request_id)
@@ -553,6 +552,23 @@ func _save_token(token_to_save: String) -> void:
 		file.close()
 	else:
 		printerr("SpacetimeDBClient: Failed to save token to path: ", token_save_path)
+
+
+## Allocates the deserializer thread + sync primitives when threading is enabled.
+## Idempotent: safe to call from both connect_db() and initialize_and_connect().
+func _setup_threading() -> void:
+	if deserializer_worker != null:
+		return
+	if OS.has_feature("web") and use_threading:
+		push_error("Threads are not supported on Web. Threading has been disabled.")
+		use_threading = false
+	if not use_threading:
+		return
+	_packet_mutex = Mutex.new()
+	_packet_semaphore = Semaphore.new()
+	_result_mutex = Mutex.new()
+	deserializer_worker = Thread.new()
+	deserializer_worker.start(_thread_loop)
 
 
 func _on_websocket_message_received(raw_bytes: PackedByteArray) -> void:
@@ -641,10 +657,16 @@ func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
 	match compression:
 		0:
 			pass
-		1:
-			printerr("SpacetimeDBClient (Thread) : Brotli compression not supported!")
 		2:
 			payload = DataDecompressor.decompress_packet(payload)
+		1:
+			# Brotli unsupported: drop the frame instead of feeding raw compressed
+			# bytes into the BSATN parser, which would poison _pending_data.
+			printerr("SpacetimeDBClient: Brotli compression not supported, dropping frame.")
+			return PackedByteArray()
+		_:
+			printerr("SpacetimeDBClient: Unknown compression tag %d, dropping frame." % compression)
+			return PackedByteArray()
 	return payload
 
 

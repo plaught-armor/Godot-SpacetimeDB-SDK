@@ -770,11 +770,18 @@ func _populate_enum_from_bytes(spb: StreamPeerBuffer, resource: Object, script: 
 		_deserialization_plan_cache[script] = [enum_options] # wrap so null sentinel still works
 	else:
 		enum_options = cached[0]
-	var enum_variant: int = spb.get_u8()
+	var enum_variant: int = read_u8(spb)
+	if has_error():
+		return false
+	if enum_variant >= enum_options.size():
+		_set_error("RustEnum variant tag %d out of range (options size %d)" % [enum_variant, enum_options.size()])
+		return false
 	resource.value = enum_variant
-	var enum_type: StringName = enum_options[enum_variant] if enum_variant < enum_options.size() else &""
+	var enum_type: StringName = enum_options[enum_variant]
 	if enum_type != &"":
 		var data: Variant = _read_value_from_bsatn_type(spb, enum_type, &"")
+		if has_error():
+			return false
 		if data != null:
 			resource.data = data
 	return true
