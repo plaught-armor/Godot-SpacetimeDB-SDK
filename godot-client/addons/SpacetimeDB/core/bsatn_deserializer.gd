@@ -33,6 +33,11 @@ const NATIVE_ARRAYLIKE: Array[Variant.Type] = [
 var debug_mode: bool = false
 var _has_error: bool = false
 var _last_error: String = ""
+## Set by [method _check_read] when a read failed only because the buffer is
+## short — i.e. the rest of the message may arrive in a later packet. Lets the
+## framing loop distinguish "wait for more data" from a fatal parse error
+## without matching on the error message text.
+var _needs_more_data: bool = false
 var _deserialization_plan_cache: Dictionary[Script, Array] = { }
 var _pending_data: PackedByteArray = []
 var _schema: SpacetimeDBSchema
@@ -67,6 +72,7 @@ func get_last_error() -> String:
 	var err: String = _last_error
 	_last_error = ""
 	_has_error = false
+	_needs_more_data = false
 	return err
 
 
@@ -74,6 +80,7 @@ func get_last_error() -> String:
 func clear_error() -> void:
 	_last_error = ""
 	_has_error = false
+	_needs_more_data = false
 
 
 #--- Primitive Readers ---
@@ -301,32 +308,42 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 	_pending_data.append_array(new_data)
 	var parsed_messages: Array[SpacetimeDBServerMessage] = []
 	var spb: StreamPeerBuffer = StreamPeerBuffer.new()
-	while not _pending_data.is_empty():
+	# Parse against a single snapshot, advancing a cursor, and slice the
+	# consumed prefix off _pending_data exactly once after the loop — instead of
+	# rebuilding the buffer (O(n)) after every message.
+	spb.data_array = _pending_data
+	var buffer_size: int = _pending_data.size()
+	var cursor: int = 0
+	while cursor < buffer_size:
 		clear_error()
-		spb.data_array = _pending_data
-		spb.seek(0)
+		spb.seek(cursor)
 		var message: SpacetimeDBServerMessage = _parse_message_from_stream(spb)
 
 		if _has_error:
-			if _last_error.contains("past end of buffer"):
+			if _needs_more_data:
+				# Incomplete trailing message — keep it for the next packet.
 				clear_error()
 				break
-			else:
-				printerr("BSATNDeserializer: Unrecoverable parsing error: %s. Clearing buffer to prevent infinite loop." % get_last_error())
-				_pending_data.clear()
-				break
+			# Malformed data: drop the whole buffer to avoid an infinite loop.
+			printerr("BSATNDeserializer: Unrecoverable parsing error: %s. Clearing buffer." % get_last_error())
+			_pending_data.clear()
+			return parsed_messages
 
-		if message:
-			parsed_messages.append(message)
-			var bytes_consumed: int = spb.get_position()
-
-			if bytes_consumed == 0:
-				printerr("BSATNDeserializer: Parser consumed 0 bytes. Clearing buffer to prevent infinite loop.")
-				_pending_data.clear()
-				break
-			_pending_data = _pending_data.slice(bytes_consumed)
-		else:
+		if message == null:
 			break
+
+		var bytes_consumed: int = spb.get_position() - cursor
+		if bytes_consumed <= 0:
+			printerr("BSATNDeserializer: Parser consumed 0 bytes. Clearing buffer to prevent infinite loop.")
+			_pending_data.clear()
+			return parsed_messages
+
+		parsed_messages.append(message)
+		cursor = spb.get_position()
+
+	# Drop the consumed prefix once; any incomplete trailing message is retained.
+	if cursor > 0:
+		_pending_data = _pending_data.slice(cursor)
 
 	return parsed_messages
 
@@ -344,6 +361,7 @@ func _check_read(spb: StreamPeerBuffer, bytes_needed: int) -> bool:
 	if has_error():
 		return false
 	if spb.get_position() + bytes_needed > spb.get_size():
+		_needs_more_data = true
 		_set_error(
 			"Attempted to read %d bytes past end of buffer (size: %d)." % [bytes_needed, spb.get_size()],
 			spb.get_position(),

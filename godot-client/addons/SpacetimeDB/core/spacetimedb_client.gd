@@ -77,6 +77,11 @@ var _result_queue: Array[SpacetimeDBServerMessage] = []
 var _result_mutex: Mutex
 var _packet_mutex: Mutex
 var _thread_should_exit: bool = false
+## Incremented (under _packet_mutex) on every reconnect prep. The deserializer
+## worker captures it when draining and re-checks it before flushing results, so
+## packets parsed under a prior session are discarded instead of being applied to
+## the fresh post-reconnect database.
+var _session_epoch: int = 0
 var _message_limit_in_frame: int = 5
 const _MAX_RESULT_CACHE_SIZE: int = 256
 # Cache of reducer results that arrived before anyone called wait_for_reducer_response
@@ -600,6 +605,7 @@ func _thread_loop() -> void:
 		var local_packets: Array[PackedByteArray] = []
 		local_packets.assign(_packet_queue)
 		_packet_queue.clear()
+		var batch_epoch: int = _session_epoch
 		_packet_mutex.unlock()
 
 		# Parse all packets without holding any lock
@@ -608,11 +614,19 @@ func _thread_loop() -> void:
 			var payload: PackedByteArray = _decompress_and_parse(packet)
 			local_results.append_array(_parse_packet_and_get_resource(payload))
 
-		# Flush parsed results in one lock acquisition
+		# Flush parsed results in one lock acquisition — but only if a reconnect
+		# hasn't bumped the session epoch while we were parsing, otherwise these
+		# results belong to a dead session and must not touch the fresh database.
 		if not local_results.is_empty():
-			_result_mutex.lock()
-			_result_queue.append_array(local_results)
-			_result_mutex.unlock()
+			_packet_mutex.lock()
+			var still_current: bool = batch_epoch == _session_epoch
+			_packet_mutex.unlock()
+			if still_current:
+				_result_mutex.lock()
+				_result_queue.append_array(local_results)
+				_result_mutex.unlock()
+			else:
+				print_log("SpacetimeDBClient: discarded %d stale results from a prior session." % local_results.size())
 
 
 func _process_results_asynchronously() -> void:
@@ -1004,6 +1018,9 @@ func _prepare_for_reconnect() -> void:
 
 	if use_threading and _packet_mutex:
 		_packet_mutex.lock()
+		# Bump the epoch under the same lock the worker drains under, so any batch
+		# it has already pulled will fail its post-parse epoch check and be dropped.
+		_session_epoch += 1
 		_packet_queue.clear()
 		_packet_mutex.unlock()
 
