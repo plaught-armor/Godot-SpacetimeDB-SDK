@@ -6,11 +6,11 @@
 ##
 ## [b]Usage:[/b]
 ## [codeblock]
-## var opt := Option.some(42)
+## var opt: Option = Option.some(42)
 ## if opt.is_some():
 ##     print(opt.unwrap())  # 42
 ##
-## var empty := Option.none()
+## var empty: Option = Option.none()
 ## print(empty.unwrap_or(0))  # 0
 ## [/codeblock]
 ##

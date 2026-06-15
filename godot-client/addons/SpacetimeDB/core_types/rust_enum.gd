@@ -8,10 +8,10 @@
 ## [b]Example:[/b]
 ## [codeblock]
 ## # ReducerOutcomeEnum extends RustEnum
-## var outcome := ReducerOutcomeEnum.create(ReducerOutcomeEnum.Options.ok, tx_msg)
+## var outcome: ReducerOutcomeEnum = ReducerOutcomeEnum.create(ReducerOutcomeEnum.Options.ok, tx_msg)
 ## match outcome.value:
 ##     ReducerOutcomeEnum.Options.ok:
-##         var tx := outcome.get_ok()
+##         var tx: TransactionUpdateMessage = outcome.get_ok()
 ## [/codeblock]
 class_name RustEnum
 extends RefCounted

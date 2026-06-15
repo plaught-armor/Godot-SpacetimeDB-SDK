@@ -130,14 +130,14 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 		printerr("LocalDatabase: No schema found for table '", table_name_lower, "' to determine PK.")
 		return &""
 
-	var schema := _schema.get_type(schema_key)
+	var schema: GDScript = _schema.get_type(schema_key)
 	var constants: Dictionary = schema.get_script_constant_map()
 	if constants.has(&"PRIMARY_KEY"):
 		var pk_field: StringName = constants[&"PRIMARY_KEY"]
 		_primary_key_cache[table_name_lower] = pk_field
 		return pk_field
 
-	var properties := schema.get_script_property_list()
+	var properties: Array = schema.get_script_property_list()
 	for prop: Dictionary in properties:
 		if prop.usage & PROPERTY_USAGE_STORAGE:
 			if prop.name == &"identity" or prop.name == &"id":
@@ -155,7 +155,7 @@ func _get_row_properties(table_name_lower: StringName) -> Array[StringName]:
 	var schema_key: StringName = table_name_lower.replace("_", "")
 	if not _schema.types.has(schema_key):
 		return []
-	var schema := _schema.get_type(schema_key)
+	var schema: GDScript = _schema.get_type(schema_key)
 	var props: Array[StringName] = []
 	for prop: Dictionary in schema.get_script_property_list():
 		if prop.usage & PROPERTY_USAGE_STORAGE:

@@ -143,7 +143,7 @@ func initialize_and_connect() -> void:
 	print_log("SpacetimeDBClient: Initializing...")
 
 	# 1. Load Schema
-	var schema := SpacetimeDBSchema.new(module_name, schema_path, debug_mode)
+	var schema: SpacetimeDBSchema = SpacetimeDBSchema.new(module_name, schema_path, debug_mode)
 
 	# 2. Initialize Parser
 	_deserializer = BSATNDeserializer.new(schema, debug_mode)
@@ -379,7 +379,7 @@ func call_procedure(procedure_name: String, args: Array = [], types: Array = [],
 	var request_id: int = _next_request_id
 	_next_request_id += 1
 
-	var call_data := CallProcedureMessage.new(procedure_name, args_bytes, request_id, 0)
+	var call_data: CallProcedureMessage = CallProcedureMessage.new(procedure_name, args_bytes, request_id, 0)
 	var message_bytes: PackedByteArray = _serializer.serialize_client_message(
 		SpacetimeDBClientMessage.CALL_PROCEDURE,
 		call_data,
@@ -395,7 +395,7 @@ func call_procedure(procedure_name: String, args: Array = [], types: Array = [],
 			printerr("SpacetimeDBClient: Error sending CallProcedure message: ", err)
 			return SpacetimeDBProcedureCall.fail(err)
 
-		var handle := SpacetimeDBProcedureCall.create(self, request_id, return_bsatn_type)
+		var handle: SpacetimeDBProcedureCall = SpacetimeDBProcedureCall.create(self, request_id, return_bsatn_type)
 		_pending_procedure_calls[request_id] = handle
 		return handle
 
@@ -414,7 +414,7 @@ func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdat
 	var request_id: int = _next_request_id
 	_next_request_id += 1
 
-	var payload := OneOffQueryMessage.new(request_id, query)
+	var payload: OneOffQueryMessage = OneOffQueryMessage.new(request_id, query)
 	var message_bytes: PackedByteArray = _serializer.serialize_client_message(
 		SpacetimeDBClientMessage.ONEOFF_QUERY,
 		payload,

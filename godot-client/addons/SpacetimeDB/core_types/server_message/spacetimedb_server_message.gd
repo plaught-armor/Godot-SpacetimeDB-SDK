@@ -31,7 +31,7 @@ const ONE_OFF_QUERY_RESPONSE: int = Type.ONE_OFF_QUERY_RESPONSE
 const REDUCER_RESULT: int = Type.REDUCER_RESULT
 const PROCEDURE_RESULT: int = Type.PROCEDURE_RESULT
 
-const _MSG_PATH := SpacetimePlugin.ADDON_PATH + "/core_types/server_message/"
+const _MSG_PATH: String = SpacetimePlugin.ADDON_PATH + "/core_types/server_message/"
 
 
 ## Returns the [code]res://[/code] path to the GDScript file for the given [param msg_type] tag.

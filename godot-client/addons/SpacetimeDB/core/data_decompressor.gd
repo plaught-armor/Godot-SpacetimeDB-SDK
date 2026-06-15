@@ -11,7 +11,7 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 	if compressed_bytes.is_empty():
 		return PackedByteArray()
 
-	var gzip_stream := StreamPeerGZIP.new()
+	var gzip_stream: StreamPeerGZIP = StreamPeerGZIP.new()
 	if gzip_stream.start_decompression() != OK:
 		printerr("DataDecompressor Error: Failed to start Gzip decompression.")
 		return PackedByteArray()

@@ -6,7 +6,7 @@
 ##
 ## [b]Usage:[/b]
 ## [codeblock]
-## var sql := SpacetimeDBQuery.table("pawn_info").where("owner", identity).to_sql()
+## var sql: String = SpacetimeDBQuery.table("pawn_info").where("owner", identity).to_sql()
 ## client.subscribe([sql])
 ## [/codeblock]
 class_name SpacetimeDBQuery
@@ -20,14 +20,14 @@ var _conditions: Array[String] = []
 
 ## Creates a query targeting [param name].
 static func table(name: String) -> SpacetimeDBQuery:
-	var q := SpacetimeDBQuery.new()
+	var q: SpacetimeDBQuery = SpacetimeDBQuery.new()
 	q._table_name = _validate_identifier(name)
 	return q
 
 
 ## Creates a query from an existing [_ModuleTable] (uses its internal table name).
 static func from(t: _ModuleTable) -> SpacetimeDBQuery:
-	var q := SpacetimeDBQuery.new()
+	var q: SpacetimeDBQuery = SpacetimeDBQuery.new()
 	q._table_name = t._table_name
 	return q
 
@@ -70,7 +70,7 @@ func where_lte(field: String, value: Variant) -> SpacetimeDBQuery:
 
 ## Builds and returns the complete SQL string.
 func to_sql() -> String:
-	var sql := "SELECT * FROM %s" % _table_name
+	var sql: String = "SELECT * FROM %s" % _table_name
 	if not _conditions.is_empty():
 		sql += " WHERE " + " AND ".join(_conditions)
 	return sql

@@ -49,7 +49,7 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 		if dir.current_is_dir():
 			var dir_name: String = file_name_raw
 			if dir_name != "." and dir_name != ".." and raw_path.ends_with("/**"):
-				var dir_path := path.path_join(dir_name)
+				var dir_path: String = path.path_join(dir_name)
 				_load_types(dir_path.path_join("/**"), prefix)
 			continue
 
@@ -72,7 +72,7 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 			printerr("SpacetimeDBSchema: Script file not found or inaccessible: ", script_path, " (Original name: ", file_name_raw, ")")
 			continue
 
-		var script := ResourceLoader.load(script_path, "GDScript") as GDScript
+		var script: GDScript = ResourceLoader.load(script_path, "GDScript") as GDScript
 
 		if script and script.can_instantiate():
 			var instance: Variant = script.new()

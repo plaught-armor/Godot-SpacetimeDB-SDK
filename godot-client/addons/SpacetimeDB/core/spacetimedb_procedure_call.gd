@@ -41,7 +41,7 @@ static func create(
 		p_request_id: int,
 		p_return_bsatn_type: StringName = &"",
 ) -> SpacetimeDBProcedureCall:
-	var call := SpacetimeDBProcedureCall.new()
+	var call: SpacetimeDBProcedureCall = SpacetimeDBProcedureCall.new()
 	call._client = p_client
 	call.request_id = p_request_id
 	call._return_bsatn_type = p_return_bsatn_type
@@ -50,7 +50,7 @@ static func create(
 
 ## Creates a pre-failed handle for an immediate client-side error.
 static func fail(p_error: Error) -> SpacetimeDBProcedureCall:
-	var call := SpacetimeDBProcedureCall.new()
+	var call: SpacetimeDBProcedureCall = SpacetimeDBProcedureCall.new()
 	call.error = p_error
 	call.outcome = Outcome.ERROR
 	call.error_message = error_string(p_error)
@@ -74,7 +74,7 @@ func wait_for_response(timeout_sec: float = 10) -> PackedByteArray:
 func decode() -> Variant:
 	if return_bytes.is_empty() or _return_bsatn_type.is_empty():
 		return null
-	var spb := StreamPeerBuffer.new()
+	var spb: StreamPeerBuffer = StreamPeerBuffer.new()
 	spb.data_array = return_bytes
 	spb.big_endian = false
 	spb.seek(0)

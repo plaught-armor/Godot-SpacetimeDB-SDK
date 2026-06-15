@@ -2,7 +2,7 @@
 class_name SpacetimePluginUI
 extends Control
 
-const ERROR_LOG_ICON := SpacetimePlugin.ADDON_PATH + "/ui/icons/Error.svg"
+const ERROR_LOG_ICON: String = SpacetimePlugin.ADDON_PATH + "/ui/icons/Error.svg"
 
 signal plugin_config_changed()
 signal check_uri()
@@ -158,8 +158,8 @@ func _on_generate_code() -> void:
 
 
 func _on_new_module() -> void:
-	var name := _new_module_name_input.text
-	var alias := _new_module_alias_input.text
+	var name: String = _new_module_name_input.text
+	var alias: String = _new_module_alias_input.text
 	var table_config: bool = _new_module_table_checkbox.button_pressed
 	var reducer_config: bool = _new_module_reducer_checkbox.button_pressed
 	if alias.is_empty():

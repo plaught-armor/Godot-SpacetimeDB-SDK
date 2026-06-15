@@ -309,7 +309,7 @@ func write_array(v: Array[Variant], bsatn_type: StringName, prop: Dictionary) ->
 			return
 		element_writer = raw_writer.bind(bsatn_type, element_prop_sim) if raw_writer.get_method() in CONTEXT_WRITERS else raw_writer
 
-	var i := 0
+	var i: int = 0
 	for element_value: Variant in v:
 		element_writer.call(element_value)
 		if has_error():
@@ -371,7 +371,7 @@ func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary
 	if bsatn_component_types.size() != components.size():
 		_set_error(
 			"Array-like gd type '%s' expected 'bsatn_type' to have %d component types but has %d" % \
-			[prop_name, components.size(), bsatn_component_types.size()],
+					[prop_name, components.size(), bsatn_component_types.size()],
 		)
 		return
 
@@ -426,11 +426,11 @@ func serialize_client_message(variant_tag: int, payload_resource: SpacetimeDBCli
 func _write_fixed_bytes_le(v: PackedByteArray, expected_size: int, type_label: String) -> void:
 	if v == null or v.size() != expected_size:
 		_set_error("Invalid %s value (null or size != %d)" % [type_label, expected_size])
-		var default_bytes := PackedByteArray()
+		var default_bytes: PackedByteArray = PackedByteArray()
 		default_bytes.resize(expected_size)
 		write_bytes(default_bytes)
 		return
-	var v_copy := v.duplicate()
+	var v_copy: PackedByteArray = v.duplicate()
 	v_copy.reverse()
 	write_bytes(v_copy)
 
@@ -507,7 +507,7 @@ func _get_writer_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 	var prop_name: StringName = prop.name
 	var prop_type: Variant.Type = prop.type
 
-	var writer_callable := Callable() # Initialize with invalid Callable
+	var writer_callable: Callable = Callable() # Initialize with invalid Callable
 
 	# --- Special Cases First ---
 	# Add other special cases here if needed (e.g., Option<T> fields if handled generically later)
@@ -653,7 +653,7 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 
 	# 1. Try primitive writer (expects lowercase bsatn_type_str) if not an array
 	if value_type != TYPE_ARRAY:
-		var primitive_writer := _get_primitive_writer_from_bsatn_type(bsatn_type_str)
+		var primitive_writer: Callable = _get_primitive_writer_from_bsatn_type(bsatn_type_str)
 		if primitive_writer.is_valid():
 			primitive_writer.call(value)
 			if has_error():
@@ -672,7 +672,7 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 	}
 
 	# 3. Determine from value type and bsatn type string
-	var writer_callable := _get_writer_callable_for_property(prop_sim, bsatn_type_str)
+	var writer_callable: Callable = _get_writer_callable_for_property(prop_sim, bsatn_type_str)
 
 	if not writer_callable.is_valid() and not has_error():
 		_set_error("Unsupported BSATN type '%s' or missing writer for value '%s'" % [bsatn_type_str, prop_sim.class_name])
@@ -727,7 +727,7 @@ func _create_serialization_plan(script: Script) -> Array:
 
 # Serializes the fields of a Resource instance sequentially.
 func _serialize_resource_fields(resource: Object) -> bool:
-	var script := resource.get_script()
+	var script: Script = resource.get_script()
 	if not resource or not script:
 		_set_error("Cannot serialize fields of null or scriptless resource")
 		return false
@@ -756,9 +756,9 @@ func _serialize_resource_fields(resource: Object) -> bool:
 # --- Argument Serialization Helpers ---
 ## Serializes an array of arguments into a single PackedByteArray block.
 func _serialize_arguments(args_array: Array, bsatn_types: Array) -> PackedByteArray:
-	var args_spb := StreamPeerBuffer.new()
+	var args_spb: StreamPeerBuffer = StreamPeerBuffer.new()
 	args_spb.big_endian = false
-	var original_main_spb := _spb
+	var original_main_spb: StreamPeerBuffer = _spb
 	_spb = args_spb # Temporarily redirect writes
 
 	for i: int in args_array.size():
@@ -787,7 +787,7 @@ func _write_argument_value(value, bsatn_type: StringName = &"", context_prop_nam
 		"hint_string": "",
 	}
 
-	var writer_callable := _get_writer_callable_for_property(prop_sim, bsatn_type)
+	var writer_callable: Callable = _get_writer_callable_for_property(prop_sim, bsatn_type)
 
 	if not writer_callable.is_valid() and not has_error():
 		_set_error("Unsupported argument type '%s' or missing writer for '%s' with 'bsatn_type' metadata ('%s')" % [prop_sim.class_name, prop_sim.name, bsatn_type])

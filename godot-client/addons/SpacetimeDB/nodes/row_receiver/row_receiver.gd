@@ -111,7 +111,7 @@ func _print_log(log_message: String) -> void:
 
 func _get_db(wait_for_init: bool = false) -> LocalDatabase:
 	if _current_db_instance == null or not is_instance_valid(_current_db_instance):
-		var constants := (table_to_receive.get_script() as GDScript).get_script_constant_map()
+		var constants: Dictionary = (table_to_receive.get_script() as GDScript).get_script_constant_map()
 		var module_name: String = constants.get("module_name", "").to_pascal_case()
 		_current_db_instance = SpacetimeDB[module_name].get_local_database()
 

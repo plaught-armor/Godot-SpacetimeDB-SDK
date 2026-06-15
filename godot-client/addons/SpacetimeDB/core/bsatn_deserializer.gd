@@ -36,7 +36,7 @@ var _last_error: String = ""
 var _deserialization_plan_cache: Dictionary[Script, Array] = { }
 var _pending_data: PackedByteArray = []
 var _schema: SpacetimeDBSchema
-var _native_arraylike_regex := RegEx.new()
+var _native_arraylike_regex: RegEx = RegEx.new()
 var _normalized_name_cache: Dictionary[StringName, StringName] = { }
 
 
@@ -358,7 +358,7 @@ func _read_option(
 		option_prop_dict: Dictionary,
 		inner_type: StringName,
 ) -> Option:
-	var option_instance := Option.new()
+	var option_instance: Option = Option.new()
 	var prop_name: StringName = option_prop_dict.name
 	var tag_pos: int = spb.get_position()
 	var tag: int = read_u8(spb)
@@ -381,7 +381,7 @@ func _read_option(
 
 	if has_error():
 		if not _last_error.contains(str(prop_name)):
-			var cause := get_last_error()
+			var cause: String = get_last_error()
 			_set_error("Failed reading Some value for Option '%s' (inner type '%s'). Cause: %s" % [prop_name, inner_type, cause], tag_pos + 1)
 		return null
 
@@ -472,7 +472,7 @@ func _read_array(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_str: String
 		var element_value: Variant = element_reader.call(spb)
 		if has_error():
 			if not _last_error.contains("element %d" % i) and not _last_error.contains(str(prop_name)):
-				var cause := get_last_error()
+				var cause: String = get_last_error()
 				_set_error("Failed reading element %d for array '%s'. Cause: %s" % [i, prop_name, cause], element_start_pos)
 			return []
 		result[i] = element_value
@@ -744,7 +744,7 @@ func _populate_resource_from_bytes(resource: Object, spb: StreamPeerBuffer) -> b
 
 		if _has_error:
 			if not _last_error.contains(str(instruction.name)):
-				var existing_error := get_last_error()
+				var existing_error: String = get_last_error()
 				_set_error("Failed reading property '%s'. Cause: %s" % [instruction.name, existing_error], value_start_pos)
 			return false
 
@@ -1054,7 +1054,7 @@ func _read_subscription_error_message(spb: StreamPeerBuffer) -> SubscriptionErro
 ## v2: OneOffQueryResult { request_id: u32, result: Result<QueryRows, string> }
 ## Result: tag 0 = Ok(QueryRows{tables: Array[SingleTableRows]}), tag 1 = Err(string)
 func _read_one_off_query_result_message(spb: StreamPeerBuffer) -> OneOffQueryResponseMessage:
-	var resource := OneOffQueryResponseMessage.new()
+	var resource: OneOffQueryResponseMessage = OneOffQueryResponseMessage.new()
 	resource.request_id = read_u32_le(spb)
 	if has_error():
 		return null
@@ -1128,7 +1128,7 @@ func _read_reducer_result_message(spb: StreamPeerBuffer) -> ReducerResultMessage
 			resource.ret_value = read_vec_u8(spb)
 			if has_error():
 				return null
-			var tx_update := _read_transaction_update_message(spb)
+			var tx_update: TransactionUpdateMessage = _read_transaction_update_message(spb)
 			if has_error():
 				return null
 			outcome.data = tx_update
@@ -1152,7 +1152,7 @@ func _read_reducer_result_message(spb: StreamPeerBuffer) -> ReducerResultMessage
 ## v2: ProcedureResult { status: ProcedureStatus, timestamp: Timestamp, total_host_execution_duration: TimeDuration, request_id: u32 }
 ## ProcedureStatus: 0=Returned(bytes), 1=InternalError(string)
 func _read_procedure_result_message(spb: StreamPeerBuffer) -> ProcedureResultData:
-	var resource := ProcedureResultData.new()
+	var resource: ProcedureResultData = ProcedureResultData.new()
 
 	var status_tag: int = read_u8(spb)
 	if has_error():
