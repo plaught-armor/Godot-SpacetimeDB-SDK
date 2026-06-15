@@ -2,36 +2,44 @@
 class_name SpacetimePlugin
 extends EditorPlugin
 
-const ADDON_PATH := "res://addons/SpacetimeDB"
-const LEGACY_DATA_PATH := "res://spacetime_data"
-const BINDINGS_PATH := "res://spacetime_bindings"
-const BINDINGS_SCHEMA_PATH := BINDINGS_PATH + "/schema"
-const AUTOLOAD_NAME := "SpacetimeDB"
-const AUTOLOAD_FILE_NAME := "spacetime_autoload.gd"
-const AUTOLOAD_PATH := BINDINGS_SCHEMA_PATH + "/" + AUTOLOAD_FILE_NAME
-const SAVE_PATH := ADDON_PATH + "/plugin_config.tres"
-const CONFIG_PATH := ADDON_PATH + "/plugin.cfg"
-const UI_PANEL_NAME := "SpacetimeDB"
-const UI_PATH := ADDON_PATH + "/ui/ui.tscn"
+const ADDON_PATH: String = "res://addons/SpacetimeDB"
+const LEGACY_DATA_PATH: String = "res://spacetime_data"
+const BINDINGS_PATH: String = "res://spacetime_bindings"
+const BINDINGS_SCHEMA_PATH: String = BINDINGS_PATH + "/schema"
+const AUTOLOAD_NAME: String = "SpacetimeDB"
+const AUTOLOAD_FILE_NAME: String = "spacetime_autoload.gd"
+const AUTOLOAD_PATH: String = BINDINGS_SCHEMA_PATH + "/" + AUTOLOAD_FILE_NAME
+const SAVE_PATH: String = ADDON_PATH + "/plugin_config.tres"
+const CONFIG_PATH: String = ADDON_PATH + "/plugin.cfg"
+const UI_PANEL_NAME: String = "SpacetimeDB"
+const UI_PATH: String = ADDON_PATH + "/ui/ui.tscn"
 
 static var instance: SpacetimePlugin
 
-var http_request := HTTPRequest.new()
+var http_request: HTTPRequest = HTTPRequest.new()
 var plugin_config: SpacetimeDBPluginConfig
 var ui: SpacetimePluginUI
 var dock: EditorDock
+var ui_logging: bool = true
 
 
 static func clear_logs():
-	instance.ui.clear_logs()
+	if instance != null and is_instance_valid(instance.ui):
+		instance.ui.clear_logs()
 
 
 static func print_log(text: Variant) -> void:
-	instance.ui.add_log(text)
+	if instance != null and is_instance_valid(instance.ui) and instance.ui_logging:
+		instance.ui.add_log(text)
+	else:
+		print(text)
 
 
 static func print_err(text: Variant) -> void:
-	instance.ui.add_err(text)
+	if instance != null and is_instance_valid(instance.ui) and instance.ui_logging:
+		instance.ui.add_err(text)
+	else:
+		printerr(text)
 
 
 func _enter_tree():
@@ -137,14 +145,25 @@ func _on_check_uri() -> void:
 
 func _on_generate_schema() -> void:
 	_sanitize_uri()
+	if not await generate_schema(http_request, plugin_config):
+		return
+	_register_autoload()
+
+
+static func generate_schema(
+		request: HTTPRequest,
+		config: SpacetimeDBPluginConfig,
+) -> bool:
+	if config.uri.ends_with("/"):
+		config.uri = config.uri.left(-1)
 	print_log("Starting code generation...")
 	print_log("Fetching module schemas...")
 	var failed: bool = false
-	for module_alias: String in plugin_config.module_configs:
-		var module_config: SpacetimeDBModuleConfig = plugin_config.module_configs[module_alias]
-		var schema_uri := "%s/v1/database/%s/schema?version=10" % [plugin_config.uri, module_config.name]
-		http_request.request(schema_uri)
-		var result: Array = await http_request.request_completed
+	for module_alias: String in config.module_configs:
+		var module_config: SpacetimeDBModuleConfig = config.module_configs[module_alias]
+		var schema_uri: String = "%s/v1/database/%s/schema?version=10" % [config.uri, module_config.name]
+		request.request(schema_uri)
+		var result: Array = await request.request_completed
 
 		if result[1] == 200:
 			var json: String = PackedByteArray(result[3]).get_string_from_utf8()
@@ -162,11 +181,11 @@ func _on_generate_schema() -> void:
 
 	if failed:
 		print_err("Code generation failed!")
-		return
+		return false
 
-	var codegen := SpacetimeCodegen.new(BINDINGS_SCHEMA_PATH)
-	codegen._plugin_config = plugin_config
-	var generated_files := codegen.generate_bindings()
+	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(BINDINGS_SCHEMA_PATH)
+	codegen._plugin_config = config
+	var generated_files: Array[String] = codegen.generate_bindings()
 
 	_cleanup_unused_classes(BINDINGS_SCHEMA_PATH, generated_files)
 
@@ -174,7 +193,11 @@ func _on_generate_schema() -> void:
 		print_log("Removing legacy data directory: %s" % LEGACY_DATA_PATH)
 		DirAccess.remove_absolute(LEGACY_DATA_PATH)
 
-	var setting_name := "autoload/" + AUTOLOAD_NAME
+	return true
+
+
+func _register_autoload() -> void:
+	var setting_name: String = "autoload/" + AUTOLOAD_NAME
 	if ProjectSettings.has_setting(setting_name):
 		var current_autoload: String = ProjectSettings.get_setting(setting_name)
 		if current_autoload != "*%s" % AUTOLOAD_PATH:
@@ -183,7 +206,7 @@ func _on_generate_schema() -> void:
 
 	if not ProjectSettings.has_setting(setting_name):
 		add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
-	var filesystem := get_editor_interface().get_resource_filesystem()
+	var filesystem: EditorFileSystem = EditorInterface.get_resource_filesystem()
 	if filesystem.is_scanning():
 		print_log("Waiting for existing filesystem scan to finish...")
 		await filesystem.sources_changed
@@ -197,7 +220,7 @@ func _sanitize_uri() -> void:
 		save_codegen_data()
 
 
-func _cleanup_unused_classes(dir_path: String = "res://schema", files: Array[String] = []) -> void:
+static func _cleanup_unused_classes(dir_path: String = "res://schema", files: Array[String] = []) -> void:
 	var dir: DirAccess = DirAccess.open(dir_path)
 	if not dir:
 		return
