@@ -25,6 +25,7 @@ func _initialize() -> void:
 	fails += _test_row_offsets_as_resources()
 	fails += _test_slice_path_bytes()
 	fails += _test_zero_rows()
+	fails += _test_over_read_errors()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -74,8 +75,7 @@ func _new_deser() -> BSATNDeserializer:
 
 
 func _parse_resources(d: BSATNDeserializer, spb: StreamPeerBuffer) -> Array[Resource]:
-	var row_spb: StreamPeerBuffer = StreamPeerBuffer.new()
-	return d._read_bsatn_row_list_as_resources(spb, _row_script, "test", row_spb)
+	return d._read_bsatn_row_list_as_resources(spb, _row_script, "test")
 
 
 func _test_fixed_size_as_resources() -> int:
@@ -134,6 +134,26 @@ func _test_zero_rows() -> int:
 	f += _check_b("zero: no error", d.has_error(), false)
 	f += _check_i("zero: row count", rows.size(), 0)
 	f += _check_i("zero: spb at block end (sentinel)", d.read_u32_le(spb), SENTINEL)
+	return f
+
+
+# A row whose schema reads more bytes than its declared size (offsets say 4B/row
+# but the 2x u32 schema reads 8B) is a schema/wire mismatch — must error, not
+# return a row populated with the next row's bytes.
+func _test_over_read_errors() -> int:
+	var w: StreamPeerBuffer = StreamPeerBuffer.new()
+	w.put_u8(1) # ROW_LIST_ROW_OFFSETS
+	w.put_u32(2) # 2 rows
+	w.put_u64(0) # row0 @ 0
+	w.put_u64(4) # row1 @ 4 → declared row size 4B, but schema reads 8B
+	w.put_u32(8) # data_len
+	w.put_u32(111)
+	w.put_u32(222)
+	var d: BSATNDeserializer = _new_deser()
+	var rows: Array[Resource] = _parse_resources(d, _reader(w))
+	var f: int = 0
+	f += _check_b("over-read sets error", d.has_error(), true)
+	f += _check_i("over-read returns no rows", rows.size(), 0)
 	return f
 
 
