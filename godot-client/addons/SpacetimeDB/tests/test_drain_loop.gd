@@ -1,8 +1,8 @@
-# Standalone headless test for the per-frame drain loop's pure pieces —
-# SpacetimeDBClient._should_stop_drain (bounded-loop + at-least-one-progress
-# stop rule) and _build_overflow_queue (cross-frame re-queue ordering). The
-# real loop in _process_results_asynchronously calls both directly, so this
-# tests the exact code paths without a live connection. No test framework:
+# Standalone headless test for the per-frame drain loop's stop rule —
+# SpacetimeDBClient._should_stop_drain (bounded-loop + at-least-one-progress).
+# The real loop in _process_results_asynchronously calls it directly, so this
+# tests the exact code path without a live connection. Cross-frame batch
+# retention/release is covered by test_drain_cursor.gd. No test framework:
 #
 #   cd godot-client && <godot> --headless --path . \
 #       --script addons/SpacetimeDB/tests/test_drain_loop.gd
@@ -55,13 +55,6 @@ func _initialize() -> void:
 	# Cost exactly == budget → first msg runs, elapsed hits budget, stop at 1.
 	fails += _check_i("cost equals budget → 1", _simulate(100, 256, 4000, 4000), 1)
 
-	# --- _build_overflow_queue ordering ---
-	fails += _check_order()
-	# Empty existing queue (the common overflow case) → result is just leftover.
-	fails += _check_empty_existing()
-	# Hardened contract: inputs are not mutated; result is a fresh array.
-	fails += _check_no_aliasing()
-
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:
@@ -86,61 +79,6 @@ func _simulate(batch_size: int, max_msgs: int, cost_us: int, budget_us: int) -> 
 		processed += 1
 		elapsed += cost_us
 	return processed
-
-
-# Re-queued leftover must drain first next frame (wire order preserved): the
-# unprocessed tail of this frame's batch goes ahead of the already-queued msgs.
-func _check_order() -> int:
-	var m: Array[SpacetimeDBServerMessage] = []
-	for _i: int in 5:
-		m.append(SpacetimeDBServerMessage.new())
-	# Simulate: batch had 5, processed first 2, leftover = [m2, m3, m4].
-	var leftover: Array[SpacetimeDBServerMessage] = m.slice(2)
-	var existing: Array[SpacetimeDBServerMessage] = [m[0]] # already-queued from a prior frame
-	var result: Array[SpacetimeDBServerMessage] = SpacetimeDBClient._build_overflow_queue(leftover, existing)
-	var want: Array[SpacetimeDBServerMessage] = [m[2], m[3], m[4], m[0]]
-	_total += 1
-	if result == want:
-		print("PASS  overflow order = leftover ++ existing")
-		return 0
-	printerr("FAIL  overflow order mismatch")
-	return 1
-
-
-# Overflow with nothing already queued (typical first-backlog frame).
-func _check_empty_existing() -> int:
-	var a: SpacetimeDBServerMessage = SpacetimeDBServerMessage.new()
-	var b: SpacetimeDBServerMessage = SpacetimeDBServerMessage.new()
-	var leftover: Array[SpacetimeDBServerMessage] = [a, b]
-	var existing: Array[SpacetimeDBServerMessage] = []
-	var result: Array[SpacetimeDBServerMessage] = SpacetimeDBClient._build_overflow_queue(leftover, existing)
-	_total += 1
-	if result == [a, b]:
-		print("PASS  empty existing → leftover unchanged order")
-		return 0
-	printerr("FAIL  empty existing overflow mismatch")
-	return 1
-
-
-# Hardened no-aliasing contract: neither input is mutated in place. If the fn
-# regressed to mutating `leftover` (the old behavior), its size would grow to 2
-# and this catches it. Result content correctness checked alongside.
-func _check_no_aliasing() -> int:
-	var a: SpacetimeDBServerMessage = SpacetimeDBServerMessage.new()
-	var b: SpacetimeDBServerMessage = SpacetimeDBServerMessage.new()
-	var leftover: Array[SpacetimeDBServerMessage] = [a]
-	var existing: Array[SpacetimeDBServerMessage] = [b]
-	var result: Array[SpacetimeDBServerMessage] = SpacetimeDBClient._build_overflow_queue(leftover, existing)
-	var fails: int = 0
-	fails += _check_i("no-alias: leftover not mutated", leftover.size(), 1)
-	fails += _check_i("no-alias: existing not mutated", existing.size(), 1)
-	_total += 1
-	if result == [a, b]:
-		print("PASS  no-alias: result is combined leftover++existing")
-	else:
-		printerr("FAIL  no-alias: wrong result contents")
-		fails += 1
-	return fails
 
 
 func _check_b(label: String, got: bool, want: bool) -> int:

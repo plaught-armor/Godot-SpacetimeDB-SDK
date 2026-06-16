@@ -74,6 +74,13 @@ var pending_subscriptions: Dictionary[int, SpacetimeDBSubscription]
 var _packet_queue: Array[PackedByteArray] = []
 var _packet_semaphore: Semaphore
 var _result_queue: Array[SpacetimeDBServerMessage] = []
+# Drain batch held across frames + a cursor into it (main thread only). A batch
+# is refilled from _result_queue only once fully drained, and the cursor advances
+# in place — so a multi-frame backlog is never re-sliced/re-queued (O(1)/frame
+# instead of O(remaining) copy/frame). Newly parsed messages wait in
+# _result_queue until the current batch finishes, preserving arrival order.
+var _drain_batch: Array[SpacetimeDBServerMessage] = []
+var _drain_cursor: int = 0
 var _result_mutex: Mutex
 var _packet_mutex: Mutex
 var _thread_should_exit: bool = false
@@ -656,24 +663,30 @@ func _process_results_asynchronously() -> void:
 	if use_threading and not _result_mutex:
 		return
 
-	if use_threading:
-		_result_mutex.lock()
-
-	if _result_queue.is_empty():
+	# Refill the held batch only when the previous one is fully drained. While a
+	# batch is in flight (cursor < size) no lock is taken at all — newly parsed
+	# messages stay in _result_queue and are picked up in arrival order once the
+	# batch finishes, so a multi-frame backlog drains via an advancing cursor,
+	# never re-sliced (O(1)/frame vs O(remaining) copy/frame).
+	if _drain_cursor >= _drain_batch.size():
+		if use_threading:
+			_result_mutex.lock()
+		if _result_queue.is_empty():
+			if use_threading:
+				_result_mutex.unlock()
+			return
+		# COW handoff under the lock the parser appends under: _drain_batch takes
+		# the queued messages, _result_queue is reset for the parser to fill anew.
+		_drain_batch = _result_queue
+		_result_queue = []
 		if use_threading:
 			_result_mutex.unlock()
-		return
+		_drain_cursor = 0
 
-	# Swap entire queue out under the lock, process without holding it
-	var batch: Array[SpacetimeDBServerMessage] = []
-	batch.assign(_result_queue)
-	_result_queue.clear()
-
-	if use_threading:
-		_result_mutex.unlock()
+	var remaining: int = _drain_batch.size() - _drain_cursor
 
 	# Adapt the budget from this frame's backlog + current fps before draining.
-	_auto_tune_budget(batch.size())
+	_auto_tune_budget(remaining)
 
 	# Drain under a per-frame time budget, bounded by a hard message ceiling.
 	# Stop rule is pure (_should_stop_drain) and checked with elapsed measured
@@ -683,24 +696,20 @@ func _process_results_asynchronously() -> void:
 	var processed: int = 0
 	while not _should_stop_drain(
 		processed,
-		batch.size(),
+		remaining,
 		_max_msgs_per_frame,
 		Time.get_ticks_usec() - start_us,
 		_frame_budget_us,
 	):
-		_handle_parsed_message(batch[processed])
+		_handle_parsed_message(_drain_batch[_drain_cursor])
+		_drain_cursor += 1
 		processed += 1
 
-	# Re-queue any overflow (processed first next frame - already ordered).
-	# Slice outside the lock so the parser thread isn't stalled by the copy;
-	# read+combine _result_queue under the lock (parser thread writes it).
-	if processed < batch.size():
-		var leftover: Array[SpacetimeDBServerMessage] = batch.slice(processed)
-		if use_threading:
-			_result_mutex.lock()
-		_result_queue = _build_overflow_queue(leftover, _result_queue)
-		if use_threading:
-			_result_mutex.unlock()
+	# Release the batch once fully drained so its memory frees and the next frame
+	# refills from the queue. Partially-drained batches persist with their cursor.
+	if _drain_cursor >= _drain_batch.size():
+		_drain_batch = []
+		_drain_cursor = 0
 
 
 ## AIMD feedback loop for [member _frame_budget_us]. Drain runs on the main
@@ -798,20 +807,6 @@ static func _should_stop_drain(
 	if processed >= max_msgs:
 		return true
 	return elapsed_us >= budget_us
-
-
-## Builds the next result queue from this frame's unprocessed [param leftover]
-## (drained first next frame) followed by the already-queued [param queue], so
-## wire order is preserved across frames. Returns a fresh array — neither input
-## is mutated (no aliasing surprise for callers). Only runs in the rare overflow
-## branch, so the extra copy is off the hot path.
-static func _build_overflow_queue(
-		leftover: Array[SpacetimeDBServerMessage],
-		queue: Array[SpacetimeDBServerMessage],
-) -> Array[SpacetimeDBServerMessage]:
-	var combined: Array[SpacetimeDBServerMessage] = leftover.duplicate()
-	combined.append_array(queue)
-	return combined
 
 
 func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
@@ -1176,6 +1171,11 @@ func _prepare_for_reconnect() -> void:
 		_result_mutex.lock()
 		_result_queue.clear()
 		_result_mutex.unlock()
+
+	# Drop any in-flight batch from the old session so its messages aren't applied
+	# to the fresh post-reconnect database (main-thread-only state).
+	_drain_batch = []
+	_drain_cursor = 0
 
 
 func _cancel_reconnection() -> void:
