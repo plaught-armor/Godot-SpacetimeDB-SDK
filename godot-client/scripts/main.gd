@@ -132,6 +132,7 @@ func _setup_table_callbacks() -> void:
 	SpacetimeDB.Blackholio.db.circle.on_delete(_on_circle_delete)
 	SpacetimeDB.Blackholio.db.food.on_insert(_on_food_insert)
 	SpacetimeDB.Blackholio.db.player.on_insert(_on_player_insert)
+	SpacetimeDB.Blackholio.db.player.on_update(_on_player_update)
 	SpacetimeDB.Blackholio.db.player.on_delete(_on_player_delete)
 
 
@@ -244,6 +245,12 @@ func _mark_as_food(entity_id: int) -> void:
 
 func _on_player_insert(player: Resource) -> void:
 	_register_player(player)
+
+
+# enter_game updates the existing player row (name set after connect created it),
+# so without this the leaderboard would keep the empty name from the insert.
+func _on_player_update(_old: Resource, new: Resource) -> void:
+	_register_player(new)
 
 
 func _on_player_delete(player: Resource) -> void:
