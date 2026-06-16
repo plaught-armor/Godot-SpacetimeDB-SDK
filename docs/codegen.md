@@ -19,6 +19,22 @@
    - **Hide private tables**: Hides private tables from the bindings.
 5. You can now click the `Generate schema` button to generate the bindings, all generated code is placed in `res://spacetime_bindings/`
 
+## Headless regeneration (CI / scripts)
+
+Once at least one module is configured in the editor (the config is saved to
+`res://spacetime_bindings/plugin_config.tres`), you can regenerate bindings
+without opening the editor — useful for CI or a pre-build step:
+
+```sh
+godot --headless --path <project> --script res://addons/SpacetimeDB/cli.gd
+```
+
+It loads the saved plugin config, fetches each configured module's schema from
+the server, regenerates `res://spacetime_bindings/`, and exits `0` on success or
+`1` on failure (config missing, no modules configured, or codegen error). The
+server URL and module list come from the saved config — configure them in the
+editor UI first.
+
 ## Generated bindings structure
 
 The generated bindings are placed in `res://spacetime_bindings/` and are structured as follows:

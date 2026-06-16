@@ -12,8 +12,10 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 
 -   [How to install the SpacetimeDB SDK addon](docs/installation.md)
 -   [Quick Start guide](docs/quickstart.md)
+-   [Codegen guide](docs/codegen.md)
 -   [API Reference](docs/api.md)
 -   [Migration guide (1.2.x to 1.3.0)](docs/migrations/1.3.md)
+-   [Changelog](CHANGELOG.md)
 
 ## Features
 
@@ -40,6 +42,7 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 
 -   **Auto-Reconnection:** Exponential backoff with jitter, configurable via `SpacetimeDBConnectionOptions`. Signals: `reconnecting`, `reconnected`, `reconnect_failed`. Subscription queries are automatically restored on reconnect. Existing subscription/reducer/procedure handles are properly invalidated on disconnect.
 -   **Compression:** GZIP and None supported. Brotli is not implemented — if requested, the SDK warns and falls back to GZIP automatically.
+-   **Frame-Budgeted Apply:** Incoming row updates are applied under an adaptive per-frame time budget (fps-aware auto-tune, with a hard message ceiling), so large bursts — initial subscriptions, mass updates — drain across frames instead of stalling one. Tunable via `SpacetimeDBConnectionOptions` (`frame_budget_us`, `max_messages_per_frame`, `auto_tune_frame_budget`). BSATN parsing runs on a background thread by default (`threading`).
 
 ### Serialization
 
@@ -52,4 +55,4 @@ Code of Conduct: Adhere to the Godot [Code of Conduct](https://godotengine.org/c
 
 ## License
 
-This project is licensed under the MIT License.
+MIT. This is a hard fork of the original [SpacetimeDB Godot SDK by flametime](https://github.com/flametime/Godot-SpacetimeDB-SDK), maintained independently; the original copyright is retained in [`LICENSE`](LICENSE).
