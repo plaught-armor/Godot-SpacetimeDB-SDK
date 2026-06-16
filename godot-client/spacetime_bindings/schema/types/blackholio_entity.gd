@@ -6,7 +6,7 @@ class_name BlackholioEntity extends _ModuleTableType
 const module_name : String = "Blackholio"
 const table_names: Array[StringName] = [&'entity']
 const PRIMARY_KEY: StringName = &"entity_id"
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"entity_id": &"i32", &"position": &"BlackholioDbVector2", &"mass": &"i32" }
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"entity_id": &"u32", &"position": &"BlackholioDbVector2", &"mass": &"u32" }
 
 @export var entity_id: int
 @export var position: BlackholioDbVector2

@@ -48,7 +48,6 @@ const QUERIES: PackedStringArray = [
 	"SELECT * FROM food",
 	"SELECT * FROM player",
 	"SELECT * FROM config",
-	"SELECT * FROM consume_entity_event",
 ]
 
 
@@ -134,7 +133,6 @@ func _setup_table_callbacks() -> void:
 	SpacetimeDB.Blackholio.db.food.on_insert(_on_food_insert)
 	SpacetimeDB.Blackholio.db.player.on_insert(_on_player_insert)
 	SpacetimeDB.Blackholio.db.player.on_delete(_on_player_delete)
-	SpacetimeDB.Blackholio.db.consume_entity_event.on_insert(_on_consume_event)
 
 
 func _load_existing_data() -> void:
@@ -260,15 +258,6 @@ func _register_player(player: Resource) -> void:
 
 	if player.identity == local_identity:
 		local_player_id = pid
-
-# --- Consume event ---
-
-
-func _on_consume_event(event: Resource) -> void:
-	var consumed_node: Node2D = entity_nodes.get(event.consumed_entity_id)
-	var consumer_node: Node2D = entity_nodes.get(event.consumer_entity_id)
-	if consumed_node and consumer_node and consumed_node.has_method("despawn_toward"):
-		consumed_node.despawn_toward(consumer_node.position)
 
 # --- Entity spawning ---
 

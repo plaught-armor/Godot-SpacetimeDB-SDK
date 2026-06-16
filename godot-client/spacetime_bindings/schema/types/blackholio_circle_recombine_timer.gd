@@ -5,7 +5,7 @@ class_name BlackholioCircleRecombineTimer extends _ModuleTableType
 
 const module_name : String = "Blackholio"
 const table_names: Array[StringName] = []
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"scheduled_id": &"u64", &"scheduled_at": &"scheduled_at", &"player_id": &"i32" }
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"scheduled_id": &"u64", &"scheduled_at": &"scheduled_at", &"player_id": &"u32" }
 
 @export var scheduled_id: int
 @export var scheduled_at: int
