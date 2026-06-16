@@ -220,20 +220,20 @@ func connect_db(host_url: String, database_name: String, options: SpacetimeDBCon
 		self._token = options.token
 	self.debug_mode = options.debug_mode
 	self.use_threading = options.threading
-	# Clamp both ends: floor 1 keeps the loop progressing, ceiling keeps it a
-	# real bounded-loop backstop even if misconfigured huge.
-	self._max_msgs_per_frame = clampi(options.max_messages_per_frame, 1, 8192)
 	self._auto_tune_budget_enabled = options.auto_tune_frame_budget
-	# Floor at 100us: a 0 budget makes the drain time-check true after the first
-	# message, capping drain at 1/frame and starving the backlog (reviewer MEDIUM).
-	self._frame_budget_min_us = maxi(100, options.frame_budget_min_us)
-	self._frame_budget_max_us = maxi(self._frame_budget_min_us, options.frame_budget_max_us)
-	self._auto_tune_target_fps = maxi(0, options.auto_tune_target_fps)
-	self._frame_budget_us = clampi(
-		maxi(0, options.frame_budget_us),
-		self._frame_budget_min_us,
-		self._frame_budget_max_us,
+	# Resolve + clamp the drain limits in one pure step (unit-tested).
+	var cfg: PackedInt32Array = _resolve_drain_config(
+		options.max_messages_per_frame,
+		options.frame_budget_min_us,
+		options.frame_budget_max_us,
+		options.frame_budget_us,
+		options.auto_tune_target_fps,
 	)
+	self._max_msgs_per_frame = cfg[0]
+	self._frame_budget_min_us = cfg[1]
+	self._frame_budget_max_us = cfg[2]
+	self._frame_budget_us = cfg[3]
+	self._auto_tune_target_fps = cfg[4]
 
 	_setup_threading()
 
@@ -676,24 +676,29 @@ func _process_results_asynchronously() -> void:
 	_auto_tune_budget(batch.size())
 
 	# Drain under a per-frame time budget, bounded by a hard message ceiling.
-	# Time is checked AFTER each handle so at least one message always makes
-	# progress even if a single message exceeds the whole budget.
+	# Stop rule is pure (_should_stop_drain) and checked with elapsed measured
+	# AFTER each handle, so at least one message always makes progress even if a
+	# single message exceeds the whole budget.
 	var start_us: int = Time.get_ticks_usec()
 	var processed: int = 0
-	while processed < batch.size() and processed < _max_msgs_per_frame:
+	while not _should_stop_drain(
+		processed,
+		batch.size(),
+		_max_msgs_per_frame,
+		Time.get_ticks_usec() - start_us,
+		_frame_budget_us,
+	):
 		_handle_parsed_message(batch[processed])
 		processed += 1
-		if Time.get_ticks_usec() - start_us >= _frame_budget_us:
-			break
 
 	# Re-queue any overflow (processed first next frame - already ordered).
-	# Slice outside the lock so the parser thread isn't stalled by the copy.
+	# Slice outside the lock so the parser thread isn't stalled by the copy;
+	# read+combine _result_queue under the lock (parser thread writes it).
 	if processed < batch.size():
-		var overflow: Array[SpacetimeDBServerMessage] = batch.slice(processed)
+		var leftover: Array[SpacetimeDBServerMessage] = batch.slice(processed)
 		if use_threading:
 			_result_mutex.lock()
-		overflow.append_array(_result_queue)
-		_result_queue = overflow
+		_result_queue = _build_overflow_queue(leftover, _result_queue)
 		if use_threading:
 			_result_mutex.unlock()
 
@@ -740,6 +745,73 @@ static func _compute_tuned_budget(
 	if pending > 0 and fps >= target_fps * 0.99:
 		return mini(max_us, current + 500)
 	return current
+
+
+## Pure resolve+clamp of the per-frame drain limits from raw option values, so
+## the clamping is unit-testable without a live connection. Returns a
+## [PackedInt32Array] [code][max_msgs, min_us, max_us, budget_us, target_fps][/code].
+## [param max_msgs] clamped to [1, 8192] — floor 1 keeps the loop progressing,
+## ceiling keeps the hard ceiling a real bounded-loop backstop even if
+## misconfigured huge. [param min_us] floored at 100: a 0 budget makes the drain
+## time-check true after the first message, capping drain at 1/frame and starving
+## the backlog (reviewer MEDIUM). [param max_us] floored at the resolved min so the
+## clamp range is never inverted. [param budget_us] clamped into the resolved
+## [min, max]. [param target_fps] floored at 0 (0 = use physics tick rate).
+static func _resolve_drain_config(
+		max_msgs: int,
+		min_us: int,
+		max_us: int,
+		budget_us: int,
+		target_fps: int,
+) -> PackedInt32Array:
+	var r_min: int = maxi(100, min_us)
+	var r_max: int = maxi(r_min, max_us)
+	var r_budget: int = clampi(maxi(0, budget_us), r_min, r_max)
+	return PackedInt32Array(
+		[
+			clampi(max_msgs, 1, 8192),
+			r_min,
+			r_max,
+			r_budget,
+			maxi(0, target_fps),
+		],
+	)
+
+
+## Pure stop rule for the per-frame drain loop, so the bounded-loop + at-least-one
+## progress guarantees are unit-testable without wall-clock time. Stop when the
+## batch is exhausted, the hard message ceiling is reached, or the time budget is
+## spent — but never before the first message ([param processed] == 0 always
+## proceeds), so a single message costlier than the whole budget still makes
+## progress. Checked with [param elapsed_us] measured AFTER each handle.
+static func _should_stop_drain(
+		processed: int,
+		batch_size: int,
+		max_msgs: int,
+		elapsed_us: int,
+		budget_us: int,
+) -> bool:
+	if processed >= batch_size:
+		return true
+	if processed == 0:
+		return false
+	if processed >= max_msgs:
+		return true
+	return elapsed_us >= budget_us
+
+
+## Builds the next result queue from this frame's unprocessed [param leftover]
+## (drained first next frame) followed by the already-queued [param queue], so
+## wire order is preserved across frames. Returns a fresh array — neither input
+## is mutated (no aliasing surprise for callers). Only runs in the rare overflow
+## branch, so the extra copy is off the hot path.
+static func _build_overflow_queue(
+		leftover: Array[SpacetimeDBServerMessage],
+		queue: Array[SpacetimeDBServerMessage],
+) -> Array[SpacetimeDBServerMessage]:
+	var combined: Array[SpacetimeDBServerMessage] = leftover.duplicate()
+	combined.append_array(queue)
+	return combined
 
 
 func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
