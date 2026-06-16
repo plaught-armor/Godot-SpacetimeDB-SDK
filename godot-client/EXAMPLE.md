@@ -48,4 +48,26 @@ You need a local SpacetimeDB running the Blackholio module named `blackholio`.
 ## Run the client
 
 Open `godot-client/` in Godot 4.7 and press **F5**. Enter a name to spawn.
-Controls: mouse to move, **Space** to split, **Q** to suicide.
+Controls: mouse to move, **Space** to split, **S** to suicide, **Q** to lock aim.
+
+## Load testing (perf harness)
+
+Two headless tools stress the SDK's inbound pipeline (deserialize → apply →
+per-frame drain) against a live Blackholio server:
+
+- `bench_load.gd` — spawns N bot connections that play (move continuously), so
+  the server's `move_all_players` tick produces a high-volume entity-update
+  stream. `N` via a trailing arg:
+  ```sh
+  godot --headless --path . --script res://bench_load.gd -- 200
+  ```
+- `bench_measure.gd` — one instrumented client; reports rows/sec applied, fps,
+  and the unapplied drain backlog over a window:
+  ```sh
+  godot --headless --path . --script res://bench_measure.gd -- 200
+  ```
+
+Run the load in the background, then the measure. `end_backlog ≈ 0` means the
+drain keeps up; a growing backlog across the window is the real ceiling.
+Validated to ~17k rows/sec (the local server's max output) with backlog ~0 —
+the client absorbs the server's full throughput without falling behind.
