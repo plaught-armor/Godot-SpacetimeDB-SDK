@@ -31,13 +31,16 @@ const NATIVE_ARRAYLIKE: Array[Variant.Type] = [
 ]
 
 var debug_mode: bool = false
-var _has_error: bool = false
+## Parse outcome, single source of truth. [constant ParseStatus.OK] = clean;
+## [constant ParseStatus.ERROR] = malformed/unrecoverable (framing loop drops the
+## buffer); [constant ParseStatus.NEEDS_MORE] = a read ran past the buffer end and
+## the rest may arrive in a later packet (framing loop keeps the tail). NEEDS_MORE
+## is a recoverable subtype of error — [method has_error] is true for both non-OK
+## states. Lets the framing loop distinguish "wait for more data" from a fatal
+## parse error without matching on the error message text.
+enum ParseStatus { OK, ERROR, NEEDS_MORE }
+var _status: ParseStatus = ParseStatus.OK
 var _last_error: String = ""
-## Set by [method _check_read] when a read failed only because the buffer is
-## short — i.e. the rest of the message may arrive in a later packet. Lets the
-## framing loop distinguish "wait for more data" from a fatal parse error
-## without matching on the error message text.
-var _needs_more_data: bool = false
 var _deserialization_plan_cache: Dictionary[Script, Array] = { }
 var _pending_data: PackedByteArray = []
 var _schema: SpacetimeDBSchema
@@ -64,23 +67,21 @@ func _normalize(name: StringName) -> StringName:
 
 ## Returns [code]true[/code] if the last deserialization operation failed.
 func has_error() -> bool:
-	return _has_error
+	return _status != ParseStatus.OK
 
 
 ## Returns and clears the last error message. Resets [method has_error] to [code]false[/code].
 func get_last_error() -> String:
 	var err: String = _last_error
 	_last_error = ""
-	_has_error = false
-	_needs_more_data = false
+	_status = ParseStatus.OK
 	return err
 
 
 ## Clears the error state without returning the message.
 func clear_error() -> void:
 	_last_error = ""
-	_has_error = false
-	_needs_more_data = false
+	_status = ParseStatus.OK
 
 
 #--- Primitive Readers ---
@@ -319,8 +320,8 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 		spb.seek(cursor)
 		var message: SpacetimeDBServerMessage = _parse_message_from_stream(spb)
 
-		if _has_error:
-			if _needs_more_data:
+		if _status != ParseStatus.OK:
+			if _status == ParseStatus.NEEDS_MORE:
 				# Incomplete trailing message — keep it for the next packet.
 				clear_error()
 				break
@@ -348,12 +349,12 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 	return parsed_messages
 
 
-func _set_error(msg: String, position: int = -1) -> void:
-	if _has_error:
+func _set_error(msg: String, position: int = -1, status: ParseStatus = ParseStatus.ERROR) -> void:
+	if _status != ParseStatus.OK:
 		return
 	var pos_str: String = " (at approx. position %d)" % position if position >= 0 else ""
 	_last_error = "BSATNDeserializer Error: %s%s" % [msg, pos_str]
-	_has_error = true
+	_status = status
 	printerr(_last_error)
 
 
@@ -361,10 +362,10 @@ func _check_read(spb: StreamPeerBuffer, bytes_needed: int) -> bool:
 	if has_error():
 		return false
 	if spb.get_position() + bytes_needed > spb.get_size():
-		_needs_more_data = true
 		_set_error(
 			"Attempted to read %d bytes past end of buffer (size: %d)." % [bytes_needed, spb.get_size()],
 			spb.get_position(),
+			ParseStatus.NEEDS_MORE,
 		)
 		return false
 	return true
@@ -399,8 +400,11 @@ func _read_option(
 
 	if has_error():
 		if not _last_error.contains(str(prop_name)):
+			# Preserve NEEDS_MORE through the wrap so an incomplete trailing
+			# message isn't reclassified as a fatal ERROR (buffer would be dropped).
+			var inner_status: ParseStatus = _status
 			var cause: String = get_last_error()
-			_set_error("Failed reading Some value for Option '%s' (inner type '%s'). Cause: %s" % [prop_name, inner_type, cause], tag_pos + 1)
+			_set_error("Failed reading Some value for Option '%s' (inner type '%s'). Cause: %s" % [prop_name, inner_type, cause], tag_pos + 1, inner_status)
 		return null
 
 	option_instance.set_some(inner_value)
@@ -490,8 +494,9 @@ func _read_array(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_str: String
 		var element_value: Variant = element_reader.call(spb)
 		if has_error():
 			if not _last_error.contains("element %d" % i) and not _last_error.contains(str(prop_name)):
+				var inner_status: ParseStatus = _status
 				var cause: String = get_last_error()
-				_set_error("Failed reading element %d for array '%s'. Cause: %s" % [i, prop_name, cause], element_start_pos)
+				_set_error("Failed reading element %d for array '%s'. Cause: %s" % [i, prop_name, cause], element_start_pos, inner_status)
 			return []
 		result[i] = element_value
 	return result
@@ -759,10 +764,11 @@ func _populate_resource_from_bytes(resource: Object, spb: StreamPeerBuffer) -> b
 		var value_start_pos: int = spb.get_position()
 		var value: Variant = instruction.reader.call(spb)
 
-		if _has_error:
+		if _status != ParseStatus.OK:
 			if not _last_error.contains(str(instruction.name)):
+				var inner_status: ParseStatus = _status
 				var existing_error: String = get_last_error()
-				_set_error("Failed reading property '%s'. Cause: %s" % [instruction.name, existing_error], value_start_pos)
+				_set_error("Failed reading property '%s'. Cause: %s" % [instruction.name, existing_error], value_start_pos, inner_status)
 			return false
 
 		if value != null:

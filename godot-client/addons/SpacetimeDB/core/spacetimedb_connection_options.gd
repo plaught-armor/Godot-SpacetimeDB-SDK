@@ -25,6 +25,27 @@ var inbound_buffer_size: int = 1024 * 1024 * 2
 ## Maximum size in bytes of the WebSocket outbound buffer (default 2 MB).
 var outbound_buffer_size: int = 1024 * 1024 * 2
 
+## Per-frame time budget in microseconds for applying parsed server messages.
+## Higher values drain bursts (initial subscription, mass updates) faster at the
+## cost of more frame time; lower values keep frames smoother but backlog longer.
+## When [member auto_tune_frame_budget] is enabled this is the seed value; the
+## runtime then adjusts it within [member frame_budget_min_us]/[member frame_budget_max_us].
+var frame_budget_us: int = 4000
+## Hard ceiling on messages applied per frame, regardless of the time budget.
+## Safety backstop against unbounded drain; rarely the binding limit.
+var max_messages_per_frame: int = 256
+
+## If [code]true[/code], [member frame_budget_us] is auto-tuned at runtime by an
+## fps feedback loop: ramp up while a backlog drains and fps stays healthy, back
+## off when fps dips. Finds the largest safe budget for the current hardware/scene.
+var auto_tune_frame_budget: bool = true
+## Lower clamp for the auto-tuned budget (microseconds).
+var frame_budget_min_us: int = 1000
+## Upper clamp for the auto-tuned budget (microseconds).
+var frame_budget_max_us: int = 8000
+## Target fps the auto-tuner defends. [code]0[/code] = use [member Engine.physics_ticks_per_second].
+var auto_tune_target_fps: int = 0
+
 ## If [code]true[/code], the client automatically reconnects after unintentional disconnects.
 var auto_reconnect: bool = false
 ## Maximum reconnect attempts before giving up. [code]0[/code] means infinite.

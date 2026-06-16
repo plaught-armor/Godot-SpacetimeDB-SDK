@@ -22,17 +22,20 @@ var queries: PackedStringArray
 var error: Error = OK
 ## Human-readable error from a [SubscriptionErrorMessage], if any.
 var error_message: String = ""
+## Subscription lifecycle, single source of truth. PENDING until the server
+## confirms ([constant State.ACTIVE]) or it unsubscribes/errors
+## ([constant State.ENDED]). States are mutually exclusive by construction.
+enum State { PENDING, ACTIVE, ENDED }
 ## [code]true[/code] after [signal applied] fires and before [signal end] fires.
 var active: bool:
 	get:
-		return _active
+		return _state == State.ACTIVE
 ## [code]true[/code] after [signal end] fires.
 var ended: bool:
 	get:
-		return _ended
+		return _state == State.ENDED
 var _client: SpacetimeDBClient
-var _active: bool = false
-var _ended: bool = false
+var _state: State = State.PENDING
 var _apply_timer: SceneTreeTimer
 var _end_timer: SceneTreeTimer
 
@@ -56,7 +59,7 @@ static func create(
 static func fail(error: Error) -> SpacetimeDBSubscription:
 	var subscription: SpacetimeDBSubscription = SpacetimeDBSubscription.new()
 	subscription.error = error
-	subscription._ended = true
+	subscription._state = State.ENDED
 	return subscription
 
 
@@ -64,9 +67,9 @@ static func fail(error: Error) -> SpacetimeDBSubscription:
 ## Returns [constant OK] on success, [constant ERR_TIMEOUT] on timeout, or
 ## [constant ERR_DOES_NOT_EXIST] if the subscription ended before applying.
 func wait_for_applied(timeout_sec: float = 5) -> Error:
-	if _active:
+	if _state == State.ACTIVE:
 		return OK
-	if _ended:
+	if _state == State.ENDED:
 		return ERR_DOES_NOT_EXIST
 
 	_apply_timer = _client.get_tree().create_timer(timeout_sec)
@@ -79,14 +82,14 @@ func wait_for_applied(timeout_sec: float = 5) -> Error:
 	_apply_timer = null
 	if is_timeout:
 		return ERR_TIMEOUT
-	if _ended and not _active:
+	if _state == State.ENDED:
 		return ERR_DOES_NOT_EXIST
 	return OK
 
 
 ## Awaits until the subscription ends or [param timeout_sec] elapses.
 func wait_for_end(timeout_sec: float = 5) -> Error:
-	if _ended:
+	if _state == State.ENDED:
 		return OK
 
 	_end_timer = _client.get_tree().create_timer(timeout_sec)
@@ -104,15 +107,24 @@ func wait_for_end(timeout_sec: float = 5) -> Error:
 
 ## Sends an unsubscribe request to the server. Returns [constant ERR_DOES_NOT_EXIST] if already ended.
 func unsubscribe() -> Error:
-	if _ended:
+	if _state == State.ENDED:
 		return ERR_DOES_NOT_EXIST
 
 	return _client.unsubscribe(query_id)
 
 
+## Marks a still-PENDING subscription ended without emitting [signal end] — for
+## immediate send/connection failures surfaced before any caller awaits the
+## handle. No-op once ACTIVE or already ENDED: a confirmed subscription must go
+## through [method _on_end] so awaiters are unblocked.
+func mark_ended() -> void:
+	if _state != State.PENDING:
+		return
+	_state = State.ENDED
+
+
 func _on_applied() -> void:
-	_active = true
-	_ended = false
+	_state = State.ACTIVE
 	if _apply_timer:
 		_apply_timer.time_left = 0
 		_apply_timer = null
@@ -120,8 +132,7 @@ func _on_applied() -> void:
 
 
 func _on_end() -> void:
-	_active = false
-	_ended = true
+	_state = State.ENDED
 	# Cancel apply timer and unblock wait_for_applied() if still waiting
 	if _apply_timer:
 		_apply_timer.time_left = 0

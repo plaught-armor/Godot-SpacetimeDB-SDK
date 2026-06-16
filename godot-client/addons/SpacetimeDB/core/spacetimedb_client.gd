@@ -82,7 +82,16 @@ var _thread_should_exit: bool = false
 ## packets parsed under a prior session are discarded instead of being applied to
 ## the fresh post-reconnect database.
 var _session_epoch: int = 0
-var _message_limit_in_frame: int = 5
+# Per-frame apply drain limits: time budget (primary) + hard message ceiling
+# (bounded-loop backstop). Set from SpacetimeDBConnectionOptions in connect_db.
+# _frame_budget_us is a live value when auto-tuning is on (mutated by
+# _auto_tune_budget), otherwise the fixed configured budget.
+var _frame_budget_us: int = 4000
+var _max_msgs_per_frame: int = 256
+var _auto_tune_budget_enabled: bool = true
+var _frame_budget_min_us: int = 1000
+var _frame_budget_max_us: int = 8000
+var _auto_tune_target_fps: int = 0
 const _MAX_RESULT_CACHE_SIZE: int = 256
 # Cache of reducer results that arrived before anyone called wait_for_reducer_response
 var _reducer_result_cache: Dictionary[int, TransactionUpdateMessage] = { } # request_id -> TransactionUpdateMessage (or null)
@@ -211,6 +220,20 @@ func connect_db(host_url: String, database_name: String, options: SpacetimeDBCon
 		self._token = options.token
 	self.debug_mode = options.debug_mode
 	self.use_threading = options.threading
+	# Clamp both ends: floor 1 keeps the loop progressing, ceiling keeps it a
+	# real bounded-loop backstop even if misconfigured huge.
+	self._max_msgs_per_frame = clampi(options.max_messages_per_frame, 1, 8192)
+	self._auto_tune_budget_enabled = options.auto_tune_frame_budget
+	# Floor at 100us: a 0 budget makes the drain time-check true after the first
+	# message, capping drain at 1/frame and starving the backlog (reviewer MEDIUM).
+	self._frame_budget_min_us = maxi(100, options.frame_budget_min_us)
+	self._frame_budget_max_us = maxi(self._frame_budget_min_us, options.frame_budget_max_us)
+	self._auto_tune_target_fps = maxi(0, options.auto_tune_target_fps)
+	self._frame_budget_us = clampi(
+		maxi(0, options.frame_budget_us),
+		self._frame_budget_min_us,
+		self._frame_budget_max_us,
+	)
 
 	_setup_threading()
 
@@ -278,7 +301,7 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 		if err != OK:
 			printerr("SpacetimeDBClient: Error sending Subscribe BSATN message: %s" % error_string(err))
 			subscription.error = err
-			subscription._ended = true
+			subscription.mark_ended()
 		else:
 			print_log("SpacetimeDBClient: Subscribe request sent successfully (BSATN), Query ID: %d" % query_id)
 			pending_subscriptions.set(query_id, subscription)
@@ -287,7 +310,7 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 
 	printerr("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
 	subscription.error = ERR_CONNECTION_ERROR
-	subscription._ended = true
+	subscription.mark_ended()
 	return subscription
 
 
@@ -649,20 +672,74 @@ func _process_results_asynchronously() -> void:
 	if use_threading:
 		_result_mutex.unlock()
 
-	# Respect the per-frame message limit, carry overflow to next frame
-	var limit: int = mini(batch.size(), _message_limit_in_frame)
-	for i: int in limit:
-		_handle_parsed_message(batch[i])
+	# Adapt the budget from this frame's backlog + current fps before draining.
+	_auto_tune_budget(batch.size())
 
-	# Re-queue any overflow (processed first next frame - already ordered)
-	if batch.size() > limit:
+	# Drain under a per-frame time budget, bounded by a hard message ceiling.
+	# Time is checked AFTER each handle so at least one message always makes
+	# progress even if a single message exceeds the whole budget.
+	var start_us: int = Time.get_ticks_usec()
+	var processed: int = 0
+	while processed < batch.size() and processed < _max_msgs_per_frame:
+		_handle_parsed_message(batch[processed])
+		processed += 1
+		if Time.get_ticks_usec() - start_us >= _frame_budget_us:
+			break
+
+	# Re-queue any overflow (processed first next frame - already ordered).
+	# Slice outside the lock so the parser thread isn't stalled by the copy.
+	if processed < batch.size():
+		var overflow: Array[SpacetimeDBServerMessage] = batch.slice(processed)
 		if use_threading:
 			_result_mutex.lock()
-		var overflow: Array[SpacetimeDBServerMessage] = batch.slice(limit)
 		overflow.append_array(_result_queue)
 		_result_queue = overflow
 		if use_threading:
 			_result_mutex.unlock()
+
+
+## AIMD feedback loop for [member _frame_budget_us]. Drain runs on the main
+## thread, so an oversized budget steals frame time and drops fps. While a
+## backlog exists and fps is healthy, additively grow the budget; the moment
+## fps dips below target, multiplicatively back off. Clamped to the configured
+## min/max. [param pending] is this frame's pre-drain backlog size.
+func _auto_tune_budget(pending: int) -> void:
+	if not _auto_tune_budget_enabled:
+		return
+	var target_fps: int = _auto_tune_target_fps
+	if target_fps <= 0:
+		target_fps = Engine.physics_ticks_per_second
+	var fps: float = Engine.get_frames_per_second()
+	_frame_budget_us = _compute_tuned_budget(
+		_frame_budget_us,
+		fps,
+		target_fps,
+		pending,
+		_frame_budget_min_us,
+		_frame_budget_max_us,
+	)
+
+
+## Pure AIMD step — returns the next budget for the given state, so the controller
+## is unit-testable without engine fps. [param fps]<=0 (cold start) or
+## [param target_fps]<=0 → unchanged. fps below 95% of target → ×0.8 (back off);
+## fps at/above 99% of target with pending work → +500us (ramp). Result clamped
+## to [param min_us]/[param max_us]. The 95–99% gap is intentional hysteresis.
+static func _compute_tuned_budget(
+		current: int,
+		fps: float,
+		target_fps: int,
+		pending: int,
+		min_us: int,
+		max_us: int,
+) -> int:
+	if target_fps <= 0 or fps <= 0.0:
+		return current
+	if fps < target_fps * 0.95:
+		return maxi(min_us, int(current * 0.8))
+	if pending > 0 and fps >= target_fps * 0.99:
+		return mini(max_us, current + 500)
+	return current
 
 
 func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
