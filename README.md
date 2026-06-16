@@ -14,6 +14,7 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 -   [Quick Start guide](docs/quickstart.md)
 -   [API Reference](docs/api.md)
 -   [Migration guide (1.2.x to 1.3.0)](docs/migrations/1.3.md)
+-   [Changelog](CHANGELOG.md)
 
 ## Features
 
@@ -52,4 +53,4 @@ Code of Conduct: Adhere to the Godot [Code of Conduct](https://godotengine.org/c
 
 ## License
 
-This project is licensed under the MIT License.
+MIT. This is a hard fork of the original [SpacetimeDB Godot SDK by flametime](https://github.com/flametime/Godot-SpacetimeDB-SDK), maintained independently; the original copyright is retained in [`LICENSE`](LICENSE).
