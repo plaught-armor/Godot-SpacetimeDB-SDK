@@ -64,6 +64,31 @@ func _initialize() -> void:
 	fails += _check_b("end signal ended true", d.ended, true)
 	fails += _check_b("end signal active false", d.active, false)
 
+	# --- Adversarial: out-of-order + idempotency ---
+	# ENDED is terminal: a stray/late applied after end must NOT resurrect ACTIVE.
+	var t: SpacetimeDBSubscription = SpacetimeDBSubscription.create(null, 6, PackedStringArray())
+	t.end.emit()
+	t.applied.emit()
+	fails += _check_i("late applied stays ENDED", t._state, ENDED)
+	fails += _check_b("late applied active false", t.active, false)
+
+	# Double applied is idempotent — stays ACTIVE.
+	var dup: SpacetimeDBSubscription = SpacetimeDBSubscription.create(null, 7, PackedStringArray())
+	dup.applied.emit()
+	dup.applied.emit()
+	fails += _check_i("double applied stays ACTIVE", dup._state, ACTIVE)
+
+	# mark_ended() (PENDING→ENDED, silent) then a real end signal: the explicit
+	# emit still fires _on_end exactly once (awaiters get their unblock).
+	var me: SpacetimeDBSubscription = SpacetimeDBSubscription.create(null, 8, PackedStringArray())
+	_end_emit_count = 0
+	me.end.connect(_on_end_counter)
+	me.mark_ended()
+	fails += _check_i("mark_ended silent (0 emits)", _end_emit_count, 0)
+	me.end.emit()
+	fails += _check_i("later end emits once", _end_emit_count, 1)
+	fails += _check_i("still ENDED after end", me._state, ENDED)
+
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:

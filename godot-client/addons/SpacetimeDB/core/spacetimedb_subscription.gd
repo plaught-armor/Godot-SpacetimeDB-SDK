@@ -124,6 +124,11 @@ func mark_ended() -> void:
 
 
 func _on_applied() -> void:
+	# ENDED is terminal: a late/out-of-order applied (e.g. an error ended the
+	# subscription, then a stray SubscribeApplied arrives) must not resurrect it.
+	# Any awaiter was already unblocked by _on_end's _applied_or_timeout emit.
+	if _state == State.ENDED:
+		return
 	_state = State.ACTIVE
 	if _apply_timer:
 		_apply_timer.time_left = 0

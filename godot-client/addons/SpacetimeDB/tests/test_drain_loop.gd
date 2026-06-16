@@ -31,6 +31,13 @@ func _initialize() -> void:
 	fails += _check_b("budget over stops", _stop(5, 300, 256, 4001, 4000), true)
 	# Batch exhausted before ceiling → stop.
 	fails += _check_b("batch exhausted stops", _stop(10, 10, 256, 0, 4000), true)
+	# Ceiling of 1: first msg proceeds (processed==0), then processed==1>=1 stops.
+	fails += _check_b("ceiling 1 proceeds at 0", _stop(0, 5, 1, 0, 4000), false)
+	fails += _check_b("ceiling 1 stops at 1", _stop(1, 5, 1, 0, 4000), true)
+	# processed==0 overrides even a 0 ceiling / 0 budget (>=1 progress is absolute).
+	fails += _check_b("zero ceiling still proceeds first", _stop(0, 5, 0, 0, 0), false)
+	# Budget just under boundary → continue (guards >= vs > on the budget check).
+	fails += _check_b("budget one-under continues", _stop(5, 300, 256, 3999, 4000), false)
 
 	# --- Full-drain simulation: loop using the real predicate ---
 	# Single message costlier than the whole budget → exactly 1 processed.
@@ -41,9 +48,19 @@ func _initialize() -> void:
 	fails += _check_i("budget caps drain", _simulate(100, 256, 1000, 4000), 4)
 	# Small batch fully drained, no cap hit.
 	fails += _check_i("small batch fully drained", _simulate(3, 256, 100, 4000), 3)
+	# Ceiling of 1 caps a huge zero-cost batch at exactly 1.
+	fails += _check_i("ceiling 1 caps drain", _simulate(1000, 1, 0, 4000), 1)
+	# Budget at the floor (100us) with a per-msg cost far over it → exactly 1.
+	fails += _check_i("floor budget oversized msg → 1", _simulate(100, 256, 5000, 100), 1)
+	# Cost exactly == budget → first msg runs, elapsed hits budget, stop at 1.
+	fails += _check_i("cost equals budget → 1", _simulate(100, 256, 4000, 4000), 1)
 
 	# --- _build_overflow_queue ordering ---
 	fails += _check_order()
+	# Empty existing queue (the common overflow case) → result is just leftover.
+	fails += _check_empty_existing()
+	# Hardened contract: inputs are not mutated; result is a fresh array.
+	fails += _check_no_aliasing()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -88,6 +105,42 @@ func _check_order() -> int:
 		return 0
 	printerr("FAIL  overflow order mismatch")
 	return 1
+
+
+# Overflow with nothing already queued (typical first-backlog frame).
+func _check_empty_existing() -> int:
+	var a: SpacetimeDBServerMessage = SpacetimeDBServerMessage.new()
+	var b: SpacetimeDBServerMessage = SpacetimeDBServerMessage.new()
+	var leftover: Array[SpacetimeDBServerMessage] = [a, b]
+	var existing: Array[SpacetimeDBServerMessage] = []
+	var result: Array[SpacetimeDBServerMessage] = SpacetimeDBClient._build_overflow_queue(leftover, existing)
+	_total += 1
+	if result == [a, b]:
+		print("PASS  empty existing → leftover unchanged order")
+		return 0
+	printerr("FAIL  empty existing overflow mismatch")
+	return 1
+
+
+# Hardened no-aliasing contract: neither input is mutated in place. If the fn
+# regressed to mutating `leftover` (the old behavior), its size would grow to 2
+# and this catches it. Result content correctness checked alongside.
+func _check_no_aliasing() -> int:
+	var a: SpacetimeDBServerMessage = SpacetimeDBServerMessage.new()
+	var b: SpacetimeDBServerMessage = SpacetimeDBServerMessage.new()
+	var leftover: Array[SpacetimeDBServerMessage] = [a]
+	var existing: Array[SpacetimeDBServerMessage] = [b]
+	var result: Array[SpacetimeDBServerMessage] = SpacetimeDBClient._build_overflow_queue(leftover, existing)
+	var fails: int = 0
+	fails += _check_i("no-alias: leftover not mutated", leftover.size(), 1)
+	fails += _check_i("no-alias: existing not mutated", existing.size(), 1)
+	_total += 1
+	if result == [a, b]:
+		print("PASS  no-alias: result is combined leftover++existing")
+	else:
+		printerr("FAIL  no-alias: wrong result contents")
+		fails += 1
+	return fails
 
 
 func _check_b(label: String, got: bool, want: bool) -> int:

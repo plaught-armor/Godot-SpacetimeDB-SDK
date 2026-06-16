@@ -80,6 +80,54 @@ func _initialize() -> void:
 		PackedInt32Array([256, 1000, 8000, 4000, 144]),
 	)
 
+	# --- Adversarial boundary-equality + extremes ---
+	# max_msgs exactly on each clamp bound passes untouched (not off-by-one).
+	fails += _check(
+		"max_msgs exactly 1",
+		SpacetimeDBClient._resolve_drain_config(1, 1000, 8000, 4000, 0),
+		PackedInt32Array([1, 1000, 8000, 4000, 0]),
+	)
+	fails += _check(
+		"max_msgs exactly 8192",
+		SpacetimeDBClient._resolve_drain_config(8192, 1000, 8000, 4000, 0),
+		PackedInt32Array([8192, 1000, 8000, 4000, 0]),
+	)
+	# Negative max_msgs floored to 1 (loop must still progress).
+	fails += _check(
+		"negative max_msgs → 1",
+		SpacetimeDBClient._resolve_drain_config(-5, 1000, 8000, 4000, 0),
+		PackedInt32Array([1, 1000, 8000, 4000, 0]),
+	)
+	# min_us exactly 100 passes untouched (boundary, not floored further).
+	fails += _check(
+		"min_us exactly 100",
+		SpacetimeDBClient._resolve_drain_config(256, 100, 8000, 4000, 0),
+		PackedInt32Array([256, 100, 8000, 4000, 0]),
+	)
+	# budget exactly == min and == max stay put (clamp is inclusive).
+	fails += _check(
+		"budget exactly == min",
+		SpacetimeDBClient._resolve_drain_config(256, 2000, 8000, 2000, 0),
+		PackedInt32Array([256, 2000, 8000, 2000, 0]),
+	)
+	fails += _check(
+		"budget exactly == max",
+		SpacetimeDBClient._resolve_drain_config(256, 1000, 6000, 6000, 0),
+		PackedInt32Array([256, 1000, 6000, 6000, 0]),
+	)
+	# All-zeros: every floor/clamp fires at once → [1, 100, 100, 100, 0].
+	fails += _check(
+		"all zeros → all floors",
+		SpacetimeDBClient._resolve_drain_config(0, 0, 0, 0, 0),
+		PackedInt32Array([1, 100, 100, 100, 0]),
+	)
+	# min above max: max floored up to min, budget then pinned to that single point.
+	fails += _check(
+		"min above max collapses range",
+		SpacetimeDBClient._resolve_drain_config(256, 9000, 8000, 5000, 0),
+		PackedInt32Array([256, 9000, 9000, 9000, 0]),
+	)
+
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:
