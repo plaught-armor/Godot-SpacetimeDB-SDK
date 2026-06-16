@@ -34,7 +34,7 @@ var outcome: Outcome = Outcome.PENDING
 var error_message: String = ""
 ## The transaction update from a successful reducer (populated on [constant Outcome.OK]).
 var transaction_update: TransactionUpdateMessage = null
-## Raw BSATN bytes of the reducer's return value (populated on [constant Outcome.OK] or [constant Outcome.OK_EMPTY]).
+## Raw BSATN bytes of the reducer's return value (populated only on [constant Outcome.OK]; empty on [constant Outcome.OK_EMPTY] and all other outcomes).
 var ret_value: PackedByteArray = PackedByteArray()
 var _client: SpacetimeDBClient
 

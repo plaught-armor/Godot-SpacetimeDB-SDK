@@ -6,7 +6,8 @@ demo (agar.io-style), built on this SDK. Lives in `scripts/` (`main.gd`,
 `spacetime_bindings/`.
 
 The client connects to `http://127.0.0.1:3000`, module `blackholio`
-(see `scripts/main.gd` → `connect_db`).
+(see `scripts/main.gd`, which calls `SpacetimeDB.Blackholio.connect_db(...)` on
+the generated module autoload).
 
 ## Run a server to test against
 
@@ -66,6 +67,9 @@ per-frame drain) against a live Blackholio server:
   ```sh
   godot --headless --path . --script res://bench_measure.gd -- 200
   ```
+  The trailing arg is only echoed back as the `bots=` label in the `RESULT`
+  line (to tag the run with the load size you started separately); it does not
+  spawn bots or change the workload.
 
 Run the load in the background, then the measure. `end_backlog ≈ 0` means the
 drain keeps up; a growing backlog across the window is the real ceiling.

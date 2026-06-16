@@ -191,7 +191,7 @@ Waits for the procedure call response and returns the raw BSATN-encoded return b
 | `connected(identity: PackedByteArray, token: String)` | Emitted when the connection is established. |
 | `disconnected` | Emitted when the connection is closed. |
 | `connection_error(code: int, reason: String)` | Emitted when a connection error occurs. |
-| `database_initialized` | Emitted when the first subscription is applied and the local DB is populated. |
+| `database_initialized` | Emitted once when the local DB receives its first server data (the first `SubscribeApplied`, or the first transaction update if one arrives first). |
 | `row_inserted(table_name: StringName, row: Resource)` | Emitted when a row is inserted. |
 | `row_updated(table_name: StringName, old_row: Resource, new_row: Resource)` | Emitted when a row is updated. |
 | `row_deleted(table_name: StringName, row: Resource)` | Emitted when a row is deleted. |
@@ -225,7 +225,7 @@ The `db` property provides access to the subscribed view of the database's table
 
 ```gdscript
 class ModuleClient:
-    const reducers: ModuleReducers
+    var reducers: ModuleReducers
 ```
 
 The `reducers` property provides access to reducers exposed by the module. See [Calling reducers](#calling-reducers).
@@ -234,7 +234,7 @@ The `reducers` property provides access to reducers exposed by the module. See [
 
 ```gdscript
 class ModuleClient:
-    const procedures: ModuleProcedures
+    var procedures: ModuleProcedures
 ```
 
 The `procedures` property provides access to procedures exposed by the module. See [Calling procedures](#calling-procedures).
@@ -392,12 +392,12 @@ All conditions are AND'd together. Field names are validated to prevent SQL inje
 
 ```gdscript
 class SpacetimeDBQuery:
-    func where(field: StringName, value: Variant) -> SpacetimeDBQuery
-    func where_ne(field: StringName, value: Variant) -> SpacetimeDBQuery
-    func where_gt(field: StringName, value: Variant) -> SpacetimeDBQuery
-    func where_lt(field: StringName, value: Variant) -> SpacetimeDBQuery
-    func where_gte(field: StringName, value: Variant) -> SpacetimeDBQuery
-    func where_lte(field: StringName, value: Variant) -> SpacetimeDBQuery
+    func where(field: String, value: Variant) -> SpacetimeDBQuery
+    func where_ne(field: String, value: Variant) -> SpacetimeDBQuery
+    func where_gt(field: String, value: Variant) -> SpacetimeDBQuery
+    func where_lt(field: String, value: Variant) -> SpacetimeDBQuery
+    func where_gte(field: String, value: Variant) -> SpacetimeDBQuery
+    func where_lte(field: String, value: Variant) -> SpacetimeDBQuery
 ```
 
 #### Output
@@ -443,7 +443,7 @@ The compression preference for the connection.
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
-    var compression: CompressionPreference
+    var compression: CompressionPreference = CompressionPreference.NONE
 ```
 
 The [`CompressionPreference`](#compressionpreference-enum) for the connection.
@@ -521,6 +521,27 @@ class SpacetimeDBConnectionOptions:
 ```
 
 When enabled, registers custom Godot Performance monitors for tracking network statistics (packets/bytes sent and received per second and total).
+
+#### Frame-budget and drain options
+
+```gdscript
+class SpacetimeDBConnectionOptions:
+    var frame_budget_us: int = 4000
+    var max_messages_per_frame: int = 256
+    var auto_tune_frame_budget: bool = true
+    var frame_budget_min_us: int = 1000
+    var frame_budget_max_us: int = 8000
+    var auto_tune_target_fps: int = 0          # 0 = use Engine.physics_ticks_per_second
+```
+
+| Name | Description |
+| --- | --- |
+| `frame_budget_us` | Per-frame time budget in microseconds for applying parsed server messages. Higher drains bursts (initial subscription, mass updates) faster at the cost of frame time; lower keeps frames smoother but backlogs longer. When `auto_tune_frame_budget` is enabled this is the seed value. |
+| `max_messages_per_frame` | Hard ceiling on messages applied per frame, regardless of the time budget. Safety backstop against unbounded drain. |
+| `auto_tune_frame_budget` | When `true`, `frame_budget_us` is auto-tuned at runtime by an fps feedback loop: ramp up while a backlog drains and fps stays healthy, back off when fps dips. |
+| `frame_budget_min_us` | Lower clamp for the auto-tuned budget, in microseconds. |
+| `frame_budget_max_us` | Upper clamp for the auto-tuned budget, in microseconds. |
+| `auto_tune_target_fps` | Target fps the auto-tuner defends. `0` uses `Engine.physics_ticks_per_second`. |
 
 #### Reconnection options
 
@@ -1081,4 +1102,4 @@ The SDK handles serialization between Godot types and SpacetimeDB's BSATN format
 -   [Installation](installation.md)
 -   [Generate module bindings](codegen.md)
 -   [Quick Start guide](quickstart.md)
--   [Migration guide (0.2.x to 1.0)](migrations/1.0.md)
+-   [Migration guide (1.2.x to 1.3.0)](migrations/1.3.md)

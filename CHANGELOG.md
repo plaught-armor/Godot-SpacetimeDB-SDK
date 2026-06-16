@@ -49,7 +49,10 @@ after it, so this is published as a minor release).
 ### Internal
 - Explicit static typing and a formatting pass across the addon.
 
-## [1.3.1] - 2026-03-25
+## [1.3.1] - Never tagged (rolled into 1.4.0)
+
+These changes were prepared as `1.3.1` but never released under that tag; they
+shipped as part of [1.4.0](#140---2026-06-16).
 
 ### Changed
 - Added type annotations across core files (`local_database.gd`, `schema_parser.gd`, `spacetime.gd`, `row_receiver.gd`, `ui.gd`)
