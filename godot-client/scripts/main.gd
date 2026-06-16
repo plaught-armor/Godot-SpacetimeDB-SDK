@@ -34,6 +34,9 @@ var local_player_id: int = -1
 var world_size: int = 1000
 var input_timer: float = 0.0
 var game_started: bool = false
+var _player_name: String = ""
+var _lock_input_active: bool = false
+var _lock_input_pos: Vector2 = Vector2.ZERO
 
 @onready var entity_container: Node2D = $EntityContainer
 @onready var camera: Camera2D = $Camera2D
@@ -66,6 +69,7 @@ func _ready() -> void:
 	SpacetimeDB.Blackholio.connected.connect(_on_connected)
 	SpacetimeDB.Blackholio.disconnected.connect(_on_disconnected)
 	SpacetimeDB.Blackholio.connection_error.connect(_on_connection_error)
+	SpacetimeDB.Blackholio.reconnected.connect(_on_reconnected)
 
 	death_screen.visible = false
 	username_screen.visible = false
@@ -79,6 +83,15 @@ func _on_connected(identity: PackedByteArray, _token: String) -> void:
 
 func _on_disconnected() -> void:
 	print("Disconnected from server")
+
+
+# After auto-reconnect the SDK restores subscriptions; if we were already
+# playing, re-enter so the server respawns our circle (the player row survives
+# the disconnect via logged_out_player). Matches the other clients' auto-rejoin.
+func _on_reconnected() -> void:
+	if not _player_name.is_empty():
+		SpacetimeDB.Blackholio.reducers.enter_game(_player_name)
+		game_started = true
 
 
 func _on_connection_error(code: int, reason: String) -> void:
@@ -302,13 +315,21 @@ func _unhandled_input(event: InputEvent) -> void:
 		SpacetimeDB.Blackholio.reducers.player_split()
 	elif event.is_action_pressed("suicide"):
 		SpacetimeDB.Blackholio.reducers.suicide()
+	elif event.is_action_pressed("lock_input"):
+		# Toggle: freeze the movement direction at the current mouse position
+		# (matches the other clients' Q lock-toggle).
+		if _lock_input_active:
+			_lock_input_active = false
+		else:
+			_lock_input_active = true
+			_lock_input_pos = get_viewport().get_mouse_position()
 
 
 func _send_input() -> void:
 	if not SpacetimeDB.Blackholio.is_connected_db():
 		return
 	var screen_center: Vector2 = get_viewport_rect().size / 2.0
-	var mouse_pos: Vector2 = get_viewport().get_mouse_position()
+	var mouse_pos: Vector2 = _lock_input_pos if _lock_input_active else get_viewport().get_mouse_position()
 	var direction: Vector2 = (mouse_pos - screen_center) / (get_viewport_rect().size.y / 3.0)
 
 	var db_dir := BlackholioDbVector2.create(direction.x, direction.y)
@@ -362,6 +383,7 @@ func on_enter_game(player_name: String) -> void:
 	var name_to_send: String = player_name.strip_edges()
 	if name_to_send.is_empty():
 		name_to_send = "Player"
+	_player_name = name_to_send
 	print("Entering game as: %s" % name_to_send)
 	var enter_game := SpacetimeDB.Blackholio.reducers.enter_game(name_to_send)
 	print("enter_game reducer call sent, outcome: %s" % enter_game.outcome)
