@@ -2,6 +2,53 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [1.4.0] - 2026-06-16
+
+Rolls up everything since `1.3.1` (which was never tagged; feature work landed
+after it, so this is published as a minor release).
+
+### Added
+- v3 WebSocket protocol negotiation and parsing of view primary keys.
+- Headless codegen CLI entry point (generate bindings without opening the editor).
+- UI logging toggle; schema generation flow refactored.
+
+### Fixed
+- **Serializer crash on first serialize of a struct.** `_serialize_resource_fields`
+  read its plan with `_serialization_plan_cache.get(script)` (no default), which
+  returns `null` on a cache miss; assigning that to the typed `Array` raised a
+  runtime error the first time any struct/Resource reducer argument was serialized.
+  Now mirrors the deserializer's `.get(script, [])` + `has()` guard.
+- Robust message framing and a reconnect race in the deserializer/client.
+- Subscription state machine: `ENDED` is now terminal — a late/out-of-order
+  `applied` can no longer resurrect a subscription to `ACTIVE`.
+- Drain limits from connection options are clamped (message ceiling, time-budget
+  floor) so a misconfigured budget can't starve the apply loop.
+- Critical, high, and medium defects from a wire/async audit pass.
+
+### Performance
+- **Adaptive per-frame message drain** — fixed 5-messages/frame replaced by an
+  fps-aware AIMD time-budget controller plus a hard ceiling.
+- **Cursor-based drain** — a backlog drains via an advancing cursor instead of
+  re-slicing/re-queuing the unprocessed tail every frame (O(1)/frame vs
+  O(remaining); ~80x less re-queue overhead clearing a large burst).
+- **In-place row deserialization** — rows parsed directly from the message buffer
+  (seek to per-row offset) instead of slicing each into its own buffer + a scratch
+  `StreamPeerBuffer`. Over-read is now a hard error (schema/wire mismatch).
+- **Typed (de)serialization plans** — per-field plans use a typed record instead
+  of a `Dictionary`, dropping a hash lookup per field per row on both read and
+  write paths.
+- **Gzip decompression** feeds/drains in 64 KiB chunks instead of 4 KiB
+  (~13% on ~1 MiB payloads).
+
+### Tests
+- Added coverage (previously absent) for: BSATN row-list deserialization (both
+  encodings + over-read), gzip decompress round-trip, serializer round-trip,
+  per-frame drain stop rule + cross-frame cursor, drain-budget clamps + AIMD
+  controller, and the subscription state machine.
+
+### Internal
+- Explicit static typing and a formatting pass across the addon.
+
 ## [1.3.1] - 2026-03-25
 
 ### Changed
