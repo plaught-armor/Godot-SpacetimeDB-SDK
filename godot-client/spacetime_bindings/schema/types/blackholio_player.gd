@@ -6,7 +6,7 @@ class_name BlackholioPlayer extends _ModuleTableType
 const module_name : String = "Blackholio"
 const table_names: Array[StringName] = [&'player']
 const PRIMARY_KEY: StringName = &"identity"
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"identity": &"identity", &"player_id": &"i32", &"name": &"string" }
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"identity": &"identity", &"player_id": &"u32", &"name": &"string" }
 
 @export var identity: PackedByteArray
 @export var player_id: int

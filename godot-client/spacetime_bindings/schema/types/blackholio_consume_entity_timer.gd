@@ -5,7 +5,7 @@ class_name BlackholioConsumeEntityTimer extends _ModuleTableType
 
 const module_name : String = "Blackholio"
 const table_names: Array[StringName] = []
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"scheduled_id": &"u64", &"scheduled_at": &"scheduled_at", &"consumed_entity_id": &"i32", &"consumer_entity_id": &"i32" }
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"scheduled_id": &"u64", &"scheduled_at": &"scheduled_at", &"consumed_entity_id": &"u32", &"consumer_entity_id": &"u32" }
 
 @export var scheduled_id: int
 @export var scheduled_at: int
