@@ -2,6 +2,40 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [1.5.0] - 2026-06-17
+
+Client feature-parity pass against the official C# and TypeScript SDKs, plus a
+fix to make the Blackholio example actually build and run.
+
+### Added
+- **BTree index accessors.** Each single-column non-unique btree index gets a
+  typed `filter(value) -> Array[Row]` accessor on its table wrapper (columns
+  already covered by the primary key or a unique constraint keep `find()`).
+- **`subscribe_all_tables()`** on generated module clients — subscribes to every
+  table in the module with a single handle.
+- **Brotli decompression** via Godot's built-in decoder. `CompressionPreference.BROTLI`
+  now works instead of falling back to GZIP.
+- **Light mode & confirmed reads.** `SpacetimeDBConnectionOptions.light_mode` and
+  `confirmed_reads` (the latter was previously hardcoded `false`).
+- **`on_before_delete` row callback** + `row_before_delete` signal — fires while
+  the row is still queryable in the cache, before removal.
+- **Query builder** `where_in(field, values)` (`IN (...)`) and
+  `where_any(pairs)` (OR group).
+- **Typed reducer return values.** `SpacetimeDBReducerCall.decode()` returns the
+  typed ok value; codegen threads each reducer's `ok_return_type` automatically.
+
+### Fixed
+- **Blackholio example server** depended on `spacetimedb = { git = master }`,
+  which drifts and breaks against a released server. Pinned to the released crate
+  and resynced the client bindings (adds the `consume_entity_event` event table).
+- Removed dead v1-vestigial `ReducerCallInfoData` / `UpdateStatusData` classes
+  (the v2 wire `TransactionUpdate` carries only `query_sets`).
+
+### Docs
+- Documented all the above; corrected a version contradiction (tested floor is
+  2.1.0, matching the schema-v10 requirement) and stale "Brotli not supported"
+  notes. Committed missing `.uid` sidecars for the bench scripts.
+
 ## [1.4.0] - 2026-06-16
 
 Rolls up everything since `1.3.1` (which was never tagged; feature work landed
