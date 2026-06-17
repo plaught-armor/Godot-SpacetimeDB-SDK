@@ -1,4 +1,4 @@
-## Utility for decompressing Gzip-encoded WebSocket payloads.
+## Utility for decompressing Gzip- and Brotli-encoded WebSocket payloads.
 ##
 ## Used internally by [SpacetimeDBClient] when the server sends
 ## compressed BSATN packets.
@@ -45,3 +45,17 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 			printerr("DataDecompressor Error: Failed while getting partial data.")
 			return PackedByteArray()
 	return decompressed_data
+
+
+## Decompresses a raw Brotli stream [param compressed_bytes].[br]
+## Uses Godot's built-in Brotli decoder (Godot 4.x ships decode support).[br]
+## Returns an empty [PackedByteArray] on failure.
+static func decompress_brotli(compressed_bytes: PackedByteArray) -> PackedByteArray:
+	if compressed_bytes.is_empty():
+		return PackedByteArray()
+	# decompress_dynamic grows the output buffer as needed (-1 = no preset cap),
+	# so the decoded size doesn't need to be known up front.
+	var out: PackedByteArray = compressed_bytes.decompress_dynamic(-1, FileAccess.COMPRESSION_BROTLI)
+	if out.is_empty():
+		printerr("DataDecompressor Error: Brotli decompression failed or produced no output.")
+	return out

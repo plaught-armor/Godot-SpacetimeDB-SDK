@@ -302,7 +302,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		if ref_idx < schema_types_raw.size():
 			original_type_name_for_table = schema_types_raw[ref_idx].get("name", { }).get("name")
 		var target_type_idx: int = _find_type_index(original_type_name_for_table, parsed_types_list)
-		var target_type_def: Dictionary = parsed_types_list[target_type_idx] if target_type_idx >= 0 else {}
+		var target_type_def: Dictionary = parsed_types_list[target_type_idx] if target_type_idx >= 0 else { }
 
 		if target_type_def.is_empty() or not target_type_def.has("struct"):
 			SpacetimePlugin.print_err("Table '%s' refers to an invalid or non-struct type (index %s in original schema, name %s)." % [table_name_str, str(ref_idx), original_type_name_for_table if original_type_name_for_table else "N/A"])
@@ -319,11 +319,13 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		target_type_def.table_names.append(table_name_str)
 		target_type_def.table_name = table_name_str
 
+		var pk_col_idx: int = -1
 		var primary_key_indices: Array = table_info.get("primary_key", [])
 		if primary_key_indices.size() == 1:
 			var pk_field_idx = int(primary_key_indices[0])
 			if pk_field_idx < target_type_def.struct.size():
 				var pk_field_name: String = target_type_def.struct[pk_field_idx].name
+				pk_col_idx = pk_field_idx
 				table_data.primary_key = pk_field_idx
 				table_data.primary_key_name = pk_field_name
 				target_type_def.primary_key = pk_field_idx
@@ -332,6 +334,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				SpacetimePlugin.print_err("Primary key index %d out of bounds for table %s (struct size %d)" % [pk_field_idx, table_name_str, target_type_def.struct.size()])
 
 		var parsed_unique_indexes: Array[Dictionary] = []
+		var unique_col_set: Dictionary[int, bool] = { }
 		var constraints_def = table_info.get("constraints", [])
 		for constraint_def in constraints_def:
 			var constraint_name_str: String = constraint_def.get("name", { }).get("some", null)
@@ -344,10 +347,29 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				var unique_index: Dictionary = target_type_def.struct[unique_field_idx].duplicate()
 				unique_index.constraint_name = constraint_name_str
 				parsed_unique_indexes.append(unique_index)
+				unique_col_set[unique_field_idx] = true
 			else:
 				SpacetimePlugin.print_err("Unique field index %d out of bounds for table %s (struct size %d)" % [unique_field_idx, table_name_str, target_type_def.struct.size()])
 
 		table_data.unique_indexes = parsed_unique_indexes
+
+		# Non-unique btree indexes get a filter() accessor. Single-column only;
+		# skip columns already covered by the primary key or a unique index (those
+		# expose find() and the auto-created btree mirror would only duplicate them).
+		var parsed_btree_indexes: Array[Dictionary] = []
+		for index_def: Dictionary in table_info.get("indexes", []):
+			var btree_cols: Array = index_def.get("algorithm", { }).get("BTree", [])
+			if btree_cols.size() != 1:
+				continue
+			var btree_col_idx: int = int(btree_cols[0])
+			if btree_col_idx == pk_col_idx or unique_col_set.has(btree_col_idx):
+				continue
+			if btree_col_idx >= target_type_def.struct.size():
+				SpacetimePlugin.print_err("BTree index column %d out of bounds for table %s (struct size %d)" % [btree_col_idx, table_name_str, target_type_def.struct.size()])
+				continue
+			parsed_btree_indexes.append(target_type_def.struct[btree_col_idx].duplicate())
+
+		table_data.btree_indexes = parsed_btree_indexes
 
 		var is_public = true
 		if not target_type_def.has("is_public"):

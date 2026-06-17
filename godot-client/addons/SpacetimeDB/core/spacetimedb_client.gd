@@ -20,6 +20,8 @@ signal database_initialized
 signal row_inserted(table_name: StringName, row: Resource)
 ## Re-emitted from [LocalDatabase] when a row is updated.
 signal row_updated(table_name: StringName, old_row: Resource, new_row: Resource)
+## Re-emitted from [LocalDatabase] just before a row is deleted (still queryable).
+signal row_before_delete(table_name: StringName, row: Resource)
 ## Re-emitted from [LocalDatabase] when a row is deleted.
 signal row_deleted(table_name: StringName, row: Resource)
 ## Re-emitted from [LocalDatabase] after a batch of changes completes.
@@ -183,6 +185,7 @@ func initialize_and_connect() -> void:
 	# Connect to LocalDatabase signals to re-emit them
 	_local_db.row_inserted.connect(func(tn, r) -> void: row_inserted.emit(tn, r))
 	_local_db.row_updated.connect(func(tn, p, r) -> void: row_updated.emit(tn, p, r))
+	_local_db.row_before_delete.connect(func(tn, r) -> void: row_before_delete.emit(tn, r))
 	_local_db.row_deleted.connect(func(tn, r) -> void: row_deleted.emit(tn, r))
 	_local_db.row_transactions_completed.connect(func(tn) -> void: row_transactions_completed.emit(tn))
 	_local_db.name = "LocalDatabase"
@@ -829,13 +832,13 @@ func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
 	match compression:
 		0:
 			pass
+		1:
+			payload = DataDecompressor.decompress_brotli(payload)
+			if payload.is_empty():
+				printerr("SpacetimeDBClient: Brotli decompression failed, dropping frame.")
+				return PackedByteArray()
 		2:
 			payload = DataDecompressor.decompress_packet(payload)
-		1:
-			# Brotli unsupported: drop the frame instead of feeding raw compressed
-			# bytes into the BSATN parser, which would poison _pending_data.
-			printerr("SpacetimeDBClient: Brotli compression not supported, dropping frame.")
-			return PackedByteArray()
 		_:
 			printerr("SpacetimeDBClient: Unknown compression tag %d, dropping frame." % compression)
 			return PackedByteArray()

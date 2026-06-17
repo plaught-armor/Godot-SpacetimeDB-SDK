@@ -24,7 +24,7 @@ signal total_bytes(sent: int, received: int)
 enum CompressionPreference {
 	## No compression.
 	NONE = 0,
-	## Brotli (not supported — falls back to Gzip).
+	## Brotli compression (decoded via Godot's built-in Brotli decoder).
 	BROTLI = 1,
 	## Gzip compression.
 	GZIP = 2,
@@ -196,11 +196,7 @@ func set_token(token: String) -> void:
 
 
 func set_compression_preference(preference: CompressionPreference) -> void:
-	if preference == CompressionPreference.BROTLI:
-		push_warning("SpacetimeDBConnection: Brotli compression is not supported. Falling back to Gzip.")
-		self.preferred_compression = CompressionPreference.GZIP
-	else:
-		self.preferred_compression = preference
+	self.preferred_compression = preference
 
 
 ## Sends [param bytes] over the WebSocket. Returns [constant OK] on success.
@@ -263,7 +259,9 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 			compression_str = "None" # Fallback
 
 	query_params += "&compression=%s" % compression_str
-	query_params += "&confirmed=false"
+	query_params += "&confirmed=%s" % ("true" if _options.confirmed_reads else "false")
+	if _options.light_mode:
+		query_params += "&light=true"
 
 	if OS.get_name() == "Web":
 		query_params += "&token=%s" % _token
