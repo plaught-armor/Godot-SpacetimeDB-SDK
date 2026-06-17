@@ -2,6 +2,56 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [1.6.0] - 2026-06-17
+
+Client-cache and reconnect correctness pass, broader BSATN type coverage, WebSocket
+keepalive, and tagged-sum (enum-with-payload / `Result`) column support. The new
+serialization types and behaviors are verified end-to-end against a live SpacetimeDB
+2.6.0 server — see [`integration-tests/`](integration-tests/).
+
+### Added
+- **WebSocket keepalive.** `SpacetimeDBConnectionOptions.heartbeat_interval_seconds`
+  (default `15.0`) sends WS pings and surfaces a dead/half-open socket as a close
+  (triggering auto-reconnect) within ~2 intervals, instead of waiting out the OS TCP
+  timeout. `0.0` disables.
+- **Wide BSATN integers** `i128`, `u256`, `i256` (raw `PackedByteArray`, little-endian),
+  and **`Uuid`** columns (wire-identical to `u128`).
+- **`ScheduleAt`.** New `ScheduleAt` resource (`Interval | Time` + microseconds) with
+  full serialize/deserialize; codegen maps `#[scheduled]`-table `scheduled_at` columns
+  to it (previously a lossy `i64` that discarded the variant tag).
+- **Tagged-sum (enum-with-payload) columns.** Rust enums with per-variant data
+  round-trip as `RustEnum` values (`value` = tag, `data` = payload), read and write.
+- **Anonymous inline `Result<T, E>` columns.** Codegen synthesizes a named `RustEnum`
+  type per distinct `Result<T, E>`.
+
+### Fixed
+- **Overlapping-subscription cache correctness.** Rows are now refcounted: a row shared
+  by multiple subscriptions fires `on_insert` once (0→1) and `on_delete` only when the
+  last holder drops it (1→0). Previously a shared row produced spurious updates/deletes.
+- **Unsubscribe now prunes the cache.** `unsubscribe()` requests dropped rows
+  (`SendDroppedRows`) and removes only rows no longer held by another subscription;
+  previously a query's rows lingered indefinitely.
+- **Event tables.** Event-table rows fire `on_insert` but are no longer stored in the
+  cache (`count()` / `iter()` stay empty).
+- **`ConnectionId` byte order.** Deserialization now reverses to canonical order,
+  matching `Identity` and the serializer (was asymmetric → round-trip mismatch).
+- **Fallible-reducer error messages.** The `err` payload (a BSATN length-prefixed
+  string for `Result<_, String>`) is now decoded; previously it came through empty.
+- **`SubscriptionError` on an applied subscription.** With auto-reconnect enabled, the
+  connection is reset so the cache rebuilds from the remaining subscriptions, instead
+  of leaving stale rows; warns when auto-reconnect is off.
+- **Disconnect no longer blocks pending waits.** `query_sql()` and the
+  `wait_for_reducer_response()` / `wait_for_procedure_response()` helpers return
+  empty/`null` immediately on disconnect rather than waiting out their timeout.
+- **One-off query cache** is cleared on reconnect (a post-reconnect request id could
+  otherwise read a stale cached result).
+
+### Docs
+- README **Known Limitations & Caveats** section; documented the new types and behaviors.
+- **`integration-tests/`** — live-server verification modules + headless harnesses
+  (wide ints / `Uuid` / `ScheduleAt`, the cache trio, enum-with-payload and `Result`
+  columns), with run instructions.
+
 ## [1.5.0] - 2026-06-17
 
 Client feature-parity pass against the official C# and TypeScript SDKs, plus a

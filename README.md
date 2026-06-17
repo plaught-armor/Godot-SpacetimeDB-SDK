@@ -52,6 +52,17 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 
 -   **Deep Nesting:** Arbitrary nesting of `Option<T>` and `Vec<T>` types: `Option<Option<T>>`, `Vec<Vec<T>>`, `Option<Vec<Option<T>>>`, etc. Recursive BSATN prefix-based serialization/deserialization.
 -   **Native GDScript Types:** Vector2, Vector2i, Vector3, Vector3i, Vector4, Vector4i, Quaternion, Color, and Plane are serialized as native GDScript types via codegen. Rust enums map to `RustEnum` with generated constants.
+-   **Tagged-sum (enum-with-payload) columns:** Rust enums with per-variant data round-trip as `RustEnum` values (`value` = tag, `data` = payload), read and write. Anonymous inline `Result<T, E>` columns are supported too — codegen synthesizes a named `RustEnum` type per distinct `Result<T, E>`. Verified end-to-end against a live server (see [`integration-tests/`](integration-tests/)).
+-   **Extended scalar types:** `i128` / `u256` / `i256` (raw `PackedByteArray`), `Uuid` (reuses the `u128` wire path), and `ScheduleAt` (the `Interval | Time` tagged union on `#[scheduled]` tables, exposed as a `ScheduleAt` resource). Verified byte-exact end-to-end against a live SpacetimeDB 2.6.0 server (see [`integration-tests/`](integration-tests/)).
+
+## Known Limitations & Caveats
+
+-   **PK-less tables are not refcounted:** tables with a primary key dedupe and refcount rows across overlapping subscriptions, but PK-less tables store each delivered row independently — an identical row matched by two overlapping subscriptions appears twice, and one subscription's unsubscribe removes only one copy. Prefer a primary key where row identity matters.
+-   **`SubscriptionError` on an already-applied subscription with auto-reconnect off:** the server sends no dropped rows on a subscription error and the SDK keeps no per-query row index, so it cannot prune that query's rows selectively. With `auto_reconnect` enabled the connection is reset and the cache rebuilt from the remaining subscriptions; with it disabled the rows may linger in the local cache (a runtime warning is emitted).
+-   **`TimeDuration` is surfaced as `int` microseconds,** not a distinct type. The wire value is correct; only the semantic distinction from `Timestamp` is absent.
+-   **Disconnect resolves pending waits as empty/null:** `query_sql()` and the `wait_for_reducer_response()` / `wait_for_procedure_response()` helpers return empty/`null` immediately on disconnect rather than blocking their timeout. A `null` reducer-wait result is ambiguous (timeout, `okEmpty`, or error) — use the `SpacetimeDBReducerCall` handle's `Outcome` enum when the distinction matters.
+-   **WebSocket keepalive default is 15s:** a main-thread stall longer than the configured `heartbeat_interval_seconds` can trip a false dead-socket detection and reconnect. Tune it, or set it to `0` to disable, via `SpacetimeDBConnectionOptions`.
+-   **Deferred schema-v10 features:** the schema parser intentionally drops fallible-reducer return types, `default_values`, namespaces, and case policy — these have no consumer yet and will be implemented when a module needs them.
 
 ## Contributing
 

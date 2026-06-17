@@ -1,0 +1,12 @@
+[package]
+name = "verify-types-module"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Point this at your local SpacetimeDB checkout's bindings crate (matching the
+# server version), or replace with `spacetimedb = "<version>"` from crates.io.
+spacetimedb = { path = "/path/to/SpacetimeDB/crates/bindings", features = ["unstable"] }

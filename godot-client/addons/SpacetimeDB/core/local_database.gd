@@ -18,7 +18,11 @@ var _before_delete_listeners_by_table: Dictionary[StringName, Array] = { } ## Ar
 var _delete_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
 var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
 var _pk_less_tables: Dictionary[StringName, Array] = { } ## Array[_ModuleTableType]
-var _pk_less_property_cache: Dictionary[StringName, Array] = { } ## Array[StringName]
+var _row_property_cache: Dictionary[StringName, Array] = { } ## Array[StringName] — storage props per table
+## Per-table refcount of cached PK rows: table -> { pk -> int }. A row shared by N
+## overlapping query sets has count N; on_insert fires on 0->positive, on_delete on
+## positive->0. Lets an unsubscribe drop only rows no longer held by another query.
+var _ref_counts: Dictionary[StringName, Dictionary] = { }
 
 ## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -173,8 +177,8 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 
 # --- PK-less Row Helpers ---
 func _get_row_properties(table_name_lower: StringName) -> Array[StringName]:
-	if _pk_less_property_cache.has(table_name_lower):
-		return _pk_less_property_cache[table_name_lower]
+	if _row_property_cache.has(table_name_lower):
+		return _row_property_cache[table_name_lower]
 	var schema_key: StringName = table_name_lower.replace("_", "")
 	if not _schema.types.has(schema_key):
 		return []
@@ -183,7 +187,7 @@ func _get_row_properties(table_name_lower: StringName) -> Array[StringName]:
 	for prop: Dictionary in schema.get_script_property_list():
 		if prop.usage & PROPERTY_USAGE_STORAGE:
 			props.append(prop.name)
-	_pk_less_property_cache[table_name_lower] = props
+	_row_property_cache[table_name_lower] = props
 	return props
 
 
@@ -241,8 +245,25 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 	var has_before_delete_listeners: bool = not before_delete_listeners.is_empty()
 	var has_delete_listeners: bool = not delete_listeners.is_empty()
 
+	# Event tables carry ephemeral rows: fire on_insert, never store. count()/iter()
+	# stay empty and there is no update/delete/refcount tracking. The server only
+	# sends these as EventTable row lists, which the deserializer flattens into
+	# inserts with is_event set.
+	if table_update.is_event:
+		var fired_event: bool = false
+		for event_row: _ModuleTableType in table_update.inserts:
+			fired_event = true
+			if has_insert_listeners:
+				for listener: Callable in insert_listeners:
+					listener.call(event_row)
+			row_inserted.emit(table_name_lower, event_row)
+		if fired_event:
+			for listener: Callable in tx_listeners:
+				listener.call()
+			row_transactions_completed.emit(table_name_lower)
+		return
+
 	var table_dict: Dictionary = _tables[table_name_lower]
-	var inserted_pks_set: Dictionary = { }
 	var had_any_change: bool = false
 
 	if pk_field == &"":
@@ -309,36 +330,83 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 			row_transactions_completed.emit(table_name_lower)
 		return
 
+	# PK table: refcounted resolve. Accumulate the net per-pk delta for this update,
+	# then fire callbacks based on the cache transition. A row can be delivered by
+	# several overlapping query sets; the refcount tracks how many hold it, so an
+	# insert only fires on_insert on 0->positive and a delete only fires on_delete
+	# on positive->0. A value change while the row stays present fires on_update;
+	# an identical re-delivery (overlapping subscribe) bumps the count silently.
+	if not _ref_counts.has(table_name_lower):
+		_ref_counts[table_name_lower] = { }
+	var ref_table: Dictionary = _ref_counts[table_name_lower]
+
+	# pk -> [insert_count, delete_count, latest_inserted_row]
+	var delta: Dictionary = { }
 	for inserted_row: _ModuleTableType in table_update.inserts:
 		var pk_value: Variant = inserted_row.get(pk_field)
 		if pk_value == null:
 			push_error("LocalDatabase: Inserted row for table '", table_name_lower, "' has null PK '", pk_field, "'. Skipping.")
 			continue
-		inserted_pks_set[pk_value] = true
-		var prev_row: _ModuleTableType = table_dict.get(pk_value, null)
-		table_dict[pk_value] = inserted_row
-		had_any_change = true
-		if prev_row != null:
-			if has_update_listeners:
-				for listener: Callable in update_listeners:
-					listener.call(prev_row, inserted_row)
-			row_updated.emit(table_name_lower, prev_row, inserted_row)
+		var entry: Array
+		if delta.has(pk_value):
+			entry = delta[pk_value]
 		else:
-			if has_insert_listeners:
-				for listener: Callable in insert_listeners:
-					listener.call(inserted_row)
-			row_inserted.emit(table_name_lower, inserted_row)
-
+			entry = [0, 0, null]
+			delta[pk_value] = entry
+		entry[0] += 1
+		entry[2] = inserted_row
 	for deleted_row: _ModuleTableType in table_update.deletes:
 		var pk_value: Variant = deleted_row.get(pk_field)
 		if pk_value == null:
 			push_warning("LocalDatabase: Deleted row for table '", table_name_lower, "' has null PK '", pk_field, "'. Skipping.")
 			continue
-		if not inserted_pks_set.has(pk_value):
-			if table_dict.has(pk_value):
-				# Fire before-delete with the cached row (still present) so listeners
-				# can read pre-delete state; then erase and fire the post-delete hooks.
-				var cached_row: _ModuleTableType = table_dict[pk_value]
+		var entry: Array
+		if delta.has(pk_value):
+			entry = delta[pk_value]
+		else:
+			entry = [0, 0, null]
+			delta[pk_value] = entry
+		entry[1] += 1
+
+	var props: Array[StringName] = _get_row_properties(table_name_lower)
+	for pk_value: Variant in delta:
+		var entry: Array = delta[pk_value]
+		var insert_count: int = entry[0]
+		var delete_count: int = entry[1]
+		var new_row: _ModuleTableType = entry[2]
+		var old_ref: int = ref_table.get(pk_value, 0)
+		var new_ref: int = maxi(0, old_ref + insert_count - delete_count)
+		var was_present: bool = old_ref > 0
+		var is_present: bool = new_ref > 0
+
+		if is_present:
+			ref_table[pk_value] = new_ref
+		else:
+			ref_table.erase(pk_value)
+
+		if not was_present and is_present:
+			table_dict[pk_value] = new_row
+			had_any_change = true
+			if has_insert_listeners:
+				for listener: Callable in insert_listeners:
+					listener.call(new_row)
+			row_inserted.emit(table_name_lower, new_row)
+		elif was_present and is_present:
+			# Still present. Fire on_update only when a new value arrived and it
+			# actually differs (or we can't compare it). Empty props means no
+			# schema to diff against, so treat as changed rather than swallow it.
+			if insert_count > 0 and new_row != null:
+				var prev_row: _ModuleTableType = table_dict.get(pk_value)
+				if prev_row == null or props.is_empty() or not _rows_equal(prev_row, new_row, props):
+					table_dict[pk_value] = new_row
+					had_any_change = true
+					if has_update_listeners:
+						for listener: Callable in update_listeners:
+							listener.call(prev_row, new_row)
+					row_updated.emit(table_name_lower, prev_row, new_row)
+		else: # was_present and not is_present
+			var cached_row: _ModuleTableType = table_dict.get(pk_value)
+			if cached_row != null:
 				if has_before_delete_listeners:
 					for listener: Callable in before_delete_listeners:
 						listener.call(cached_row)
@@ -347,8 +415,8 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 				had_any_change = true
 				if has_delete_listeners:
 					for listener: Callable in delete_listeners:
-						listener.call(deleted_row)
-				row_deleted.emit(table_name_lower, deleted_row)
+						listener.call(cached_row)
+				row_deleted.emit(table_name_lower, cached_row)
 
 	if had_any_change:
 		for listener: Callable in tx_listeners:
@@ -366,6 +434,7 @@ func clear_local_db() -> void:
 	for table_name_lower: StringName in _pk_less_tables:
 		_emit_clear_for_table(table_name_lower, _pk_less_tables[table_name_lower])
 		_pk_less_tables[table_name_lower].clear()
+	_ref_counts.clear()
 
 
 ## Emits delete + transactions-completed callbacks for every row in [param rows].
@@ -498,3 +567,4 @@ func clear_all_tables() -> void:
 		_tables[table_name].clear()
 	for table_name: StringName in _pk_less_tables:
 		_pk_less_tables[table_name].clear()
+	_ref_counts.clear()

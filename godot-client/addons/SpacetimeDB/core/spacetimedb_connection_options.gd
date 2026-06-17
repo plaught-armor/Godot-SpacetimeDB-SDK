@@ -36,6 +36,11 @@ var confirmed_reads: bool = false
 var inbound_buffer_size: int = 1024 * 1024 * 2
 ## Maximum size in bytes of the WebSocket outbound buffer (default 2 MB).
 var outbound_buffer_size: int = 1024 * 1024 * 2
+## Interval in seconds between WebSocket keepalive pings. The peer sends a PING every
+## interval and closes the connection — triggering auto-reconnect if enabled — when no
+## PONG arrives before the next one, detecting a dead/half-open socket within ~2 intervals
+## instead of waiting out the OS TCP timeout (minutes). [code]0.0[/code] disables keepalive.
+var heartbeat_interval_seconds: float = 15.0
 
 ## Per-frame time budget in microseconds for applying parsed server messages.
 ## Higher values drain bursts (initial subscription, mass updates) faster at the

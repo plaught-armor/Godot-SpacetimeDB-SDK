@@ -8,15 +8,15 @@ const table_names: Array[StringName] = []
 const BSATN_TYPES: Dictionary[StringName, StringName] = { &"scheduled_id": &"u64", &"scheduled_at": &"scheduled_at", &"consumed_entity_id": &"i32", &"consumer_entity_id": &"i32" }
 
 @export var scheduled_id: int
-@export var scheduled_at: int
+@export var scheduled_at: ScheduleAt
 @export var consumed_entity_id: int
 @export var consumer_entity_id: int
 
 ## 0. scheduled_id: int[br]
-## 1. scheduled_at: int[br]
+## 1. scheduled_at: ScheduleAt[br]
 ## 2. consumed_entity_id: int[br]
 ## 3. consumer_entity_id: int[br]
-static func create(p_scheduled_id: int, p_scheduled_at: int, p_consumed_entity_id: int, p_consumer_entity_id: int) -> BlackholioConsumeEntityTimer:
+static func create(p_scheduled_id: int, p_scheduled_at: ScheduleAt, p_consumed_entity_id: int, p_consumer_entity_id: int) -> BlackholioConsumeEntityTimer:
 	var result: BlackholioConsumeEntityTimer = BlackholioConsumeEntityTimer.new()
 	result.scheduled_id = p_scheduled_id
 	result.scheduled_at = p_scheduled_at

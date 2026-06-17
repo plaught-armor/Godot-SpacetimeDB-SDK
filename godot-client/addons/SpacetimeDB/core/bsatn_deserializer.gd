@@ -17,6 +17,9 @@ const MAX_BYTE_ARRAY_LEN: int = 16 * 1024 * 1024 # 16 MiB
 const IDENTITY_SIZE: int = 32
 const CONNECTION_ID_SIZE: int = 16
 const U128_SIZE: int = 16
+const I128_SIZE: int = 16
+const U256_SIZE: int = 32
+const I256_SIZE: int = 32
 const ROW_LIST_FIXED_SIZE: int = 0
 const ROW_LIST_ROW_OFFSETS: int = 1
 const NATIVE_ARRAYLIKE: Array[Variant.Type] = [
@@ -145,6 +148,24 @@ func read_u128(spb: StreamPeerBuffer) -> PackedByteArray:
 	return num
 
 
+func read_i128(spb: StreamPeerBuffer) -> PackedByteArray:
+	var num: PackedByteArray = read_bytes(spb, I128_SIZE)
+	num.reverse() # LE on the wire; reverse to canonical order (matches read_u128)
+	return num
+
+
+func read_u256(spb: StreamPeerBuffer) -> PackedByteArray:
+	var num: PackedByteArray = read_bytes(spb, U256_SIZE)
+	num.reverse() # LE on the wire; reverse to canonical order
+	return num
+
+
+func read_i256(spb: StreamPeerBuffer) -> PackedByteArray:
+	var num: PackedByteArray = read_bytes(spb, I256_SIZE)
+	num.reverse() # LE on the wire; reverse to canonical order
+	return num
+
+
 func read_f32_le(spb: StreamPeerBuffer) -> float:
 	if not _check_read(spb, 4):
 		return 0.0
@@ -209,16 +230,27 @@ func read_identity(spb: StreamPeerBuffer) -> PackedByteArray:
 
 
 func read_connection_id(spb: StreamPeerBuffer) -> PackedByteArray:
-	return read_bytes(spb, CONNECTION_ID_SIZE)
+	var connection_id: PackedByteArray = read_bytes(spb, CONNECTION_ID_SIZE)
+	connection_id.reverse() # LE on the wire; reverse to canonical order (matches read_identity + write_connection_id)
+	return connection_id
 
 
 func read_timestamp(spb: StreamPeerBuffer) -> int:
 	return read_i64_le(spb)
 
 
-func read_scheduled_at(spb: StreamPeerBuffer) -> int:
-	read_i8(spb) # skip enum tag
-	return read_timestamp(spb)
+## ScheduleAt sum: u8 tag (0=Interval, 1=Time) then the i64 microsecond payload.
+func read_scheduled_at(spb: StreamPeerBuffer) -> ScheduleAt:
+	var result: ScheduleAt = ScheduleAt.new()
+	var tag: int = read_u8(spb)
+	if has_error():
+		return result
+	if tag != ScheduleAt.Kind.INTERVAL and tag != ScheduleAt.Kind.TIME:
+		_set_error("Invalid ScheduleAt tag %d" % tag, spb.get_position() - 1)
+		return result
+	result.kind = tag
+	result.micros = read_i64_le(spb)
+	return result
 
 
 func read_query_id_data(spb: StreamPeerBuffer) -> QueryIdData:
@@ -611,6 +643,12 @@ func _get_primitive_reader_from_bsatn_type(bsatn_type_str: StringName) -> Callab
 			return read_u64_le
 		&"u128":
 			return read_u128
+		&"i128":
+			return read_i128
+		&"u256":
+			return read_u256
+		&"i256":
+			return read_i256
 		&"i8":
 			return read_i8
 		&"i16":
@@ -948,6 +986,7 @@ func _read_table_update_instance(spb: StreamPeerBuffer, resource: TableUpdateDat
 					if has_error():
 						return false # deletes
 			1: # EventTable { events: BsatnRowList } — treated as inserts
+				resource.is_event = true
 				if row_schema_script:
 					var events: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, resource.table_name)
 					if has_error():
@@ -1051,7 +1090,8 @@ func _read_transaction_update_message(spb: StreamPeerBuffer) -> TransactionUpdat
 
 ## v2: UnsubscribeApplied { request_id: u32, query_set_id: QuerySetId, rows: Option<QueryRows> }
 ## Option<QueryRows>: tag 0 = Some(QueryRows), 1 = None
-## We parse the rows into TableUpdateData for LocalDatabase compat (same as SubscribeApplied).
+## Dropped rows are placed in TableUpdateData.deletes so LocalDatabase decrements
+## the refcount and removes only rows no longer held by any remaining subscription.
 func _read_unsubscribe_applied_message(spb: StreamPeerBuffer) -> UnsubscribeAppliedMessage:
 	var resource: UnsubscribeAppliedMessage = UnsubscribeAppliedMessage.new()
 	resource.request_id = read_u32_le(spb)
@@ -1085,7 +1125,7 @@ func _read_unsubscribe_applied_message(spb: StreamPeerBuffer) -> UnsubscribeAppl
 				var rows: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name)
 				if has_error():
 					return null
-				table_update.inserts.assign(rows)
+				table_update.deletes.assign(rows)
 			else:
 				read_bsatn_row_list(spb)
 				if has_error():

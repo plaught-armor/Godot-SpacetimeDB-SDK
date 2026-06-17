@@ -634,6 +634,12 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 		nested_type.append(schema.type_map.get(original_type_name, "Variant"))
 		var add_meta_for_field: bool = false
 
+		# The scheduled_at column of a #[scheduled] table is the ScheduleAt sum type.
+		# Fix the doc-comment type here (before the create-func doc is appended below);
+		# the field/bsatn type override happens after the type-branch resolves.
+		if field_name == "scheduled_at":
+			nested_type = ["ScheduleAt"]
+
 		var parser_nested_type: Array = field.get("nested_type", [])
 		if not parser_nested_type.is_empty():
 			# Has nesting — use nested_type to determine GDScript type and BSATN
@@ -668,6 +674,8 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 					or not SpacetimeSchemaParser._is_gd_native(original_type_name)
 		if field_name == "scheduled_at":
 			bsatn_meta_type_string = "scheduled_at"
+			gd_field_type = "ScheduleAt"
+			add_meta_for_field = true
 		if add_meta_for_field and not bsatn_meta_type_string.is_empty():
 			bsatn_type_entries.append("&\"%s\": &\"%s\"" % [field_name, bsatn_meta_type_string])
 
