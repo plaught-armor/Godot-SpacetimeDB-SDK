@@ -57,7 +57,6 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 
 ## Known Limitations & Caveats
 
--   **PK-less tables are not refcounted:** tables with a primary key dedupe and refcount rows across overlapping subscriptions, but PK-less tables store each delivered row independently — an identical row matched by two overlapping subscriptions appears twice, and one subscription's unsubscribe removes only one copy. Prefer a primary key where row identity matters.
 -   **`SubscriptionError` on an already-applied subscription with auto-reconnect off:** the server sends no dropped rows on a subscription error and the SDK keeps no per-query row index, so it cannot prune that query's rows selectively. With `auto_reconnect` enabled the connection is reset and the cache rebuilt from the remaining subscriptions; with it disabled the rows may linger in the local cache (a runtime warning is emitted).
 -   **`TimeDuration` is surfaced as `int` microseconds,** not a distinct type. The wire value is correct; only the semantic distinction from `Timestamp` is absent.
 -   **Disconnect resolves pending waits as empty/null:** `query_sql()` and the `wait_for_reducer_response()` / `wait_for_procedure_response()` helpers return empty/`null` immediately on disconnect rather than blocking their timeout. A `null` reducer-wait result is ambiguous (timeout, `okEmpty`, or error) — use the `SpacetimeDBReducerCall` handle's `Outcome` enum when the distinction matters.

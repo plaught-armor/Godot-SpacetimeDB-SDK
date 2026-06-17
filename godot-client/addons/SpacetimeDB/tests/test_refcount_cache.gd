@@ -18,6 +18,8 @@ var _inserts: int = 0
 var _updates: int = 0
 var _deletes: int = 0
 var _last_update_val: int = -1
+var _pkless_inserts: int = 0
+var _pkless_deletes: int = 0
 var _db: LocalDatabase
 
 
@@ -45,16 +47,21 @@ func _initialize() -> void:
 
 func _run() -> int:
 	var schema: SpacetimeDBSchema = SpacetimeDBSchema.new("test_mod", "res://__no_schema__", false)
-	schema.raw_table_names = [&"alpha", &"events"]
+	schema.raw_table_names = [&"alpha", &"events", &"gamma"]
 	_db = LocalDatabase.new(schema)
 	# Force the PK path + value-compare without a disk schema by seeding the caches.
 	_db._primary_key_cache[&"alpha"] = &"id"
 	_db._row_property_cache[&"alpha"] = [&"id", &"val"] as Array[StringName]
+	# gamma: PK-less ("" primary key) — refcounted by row value.
+	_db._primary_key_cache[&"gamma"] = &""
+	_db._row_property_cache[&"gamma"] = [&"id", &"val"] as Array[StringName]
 
 	_db.subscribe_to_inserts(&"alpha", _on_insert)
 	_db.subscribe_to_updates(&"alpha", _on_update)
 	_db.subscribe_to_deletes(&"alpha", _on_delete)
 	_db.subscribe_to_inserts(&"events", _on_insert)
+	_db.subscribe_to_inserts(&"gamma", _on_pkless_insert)
+	_db.subscribe_to_deletes(&"gamma", _on_pkless_delete)
 
 	var f: int = 0
 
@@ -93,6 +100,32 @@ func _run() -> int:
 	f += _check_i("event-table insert fires callback", _inserts, 2)
 	f += _check_i("event-table row not stored", _db.count_all_rows(&"events"), 0)
 
+	# --- PK-less table refcounting (keyed by row value) ---
+	# G) Fresh insert from subscription #1.
+	_apply(&"gamma", [_TestRow.make(1, 10)], [])
+	f += _check_i("pk-less: insert fires once", _pkless_inserts, 1)
+	f += _check_i("pk-less: row cached", _db.count_all_rows(&"gamma"), 1)
+
+	# H) Same value from overlapping subscription #2 — silent multiplicity bump.
+	_apply(&"gamma", [_TestRow.make(1, 10)], [])
+	f += _check_i("pk-less: overlapping insert is silent", _pkless_inserts, 1)
+	f += _check_i("pk-less: not duplicated in cache", _db.count_all_rows(&"gamma"), 1)
+
+	# I) One holder drops it (count 2 -> 1): survives, no on_delete.
+	_apply(&"gamma", [], [_TestRow.make(1, 10)])
+	f += _check_i("pk-less: shared row survives first drop", _pkless_deletes, 0)
+	f += _check_i("pk-less: still cached after first drop", _db.count_all_rows(&"gamma"), 1)
+
+	# J) Last holder drops it (count 1 -> 0): on_delete fires, evicted.
+	_apply(&"gamma", [], [_TestRow.make(1, 10)])
+	f += _check_i("pk-less: delete fires on last drop", _pkless_deletes, 1)
+	f += _check_i("pk-less: evicted after last drop", _db.count_all_rows(&"gamma"), 0)
+
+	# K) Distinct values are independent rows.
+	_apply(&"gamma", [_TestRow.make(1, 10), _TestRow.make(2, 20)], [])
+	f += _check_i("pk-less: distinct values both insert", _pkless_inserts, 3)
+	f += _check_i("pk-less: both cached", _db.count_all_rows(&"gamma"), 2)
+
 	_db.free()
 	return f
 
@@ -116,6 +149,14 @@ func _on_update(_old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
 
 func _on_delete(_row: _ModuleTableType) -> void:
 	_deletes += 1
+
+
+func _on_pkless_insert(_row: _ModuleTableType) -> void:
+	_pkless_inserts += 1
+
+
+func _on_pkless_delete(_row: _ModuleTableType) -> void:
+	_pkless_deletes += 1
 
 
 func _check_i(label: String, got: int, want: int) -> int:

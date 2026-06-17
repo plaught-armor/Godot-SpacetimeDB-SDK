@@ -28,6 +28,8 @@ serialization types and behaviors are verified end-to-end against a live Spaceti
 - **Overlapping-subscription cache correctness.** Rows are now refcounted: a row shared
   by multiple subscriptions fires `on_insert` once (0→1) and `on_delete` only when the
   last holder drops it (1→0). Previously a shared row produced spurious updates/deletes.
+  Covers both primary-key tables (keyed by PK) and PK-less tables (keyed by row value,
+  multiplicity-counted).
 - **Unsubscribe now prunes the cache.** `unsubscribe()` requests dropped rows
   (`SendDroppedRows`) and removes only rows no longer held by another subscription;
   previously a query's rows lingered indefinitely.

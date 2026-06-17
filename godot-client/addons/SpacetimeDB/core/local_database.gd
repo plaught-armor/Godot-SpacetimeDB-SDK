@@ -23,6 +23,11 @@ var _row_property_cache: Dictionary[StringName, Array] = { } ## Array[StringName
 ## overlapping query sets has count N; on_insert fires on 0->positive, on_delete on
 ## positive->0. Lets an unsubscribe drop only rows no longer held by another query.
 var _ref_counts: Dictionary[StringName, Dictionary] = { }
+## PK-less analogue of _ref_counts. Rows have no key, so they're refcounted by value:
+## table -> { row_hash -> Array of [row, count] } (hash bucket + _rows_equal tiebreak).
+## A distinct row value held by N overlapping subscriptions has count N; on_insert fires
+## on 0->1, on_delete on 1->0. Mirrors the per-row entries in _pk_less_tables.
+var _pk_less_counts: Dictionary[StringName, Dictionary] = { }
 
 ## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -205,6 +210,32 @@ func _row_hash(row: _ModuleTableType, props: Array[StringName]) -> int:
 	return h
 
 
+# --- PK-less refcount helpers (counts: { hash -> Array of [row, count] }) ---
+# Finds the [row, count] entry for a value, or returns an empty Array if absent
+# (a real entry is always [row, count], size 2 — so .is_empty() means "not found").
+func _pk_less_find(counts: Dictionary, h: int, row: _ModuleTableType, props: Array[StringName]) -> Array:
+	if not counts.has(h):
+		return []
+	for entry: Array in counts[h]:
+		if _rows_equal(entry[0], row, props):
+			return entry
+	return []
+
+
+func _pk_less_add(counts: Dictionary, h: int, row: _ModuleTableType) -> void:
+	if not counts.has(h):
+		counts[h] = []
+	counts[h].append([row, 1])
+
+
+func _pk_less_remove(counts: Dictionary, h: int, entry: Array) -> void:
+	if not counts.has(h):
+		return
+	counts[h].erase(entry)
+	if counts[h].is_empty():
+		counts.erase(h)
+
+
 ## Applies all table updates from a [SubscribeAppliedMessage] to the local store.
 func apply_database_subscription_applied(db_update: SubscribeAppliedMessage) -> void:
 	if not db_update:
@@ -267,62 +298,64 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 	var had_any_change: bool = false
 
 	if pk_field == &"":
-		# PK-less table: array-based storage with property-level matching for deletes
+		# PK-less table: refcounted by row value (rows have no key). A distinct value held
+		# by N overlapping subscriptions has count N; on_insert fires only on 0->1 and
+		# on_delete only on 1->0, so a shared row survives one subscription's unsubscribe.
+		# _pk_less_tables holds each present row once (for iteration/queries); _pk_less_counts
+		# holds the multiplicity, keyed by row hash with an _rows_equal tiebreak.
 		if not _pk_less_tables.has(table_name_lower):
 			_pk_less_tables[table_name_lower] = []
+		if not _pk_less_counts.has(table_name_lower):
+			_pk_less_counts[table_name_lower] = { }
 		var rows_array: Array = _pk_less_tables[table_name_lower]
+		var counts: Dictionary = _pk_less_counts[table_name_lower]
 		var props: Array[StringName] = _get_row_properties(table_name_lower)
 
 		for inserted_row: _ModuleTableType in table_update.inserts:
-			rows_array.append(inserted_row)
-			had_any_change = true
-			if has_insert_listeners:
-				for listener: Callable in insert_listeners:
-					listener.call(inserted_row)
-			row_inserted.emit(table_name_lower, inserted_row)
+			var ins_hash: int = _row_hash(inserted_row, props)
+			var ins_entry: Array = _pk_less_find(counts, ins_hash, inserted_row, props)
+			if not ins_entry.is_empty():
+				ins_entry[1] += 1 # already present (overlap / multiplicity) — bump silently
+			else:
+				_pk_less_add(counts, ins_hash, inserted_row)
+				rows_array.append(inserted_row)
+				had_any_change = true
+				if has_insert_listeners:
+					for listener: Callable in insert_listeners:
+						listener.call(inserted_row)
+				row_inserted.emit(table_name_lower, inserted_row)
 
-		# Build hash-based multiset of rows to delete: O(m*p) instead of O(n*m*p) scanning
 		if not table_update.deletes.is_empty():
-			var delete_set: Dictionary = { } # hash -> Array of [row, count]
+			var evicted: Dictionary = { } # instance_id -> true, for a single-pass array compact
 			for deleted_row: _ModuleTableType in table_update.deletes:
-				var h: int = _row_hash(deleted_row, props)
-				if not delete_set.has(h):
-					delete_set[h] = []
-				var bucket: Array = delete_set[h]
-				var matched: bool = false
-				for entry: Array in bucket:
-					if _rows_equal(entry[0], deleted_row, props):
-						entry[1] += 1
-						matched = true
-						break
-				if not matched:
-					bucket.append([deleted_row, 1])
-
-			# Single pass compact — avoids repeated remove_at() shifts
-			var write_idx: int = 0
-			for read_idx: int in range(rows_array.size()):
-				var row: _ModuleTableType = rows_array[read_idx]
-				var h: int = _row_hash(row, props)
-				var removed: bool = false
-				if delete_set.has(h):
-					for entry: Array in delete_set[h]:
-						if entry[1] > 0 and _rows_equal(row, entry[0], props):
-							entry[1] -= 1
-							removed = true
-							had_any_change = true
-							if has_before_delete_listeners:
-								for listener: Callable in before_delete_listeners:
-									listener.call(row)
-							row_before_delete.emit(table_name_lower, row)
-							if has_delete_listeners:
-								for listener: Callable in delete_listeners:
-									listener.call(row)
-							row_deleted.emit(table_name_lower, row)
-							break
-				if not removed:
+				var del_hash: int = _row_hash(deleted_row, props)
+				var del_entry: Array = _pk_less_find(counts, del_hash, deleted_row, props)
+				if del_entry.is_empty() or del_entry[1] <= 0:
+					continue
+				del_entry[1] -= 1
+				if del_entry[1] == 0:
+					var cached_row: _ModuleTableType = del_entry[0]
+					_pk_less_remove(counts, del_hash, del_entry)
+					evicted[cached_row.get_instance_id()] = true
+					had_any_change = true
+					if has_before_delete_listeners:
+						for listener: Callable in before_delete_listeners:
+							listener.call(cached_row)
+					row_before_delete.emit(table_name_lower, cached_row)
+					if has_delete_listeners:
+						for listener: Callable in delete_listeners:
+							listener.call(cached_row)
+					row_deleted.emit(table_name_lower, cached_row)
+			if not evicted.is_empty():
+				# Single pass compact — the stored row is the same instance appended on 0->1.
+				var write_idx: int = 0
+				for read_idx: int in range(rows_array.size()):
+					var row: _ModuleTableType = rows_array[read_idx]
+					if evicted.has(row.get_instance_id()):
+						continue
 					rows_array[write_idx] = row
 					write_idx += 1
-			rows_array.resize(write_idx)
+				rows_array.resize(write_idx)
 
 		if had_any_change:
 			for listener: Callable in tx_listeners:
@@ -435,6 +468,7 @@ func clear_local_db() -> void:
 		_emit_clear_for_table(table_name_lower, _pk_less_tables[table_name_lower])
 		_pk_less_tables[table_name_lower].clear()
 	_ref_counts.clear()
+	_pk_less_counts.clear()
 
 
 ## Emits delete + transactions-completed callbacks for every row in [param rows].
@@ -568,3 +602,4 @@ func clear_all_tables() -> void:
 	for table_name: StringName in _pk_less_tables:
 		_pk_less_tables[table_name].clear()
 	_ref_counts.clear()
+	_pk_less_counts.clear()
