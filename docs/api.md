@@ -103,14 +103,15 @@ Close a subscription by calling `unsubscribe(query_id)` with the query id of an 
 
 ```gdscript
 class SpacetimeDBClient:
-    func call_reducer(reducer_name: String, args: Array = [], types: Array = []) -> SpacetimeDBReducerCall
+    func call_reducer(reducer_name: String, args: Array = [], types: Array = [], ret_bsatn_type: StringName = &"") -> SpacetimeDBReducerCall
 ```
 
-| Name         | Description                                              |
-| ------------ | -------------------------------------------------------- |
-| reducer_name | The name of the reducer to call.                         |
-| args         | The arguments to pass to the reducer.                    |
-| types        | The BSATN types of the arguments to pass to the reducer. |
+| Name           | Description                                                       |
+| -------------- | ---------------------------------------------------------------- |
+| reducer_name   | The name of the reducer to call.                                 |
+| args           | The arguments to pass to the reducer.                            |
+| types          | The BSATN types of the arguments to pass to the reducer.         |
+| ret_bsatn_type | Optional BSATN type for decoding the reducer's ok return value via [`decode()`](#decode-method-1). Empty for reducers that return nothing. |
 
 Call a reducer with `call_reducer(reducer_name, args, types)` a [`SpacetimeDBReducerCall`](#spacetimedbreducercall-class) instance is returned which contains the request id or an error.
 
@@ -765,6 +766,15 @@ class SpacetimeDBReducerCall:
 ```
 
 Raw BSATN-encoded return value from the reducer. Populated when the outcome is `OK`. Empty for other outcomes or reducers with no return value.
+
+#### `decode()` method
+
+```gdscript
+class SpacetimeDBReducerCall:
+    func decode() -> Variant
+```
+
+Decodes [`ret_value`](#ret_value-property) into the typed ok return value, using the BSATN type the generated reducer method passed at call time. Returns `null` if the reducer returned nothing (unit) or no return type was provided (e.g. a hand-written `call_reducer` without `ret_bsatn_type`).
 
 #### `is_ok()` / `is_error()` / `is_completed()` methods
 
