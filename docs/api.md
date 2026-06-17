@@ -239,6 +239,17 @@ class ModuleClient:
 
 The `procedures` property provides access to procedures exposed by the module. See [Calling procedures](#calling-procedures).
 
+#### `subscribe_all_tables()` method
+
+```gdscript
+class ModuleClient:
+    func subscribe_all_tables() -> SpacetimeDBSubscription
+```
+
+Subscribes to every table in the module (`SELECT * FROM <table>` for each) with a
+single [`SpacetimeDBSubscription`](#spacetimedbsubscription-class) handle. Returns
+a failed handle if called before the client's database is initialized.
+
 ### Access the local database
 
 Each table defined by your module has a property, whose name is the table name converted to `snake_case`. The table properties are [`ModuleTable`](#moduletable-class) instances which have methods for accessing rows and registering `on_insert`, `on_update` and `on_delete` listeners.
@@ -317,6 +328,24 @@ The `Row` type will be the auto-generated type which matches the row type define
 
 Call `remove_on_delete` to un-register a previously registered listener.
 
+#### `on_before_delete` listener
+
+```gdscript
+class ModuleTable:
+    func on_before_delete(listener: Callable) -> void
+
+    func remove_on_before_delete(listener: Callable) -> void
+
+# Listener function signature
+func(row: Row) -> void
+```
+
+The `on_before_delete` listener runs just before a row is removed from the local
+database — the row (and related rows) are still queryable from the cache when it
+fires. Use it to read pre-delete state that `on_delete` could no longer see.
+
+Call `remove_on_before_delete` to un-register a previously registered listener.
+
 #### Query helpers
 
 ```gdscript
@@ -349,7 +378,19 @@ Where `Col` is the column data type and `Row` is the table row type. If a row wi
 
 #### BTree index access
 
-This SDK does not currently support non-unique BTree indexes.
+For each single-column non-unique BTree index on a table, its table class has a
+property whose name is the indexed column name. This property is a
+`ModuleTableBTreeIndex` with a `filter` method returning all matching rows.
+
+```gdscript
+class ModuleTableBTreeIndex:
+    func filter(col_val: Col) -> Array[Row]
+```
+
+Where `Col` is the column data type and `Row` is the table row type. Columns
+already covered by the primary key or a unique constraint expose
+[`find`](#unique-index-access) instead. The lookup is a linear scan over the local
+cache (matching the official C#/TS SDKs).
 
 ### Calling reducers
 
@@ -398,7 +439,13 @@ class SpacetimeDBQuery:
     func where_lt(field: String, value: Variant) -> SpacetimeDBQuery
     func where_gte(field: String, value: Variant) -> SpacetimeDBQuery
     func where_lte(field: String, value: Variant) -> SpacetimeDBQuery
+    func where_in(field: String, values: Array) -> SpacetimeDBQuery
+    func where_any(pairs: Array) -> SpacetimeDBQuery
 ```
+
+`where_in` adds `field IN (v1, v2, ...)` (empty `values` is a no-op). `where_any`
+adds an OR group of equality checks ANDed with the other conditions —
+`where_any([["kind", 1], ["kind", 2]])` produces `(kind = 1 OR kind = 2)`.
 
 #### Output
 
@@ -432,7 +479,7 @@ The compression preference for the connection.
 | Name   | Description                                                                  |
 | ------ | ---------------------------------------------------------------------------- |
 | NONE   | No compression.                                                              |
-| BROTLI | Not supported. If set, the SDK warns and automatically falls back to GZIP.   |
+| BROTLI | Brotli compression, decoded via Godot's built-in Brotli decoder.             |
 | GZIP   | GZIP compression (recommended).                                              |
 
 ## `SpacetimeDBConnectionOptions` resource
@@ -447,6 +494,27 @@ class SpacetimeDBConnectionOptions:
 ```
 
 The [`CompressionPreference`](#compressionpreference-enum) for the connection.
+
+#### `light_mode` property
+
+```gdscript
+class SpacetimeDBConnectionOptions:
+    var light_mode: bool = false
+```
+
+When `true`, subscribes in "light" mode — the server sends only the row deltas
+needed to keep the cache current, reducing bandwidth.
+
+#### `confirmed_reads` property
+
+```gdscript
+class SpacetimeDBConnectionOptions:
+    var confirmed_reads: bool = false
+```
+
+When `true`, the server waits for each transaction to be durably committed before
+sending its update (read-after-commit). Higher latency, stronger durability. The
+default `false` matches SpacetimeDB's default.
 
 #### `threading` property
 

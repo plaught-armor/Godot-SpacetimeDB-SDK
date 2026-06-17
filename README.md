@@ -22,6 +22,7 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 ### Subscriptions
 
 -   **Subscribe / Unsubscribe:** `subscribe()` returns a `SpacetimeDBSubscription` handle with `applied` and `end` signals. `unsubscribe()` sends the request; the `end` signal fires when the server confirms via `UnsubscribeAppliedMessage`.
+-   **Subscribe to all tables:** generated module clients expose `subscribe_all_tables()`, which subscribes to every table in the module with a single handle.
 -   **Subscription Error Handling:** Server-side subscription errors (`SubscriptionErrorMessage`) are propagated to the subscription handle — `error_message` is set, `end` signal fires, and `wait_for_applied()` resolves immediately with `ERR_DOES_NOT_EXIST` instead of timing out.
 -   **Await Helpers:** `wait_for_applied()` and `wait_for_end()` with configurable timeouts. Both resolve immediately if the subscription is already in the target state or if an error/end occurs during the wait.
 
@@ -35,13 +36,16 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 
 -   **One-Off Queries:** `query_sql()` executes a single SQL query without creating a subscription. Returns result rows directly or use the `one_off_query_received` signal.
 -   **PK-less Table Storage:** Tables without a primary key are stored in the local DB with hash-based batch delete. `get_all_rows()`, `count_all_rows()`, and RowReceiver work on PK-less tables.
--   **Query Builder:** `SpacetimeDBQuery.table("user").where("online", true).to_sql()` — fluent API with SQL identifier validation and auto-escaping for strings, booleans, and identities.
+-   **Query Builder:** `SpacetimeDBQuery.table("user").where("online", true).to_sql()` — fluent API with SQL identifier validation and auto-escaping for strings, booleans, and identities. Also `where_in(field, values)` for `IN (...)` and `where_any([[f, v], ...])` for OR groups.
 -   **Local DB Query Helpers:** `find_where()`, `first_where()`, `find_by()`, `first_by()`, `count_where()` on table wrappers with typed returns and short-circuit evaluation.
+-   **Indexed lookups:** unique indexes expose a typed `find(value)` (single row); non-unique btree indexes expose a typed `filter(value)` (all matching rows), generated as named accessors on the table wrapper.
+-   **Row callbacks:** `on_insert`, `on_update`, `on_delete`, and `on_before_delete` (fires while the row is still in the cache, before removal), plus the matching `row_inserted` / `row_updated` / `row_before_delete` / `row_deleted` signals on the client.
 
 ### Connection & Reliability
 
 -   **Auto-Reconnection:** Exponential backoff with jitter, configurable via `SpacetimeDBConnectionOptions`. Signals: `reconnecting`, `reconnected`, `reconnect_failed`. Subscription queries are automatically restored on reconnect. Existing subscription/reducer/procedure handles are properly invalidated on disconnect.
--   **Compression:** GZIP and None supported. Brotli is not implemented — if requested, the SDK warns and falls back to GZIP automatically.
+-   **Compression:** None, GZIP, and Brotli supported (Brotli decoded via Godot's built-in decoder). Set via `SpacetimeDBConnectionOptions.compression`.
+-   **Light mode & confirmed reads:** `SpacetimeDBConnectionOptions.light_mode` requests minimal subscription updates; `confirmed_reads` waits for durable commit before the server sends an update.
 -   **Frame-Budgeted Apply:** Incoming row updates are applied under an adaptive per-frame time budget (fps-aware auto-tune, with a hard message ceiling), so large bursts — initial subscriptions, mass updates — drain across frames instead of stalling one. Tunable via `SpacetimeDBConnectionOptions` (`frame_budget_us`, `max_messages_per_frame`, `auto_tune_frame_budget`). BSATN parsing runs on a background thread by default (`threading`).
 
 ### Serialization
