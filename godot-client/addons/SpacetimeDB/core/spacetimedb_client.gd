@@ -54,6 +54,10 @@ signal reconnect_failed
 @export var token_save_path: String = "user://spacetimedb_token.dat"
 ## If [code]true[/code], the token is not saved to disk (single-use session).
 @export var one_time_token: bool = false
+## If [code]false[/code], the acquired token is never written to [member token_save_path].
+## Pair with [member one_time_token] = [code]true[/code] (request a fresh token each
+## connection) to avoid persisting a token that is then ignored on the next connect.
+@export var save_token: bool = true
 ## WebSocket compression preference negotiated with the server.
 @export var compression: SpacetimeDBConnection.CompressionPreference
 ## If [code]true[/code], enables verbose logging from the client.
@@ -223,6 +227,7 @@ func connect_db(host_url: String, database_name: String, options: SpacetimeDBCon
 	self.database_name = database_name.to_lower()
 	self.compression = options.compression
 	self.one_time_token = options.one_time_token
+	self.save_token = options.save_token
 	if not options.token.is_empty():
 		self._token = options.token
 	self.debug_mode = options.debug_mode
@@ -273,6 +278,11 @@ func get_local_database() -> LocalDatabase:
 ## Returns the 32-byte identity assigned to this client by the server.
 func get_local_identity() -> PackedByteArray:
 	return _identity
+
+
+## Returns the current authentication token, or an empty string if none acquired yet.
+func get_token() -> String:
+	return _token
 
 
 ## Subscribes to one or more SQL [param queries]. Returns a [SpacetimeDBSubscription] handle.
@@ -562,7 +572,8 @@ func _generate_connection_id() -> String:
 func _on_token_received(received_token: String) -> void:
 	print_log("SpacetimeDBClient: Token acquired.")
 	self._token = received_token
-	_save_token(received_token)
+	if save_token:
+		_save_token(received_token)
 	var conn_id: String = _generate_connection_id()
 	# Pass token to components that need it
 	_connection.set_token(self._token)
