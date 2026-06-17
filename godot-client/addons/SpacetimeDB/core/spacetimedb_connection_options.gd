@@ -14,6 +14,9 @@ var compression: CompressionPreference = CompressionPreference.NONE
 var threading: bool = true
 ## If [code]true[/code], the SDK requests a fresh token on every connection.
 var one_time_token: bool = true
+## If [code]false[/code], the acquired token is never persisted to disk.
+## Typically paired with [member one_time_token] = [code]true[/code].
+var save_token: bool = true
 ## Pre-set authentication token. If empty, the SDK will request one automatically.
 var token: String = ""
 ## Enables verbose logging in the SDK's connection and client classes.

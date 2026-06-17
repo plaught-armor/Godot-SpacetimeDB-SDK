@@ -319,6 +319,33 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 		row_transactions_completed.emit(table_name_lower)
 
 
+## Wipes every cached row from all tables, emitting a delete callback per row and a
+## transactions-completed callback per non-empty table. Used to reset the mirror
+## (e.g. before a fresh subscription after reconnecting).
+func clear_local_db() -> void:
+	for table_name_lower: StringName in _tables:
+		_emit_clear_for_table(table_name_lower, _tables[table_name_lower].values())
+		_tables[table_name_lower].clear()
+	for table_name_lower: StringName in _pk_less_tables:
+		_emit_clear_for_table(table_name_lower, _pk_less_tables[table_name_lower])
+		_pk_less_tables[table_name_lower].clear()
+
+
+## Emits delete + transactions-completed callbacks for every row in [param rows].
+func _emit_clear_for_table(table_name_lower: StringName, rows: Array) -> void:
+	if rows.is_empty():
+		return
+	var delete_listeners: Array = _delete_listeners_by_table.get(table_name_lower, []).duplicate()
+	var tx_listeners: Array = _transactions_completed_listeners_by_table.get(table_name_lower, []).duplicate()
+	for row: _ModuleTableType in rows:
+		for listener: Callable in delete_listeners:
+			listener.call(row)
+		row_deleted.emit(table_name_lower, row)
+	for listener: Callable in tx_listeners:
+		listener.call()
+	row_transactions_completed.emit(table_name_lower)
+
+
 ## Returns a single row by its primary key [param primary_key_value], or [code]null[/code].
 func get_row_by_pk(table_name: StringName, primary_key_value: Variant) -> _ModuleTableType:
 	var key: StringName = _normalize(table_name)
