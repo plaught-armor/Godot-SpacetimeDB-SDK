@@ -29,7 +29,7 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 ### Reducers & Procedures
 
 -   **Structured Reducer Error Handling:** `SpacetimeDBReducerCall` with typed `Outcome` enum (OK, OK_EMPTY, ERROR, INTERNAL_ERROR, TIMEOUT, DISCONNECTED). Generated reducers return the handle directly for inspection.
--   **Reducer Return Values:** Reducers that return values have their BSATN-encoded return bytes available via `SpacetimeDBReducerCall.ret_value`.
+-   **Reducer Return Values:** Reducers that return values expose the raw BSATN bytes via `SpacetimeDBReducerCall.ret_value`, or the typed value via `SpacetimeDBReducerCall.decode()` (generated reducer methods pass the ok-return type automatically).
 -   **Procedures:** Full support for SpacetimeDB 2.0 procedures. `SpacetimeDBProcedureCall` with `decode()` for typed return values. Generated wrappers via codegen.
 
 ### Data & Queries

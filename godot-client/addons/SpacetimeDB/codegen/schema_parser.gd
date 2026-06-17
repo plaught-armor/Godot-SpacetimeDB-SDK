@@ -170,7 +170,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			for rd: Dictionary in section["Reducers"]:
 				var src: String = rd.get("source_name", "")
 				var name: String = canonical_names.get(src, src)
-				var r: Dictionary = { "name": name, "params": rd.get("params", { }) }
+				var r: Dictionary = { "name": name, "params": rd.get("params", { }), "ok_return_type": rd.get("ok_return_type", { }) }
 				if lifecycle_map.has(src) or lifecycle_map.has(name):
 					r["lifecycle"] = { "some": lifecycle_map.get(src, lifecycle_map.get(name, "")) }
 				else:
@@ -411,6 +411,17 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 					data["type_idx"] = type_idx
 			reducer_params.append(data)
 		reducer_data["params"] = reducer_params
+
+		# Parse the reducer's ok return type (every v10 reducer carries one; a unit
+		# return is an empty Product → empty type → no-op decode at the call site).
+		var ret_data: Dictionary = { }
+		var ret_type: String = _parse_field_type(reducer_info.get("ok_return_type", { }), ret_data, schema_types_raw)
+		reducer_data["return_type"] = ret_type
+		reducer_data["return_data"] = ret_data
+		if ret_type and not (GDNATIVE_PRIMITIVE_TYPES.has(ret_type) or DEFAULT_TYPE_MAP.has(ret_type)):
+			var ret_type_idx: int = _find_type_index(ret_type, parsed_types_list)
+			if ret_type_idx >= 0:
+				reducer_data["return_type_idx"] = ret_type_idx
 
 		if r_name in scheduled_reducers:
 			reducer_data["is_scheduled"] = true

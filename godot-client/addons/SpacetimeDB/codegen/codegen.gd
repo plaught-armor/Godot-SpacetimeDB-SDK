@@ -899,11 +899,20 @@ func _generate_reducers_gdscript(module_name: String, schema: SpacetimeParsedSch
 		if not param_bsatn_types_list.is_empty():
 			param_bsatn_types_str = ", ".join(param_bsatn_types_list)
 
+		# Build the reducer's ok-return BSATN type for typed SpacetimeDBReducerCall.decode().
+		# Empty for unit returns (the common case) → decode() is a no-op there.
+		var ret_data: Dictionary = reducer.get("return_data", { })
+		var ret_type_name: String = reducer.get("return_type", "")
+		var ret_bsatn_type: String = schema.meta_type_map.get(ret_type_name, ret_type_name)
+		var ret_nested: Array = ret_data.get("nested_type", [])
+		if not ret_nested.is_empty():
+			ret_bsatn_type = _build_bsatn_type(ret_nested, ret_bsatn_type, false)
+
 		content += "\n".join(description_comment) + "\n"
 		var reducer_name: String = reducer.get("name", "")
 		content += ("func %s(%s) -> SpacetimeDBReducerCall:\n" % [reducer_name, params_str] +
-				"\treturn _client.call_reducer('%s', [%s], [%s])\n\n" %
-				[reducer_name, param_names_str, param_bsatn_types_str])
+				"\treturn _client.call_reducer('%s', [%s], [%s], &'%s')\n\n" %
+				[reducer_name, param_names_str, param_bsatn_types_str, ret_bsatn_type])
 
 	return content
 

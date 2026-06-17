@@ -371,8 +371,10 @@ func unsubscribe(query_id: int) -> Error:
 
 
 ## Calls a reducer named [param reducer_name] with the given [param args] and BSATN [param types].[br]
+## [param ret_bsatn_type] (optional) lets the returned handle BSATN-decode the reducer's ok return
+## value via [method SpacetimeDBReducerCall.decode]; empty for reducers that return nothing.[br]
 ## Returns a [SpacetimeDBReducerCall] handle that resolves when the server responds.
-func call_reducer(reducer_name: String, args: Array = [], types: Array = []) -> SpacetimeDBReducerCall:
+func call_reducer(reducer_name: String, args: Array = [], types: Array = [], ret_bsatn_type: StringName = &"") -> SpacetimeDBReducerCall:
 	if not is_connected_db():
 		push_warning("SpacetimeDBClient: Cannot call reducer '%s', not connected." % reducer_name)
 		return SpacetimeDBReducerCall.fail(ERR_CONNECTION_ERROR)
@@ -402,7 +404,7 @@ func call_reducer(reducer_name: String, args: Array = [], types: Array = []) -> 
 			printerr("SpacetimeDBClient: Error sending CallReducer message: ", err)
 			return SpacetimeDBReducerCall.fail(err)
 
-		var handle: SpacetimeDBReducerCall = SpacetimeDBReducerCall.create(self, request_id)
+		var handle: SpacetimeDBReducerCall = SpacetimeDBReducerCall.create(self, request_id, ret_bsatn_type)
 		_pending_reducer_calls[request_id] = handle
 		return handle
 
