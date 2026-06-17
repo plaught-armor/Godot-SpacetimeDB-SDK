@@ -159,7 +159,7 @@ static func _variant_to_enum_option(variant: Dictionary, meta_type_map: Dictiona
 ## Safely accesses schema.types by index, returning an empty Dictionary if out of bounds.
 static func _get_type_def(schema: SpacetimeParsedSchema, type_idx: int) -> Dictionary:
 	if type_idx < 0 or type_idx >= schema.types.size():
-		return {}
+		return { }
 	return schema.types[type_idx]
 
 
@@ -174,7 +174,7 @@ func generate_bindings() -> Array[String]:
 	var autoload_file: FileAccess = FileAccess.open(autoload_output_file_path, FileAccess.WRITE)
 	if autoload_file == null:
 		SpacetimePlugin.print_err(
-			"failed to open %s: %s" % [autoload_output_file_path, FileAccess.get_open_error()]
+			"failed to open %s: %s" % [autoload_output_file_path, FileAccess.get_open_error()],
 		)
 		return generated_files
 	autoload_file.store_string(autoload_content)
@@ -272,7 +272,7 @@ func _generate_module_bindings(module_name: String) -> Array[String]:
 	var file: FileAccess = FileAccess.open(readme_path, FileAccess.WRITE)
 	if file == null:
 		SpacetimePlugin.print_err(
-			"failed to open %s: %s" % [readme_path, FileAccess.get_open_error()]
+			"failed to open %s: %s" % [readme_path, FileAccess.get_open_error()],
 		)
 	else:
 		file.store_string("You can delete this directory and files. It's only used for codegen debugging.")
@@ -281,7 +281,7 @@ func _generate_module_bindings(module_name: String) -> Array[String]:
 	file = FileAccess.open(schema_dbg_path, FileAccess.WRITE)
 	if file == null:
 		SpacetimePlugin.print_err(
-			"failed to open %s: %s" % [schema_dbg_path, FileAccess.get_open_error()]
+			"failed to open %s: %s" % [schema_dbg_path, FileAccess.get_open_error()],
 		)
 	else:
 		file.store_string(JSON.stringify(schema.to_dictionary(), "\t", false))
@@ -290,7 +290,7 @@ func _generate_module_bindings(module_name: String) -> Array[String]:
 	file = FileAccess.open(unparsed_dbg_path, FileAccess.WRITE)
 	if file == null:
 		SpacetimePlugin.print_err(
-			"failed to open %s: %s" % [unparsed_dbg_path, FileAccess.get_open_error()]
+			"failed to open %s: %s" % [unparsed_dbg_path, FileAccess.get_open_error()],
 		)
 	else:
 		file.store_string(JSON.stringify(json, "\t", false))
@@ -334,7 +334,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 		var file: FileAccess = FileAccess.open(output_file_path, FileAccess.WRITE)
 		if file == null:
 			SpacetimePlugin.print_err(
-				"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()]
+				"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 			)
 			return generated_files
 		file.store_string(content)
@@ -363,7 +363,28 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			var file: FileAccess = FileAccess.open(output_file_path, FileAccess.WRITE)
 			if file == null:
 				SpacetimePlugin.print_err(
-					"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()]
+					"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
+				)
+				return generated_files
+			file.store_string(content)
+			file.close()
+			generated_files.append(output_file_path)
+
+		var btree_indexes = table_def.get("btree_indexes", [])
+		for btree_index in btree_indexes:
+			var content: String = _generate_table_btree_index_gdscript(schema, btree_index, table_def)
+
+			var output_file_name: String = "%s_%s_%s_btree_index.gd" % \
+					[schema.module.to_snake_case(), table_name.to_snake_case(), btree_index.get("name", "").to_snake_case()]
+			var folder_path: String = "%s/tables" % _schema_path
+			var output_file_path: String = "%s/%s" % [folder_path, output_file_name]
+			if not DirAccess.dir_exists_absolute(folder_path):
+				DirAccess.make_dir_recursive_absolute(folder_path)
+
+			var file: FileAccess = FileAccess.open(output_file_path, FileAccess.WRITE)
+			if file == null:
+				SpacetimePlugin.print_err(
+					"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 				)
 				return generated_files
 			file.store_string(content)
@@ -382,7 +403,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 		var file: FileAccess = FileAccess.open(output_file_path, FileAccess.WRITE)
 		if file == null:
 			SpacetimePlugin.print_err(
-				"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()]
+				"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 			)
 			return generated_files
 		file.store_string(content)
@@ -395,7 +416,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 	var file_module: FileAccess = FileAccess.open(output_file_path_module, FileAccess.WRITE)
 	if file_module == null:
 		SpacetimePlugin.print_err(
-			"failed to open %s: %s" % [output_file_path_module, FileAccess.get_open_error()]
+			"failed to open %s: %s" % [output_file_path_module, FileAccess.get_open_error()],
 		)
 		return generated_files
 	file_module.store_string(module_content)
@@ -408,7 +429,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 	var db_file: FileAccess = FileAccess.open(db_output_file_path, FileAccess.WRITE)
 	if db_file == null:
 		SpacetimePlugin.print_err(
-			"failed to open %s: %s" % [db_output_file_path, FileAccess.get_open_error()]
+			"failed to open %s: %s" % [db_output_file_path, FileAccess.get_open_error()],
 		)
 		return generated_files
 	db_file.store_string(db_content)
@@ -421,7 +442,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 	var file_reducers: FileAccess = FileAccess.open(output_file_path_reducers, FileAccess.WRITE)
 	if file_reducers == null:
 		SpacetimePlugin.print_err(
-			"failed to open %s: %s" % [output_file_path_reducers, FileAccess.get_open_error()]
+			"failed to open %s: %s" % [output_file_path_reducers, FileAccess.get_open_error()],
 		)
 		return generated_files
 	file_reducers.store_string(reducers_content)
@@ -434,7 +455,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 	var file_procedures: FileAccess = FileAccess.open(output_file_path_procedures, FileAccess.WRITE)
 	if file_procedures == null:
 		SpacetimePlugin.print_err(
-			"failed to open %s: %s" % [output_file_path_procedures, FileAccess.get_open_error()]
+			"failed to open %s: %s" % [output_file_path_procedures, FileAccess.get_open_error()],
 		)
 		return generated_files
 	file_procedures.store_string(procedures_content)
@@ -447,7 +468,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 	var file_types: FileAccess = FileAccess.open(output_file_path_types, FileAccess.WRITE)
 	if file_types == null:
 		SpacetimePlugin.print_err(
-			"failed to open %s: %s" % [output_file_path_types, FileAccess.get_open_error()]
+			"failed to open %s: %s" % [output_file_path_types, FileAccess.get_open_error()],
 		)
 		return generated_files
 	file_types.store_string(types_content)
@@ -481,6 +502,32 @@ func _generate_table_unique_index_gdscript(schema: SpacetimeParsedSchema, unique
 	return content
 
 
+func _generate_table_btree_index_gdscript(schema: SpacetimeParsedSchema, btree_index_def: Dictionary, table_def: Dictionary) -> String:
+	var table_name: String = table_def.get("name", "")
+	var field_name: String = btree_index_def.get("name", "")
+	var original_field_type: String = btree_index_def.get("type", "Variant")
+	var field_type: String = schema.type_map.get(original_field_type, "Variant")
+	var type_def: Dictionary = _get_type_def(schema, table_def.get("type_idx", -1)) if table_def.has("type_idx") else { }
+	var original_type_name: String = type_def.get("name", "Variant")
+	var type_name: String = schema.type_map.get(original_type_name, "Variant")
+
+	var _class_name: String = "%s%s%sBTreeIndex" % \
+			[schema.module.to_pascal_case(), table_name.to_pascal_case(), field_name.to_pascal_case()]
+	var content: String = (AUTOGENERATED_COMMENT +
+			"class_name %s extends _ModuleTableBTreeIndex\n\n" % _class_name +
+			"func _init(p_local_db: LocalDatabase) -> void:\n" +
+			"\t_db = p_local_db\n" +
+			"\t_table_name = &\"%s\"\n" % table_name +
+			"\t_field_name = &\"%s\"\n\n" % field_name +
+			"func filter(col_val: %s) -> Array[%s]:\n" % [field_type, type_name] +
+			"\tvar rows: Array = _db.find_by(_table_name, _field_name, col_val)\n" +
+			"\tvar typed_array: Array[%s] = []\n" % type_name +
+			"\ttyped_array.assign(rows)\n" +
+			"\treturn typed_array\n")
+
+	return content
+
+
 func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictionary) -> String:
 	var table_name: String = table_def.get("name", "")
 	var type_def: Dictionary = _get_type_def(schema, table_def.get("type_idx", -1)) if table_def.has("type_idx") else { }
@@ -493,12 +540,22 @@ func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictiona
 				[schema.module.to_pascal_case(), table_name.to_pascal_case(), field_name.to_pascal_case()]
 		unique_index_fields[field_name] = unique_index_class_name
 
+	var btree_index_fields: Dictionary[String, String] = { }
+	for btree_index_def in table_def.get("btree_indexes", []):
+		var field_name: String = btree_index_def.get("name", "")
+		var btree_index_class_name: String = "%s%s%sBTreeIndex" % \
+				[schema.module.to_pascal_case(), table_name.to_pascal_case(), field_name.to_pascal_case()]
+		btree_index_fields[field_name] = btree_index_class_name
+
 	var _class_name: String = "%s%sTable" % [schema.module.to_pascal_case(), table_name.to_pascal_case()]
 	var content: String = (AUTOGENERATED_COMMENT +
 			"class_name %s extends _ModuleTable\n\n" % _class_name)
 	for field_name in unique_index_fields:
 		var unique_index_class_name: String = unique_index_fields[field_name]
 		content += "var %s: %s\n" % [field_name, unique_index_class_name]
+	for field_name in btree_index_fields:
+		var btree_index_class_name: String = btree_index_fields[field_name]
+		content += "var %s: %s\n" % [field_name, btree_index_class_name]
 
 	content += ("\nfunc _init(p_local_db: LocalDatabase) -> void:\n" +
 			"\tsuper(p_local_db)\n" +
@@ -507,6 +564,9 @@ func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictiona
 	for field_name in unique_index_fields:
 		var unique_index_class_name: String = unique_index_fields[field_name]
 		content += "\t%s = %s.new(p_local_db)\n" % [field_name, unique_index_class_name]
+	for field_name in btree_index_fields:
+		var btree_index_class_name: String = btree_index_fields[field_name]
+		content += "\t%s = %s.new(p_local_db)\n" % [field_name, btree_index_class_name]
 
 	content += ("\nfunc iter() -> Array[%s]:\n" % type_name +
 			"\tvar rows: Array[_ModuleTableType] = super()\n" +
@@ -714,6 +774,17 @@ func _generate_module_client_gdscript(module_name: String, schema: SpacetimePars
 			"\tprocedures = preload('%s/module_%s_procedures.gd').new(self)\n" % [_schema_path, schema.module.to_snake_case()] +
 			"\nfunc _init_db(p_local_db: LocalDatabase) -> void:\n" +
 			"\tdb = preload('%s/module_%s_db.gd').new(p_local_db)\n" % [_schema_path, schema.module.to_snake_case()])
+
+	content += ("\n## Subscribes to every table in this module with a single handle.\n" +
+			"## Mirrors the official SDKs' subscribe-to-all-tables convenience.\n" +
+			"func subscribe_all_tables() -> SpacetimeDBSubscription:\n" +
+			"\tif db == null:\n" +
+			"\t\tpush_warning('subscribe_all_tables: db not initialized yet')\n" +
+			"\t\treturn SpacetimeDBSubscription.fail(ERR_UNCONFIGURED)\n" +
+			"\tvar queries: PackedStringArray = []\n" +
+			"\tfor table_name: StringName in db.table_names:\n" +
+			"\t\tqueries.append('SELECT * FROM %s' % table_name)\n" +
+			"\treturn subscribe(queries)\n")
 
 	return content
 

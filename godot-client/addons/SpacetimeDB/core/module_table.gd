@@ -44,6 +44,17 @@ func remove_on_update(listener: Callable) -> void:
 	_db.unsubscribe_from_updates(_table_name, listener)
 
 
+## Registers [param listener] to be called with a row just before it is deleted,
+## while it is still queryable in the cache.
+func on_before_delete(listener: Callable) -> void:
+	_db.subscribe_to_before_deletes(_table_name, listener)
+
+
+## Removes a previously registered before-delete [param listener].
+func remove_on_before_delete(listener: Callable) -> void:
+	_db.unsubscribe_from_before_deletes(_table_name, listener)
+
+
 ## Registers [param listener] to be called with the deleted row on deletes.
 func on_delete(listener: Callable) -> void:
 	_db.subscribe_to_deletes(_table_name, listener)

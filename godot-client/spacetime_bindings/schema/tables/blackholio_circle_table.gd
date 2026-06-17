@@ -3,11 +3,13 @@
 class_name BlackholioCircleTable extends _ModuleTable
 
 var entity_id: BlackholioCircleEntityIdUniqueIndex
+var player_id: BlackholioCirclePlayerIdBTreeIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"circle"
 	entity_id = BlackholioCircleEntityIdUniqueIndex.new(p_local_db)
+	player_id = BlackholioCirclePlayerIdBTreeIndex.new(p_local_db)
 
 func iter() -> Array[BlackholioCircle]:
 	var rows: Array[_ModuleTableType] = super()

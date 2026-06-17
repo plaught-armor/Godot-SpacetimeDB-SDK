@@ -8,7 +8,8 @@ extends Resource
 
 const CompressionPreference = SpacetimeDBConnection.CompressionPreference
 
-## WebSocket payload compression mode. Brotli is not supported and falls back to Gzip.
+## WebSocket payload compression mode. None, Gzip, and Brotli are all supported
+## (Brotli decoded via Godot's built-in decoder).
 var compression: CompressionPreference = CompressionPreference.NONE
 ## If [code]true[/code], BSATN deserialization runs on a background thread.
 var threading: bool = true
@@ -23,6 +24,14 @@ var token: String = ""
 var debug_mode: bool = false
 ## Registers custom Godot [Performance] monitors for packet/byte throughput.
 var monitor_mode: bool = false
+## If [code]true[/code], subscribes in "light" mode: the server omits row data the
+## client did not request, sending only the deltas needed to keep the cache current.
+## Lower bandwidth; the trade-off is fewer fields available in transaction updates.
+var light_mode: bool = false
+## If [code]true[/code], the server waits for each transaction to be durably
+## committed before sending its update (read-after-commit). Higher latency, stronger
+## durability. Default [code]false[/code] matches SpacetimeDB's default.
+var confirmed_reads: bool = false
 ## Maximum size in bytes of the WebSocket inbound buffer (default 2 MB).
 var inbound_buffer_size: int = 1024 * 1024 * 2
 ## Maximum size in bytes of the WebSocket outbound buffer (default 2 MB).

@@ -15,3 +15,14 @@ func _init() -> void:
 
 func _init_db(p_local_db: LocalDatabase) -> void:
 	db = preload('res://spacetime_bindings/schema/module_blackholio_db.gd').new(p_local_db)
+
+## Subscribes to every table in this module with a single handle.
+## Mirrors the official SDKs' subscribe-to-all-tables convenience.
+func subscribe_all_tables() -> SpacetimeDBSubscription:
+	if db == null:
+		push_warning('subscribe_all_tables: db not initialized yet')
+		return SpacetimeDBSubscription.fail(ERR_UNCONFIGURED)
+	var queries: PackedStringArray = []
+	for table_name: StringName in db.table_names:
+		queries.append('SELECT * FROM %s' % table_name)
+	return subscribe(queries)

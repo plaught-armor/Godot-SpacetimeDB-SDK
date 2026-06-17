@@ -14,6 +14,7 @@ var _schema: SpacetimeDBSchema
 var _cached_normalized_table_names: Dictionary[StringName, StringName] = { }
 var _insert_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
 var _update_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
+var _before_delete_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
 var _delete_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
 var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
 var _pk_less_tables: Dictionary[StringName, Array] = { } ## Array[_ModuleTableType]
@@ -23,6 +24,8 @@ var _pk_less_property_cache: Dictionary[StringName, Array] = { } ## Array[String
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
 ## Emitted after a row is updated (PK match found in inserts + existing data).
 signal row_updated(table_name: StringName, old_row: _ModuleTableType, new_row: _ModuleTableType)
+## Emitted just before a row is removed from the cache (row still queryable).
+signal row_before_delete(table_name: StringName, row: _ModuleTableType)
 ## Emitted after a row is deleted from a table.
 signal row_deleted(table_name: StringName, row: _ModuleTableType)
 ## Emitted once after all inserts/deletes in a single [TableUpdateData] are processed.
@@ -80,6 +83,26 @@ func unsubscribe_from_updates(table_name: StringName, callable: Callable) -> voi
 		_update_listeners_by_table[key].erase(callable)
 		if _update_listeners_by_table[key].is_empty():
 			_update_listeners_by_table.erase(key)
+
+
+## Registers [param callable] to be called with the row about to be deleted for
+## [param table_name]. Fires before the row leaves the cache, so the callback can
+## still read it (and related rows) at their pre-delete state.
+func subscribe_to_before_deletes(table_name: StringName, callable: Callable) -> void:
+	var key: StringName = _normalize(table_name)
+	if not _before_delete_listeners_by_table.has(key):
+		_before_delete_listeners_by_table[key] = []
+	if not _before_delete_listeners_by_table[key].has(callable):
+		_before_delete_listeners_by_table[key].append(callable)
+
+
+## Removes a before-delete listener for [param table_name].
+func unsubscribe_from_before_deletes(table_name: StringName, callable: Callable) -> void:
+	var key: StringName = _normalize(table_name)
+	if _before_delete_listeners_by_table.has(key):
+		_before_delete_listeners_by_table[key].erase(callable)
+		if _before_delete_listeners_by_table[key].is_empty():
+			_before_delete_listeners_by_table.erase(key)
 
 
 ## Registers [param callable] to be called with the deleted row for [param table_name].
@@ -210,10 +233,12 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 	# the array we're iterating.
 	var insert_listeners: Array = _insert_listeners_by_table.get(table_name_lower, []).duplicate()
 	var update_listeners: Array = _update_listeners_by_table.get(table_name_lower, []).duplicate()
+	var before_delete_listeners: Array = _before_delete_listeners_by_table.get(table_name_lower, []).duplicate()
 	var delete_listeners: Array = _delete_listeners_by_table.get(table_name_lower, []).duplicate()
 	var tx_listeners: Array = _transactions_completed_listeners_by_table.get(table_name_lower, []).duplicate()
 	var has_insert_listeners: bool = not insert_listeners.is_empty()
 	var has_update_listeners: bool = not update_listeners.is_empty()
+	var has_before_delete_listeners: bool = not before_delete_listeners.is_empty()
 	var has_delete_listeners: bool = not delete_listeners.is_empty()
 
 	var table_dict: Dictionary = _tables[table_name_lower]
@@ -264,6 +289,10 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 							entry[1] -= 1
 							removed = true
 							had_any_change = true
+							if has_before_delete_listeners:
+								for listener: Callable in before_delete_listeners:
+									listener.call(row)
+							row_before_delete.emit(table_name_lower, row)
 							if has_delete_listeners:
 								for listener: Callable in delete_listeners:
 									listener.call(row)
@@ -306,7 +335,15 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 			push_warning("LocalDatabase: Deleted row for table '", table_name_lower, "' has null PK '", pk_field, "'. Skipping.")
 			continue
 		if not inserted_pks_set.has(pk_value):
-			if table_dict.erase(pk_value):
+			if table_dict.has(pk_value):
+				# Fire before-delete with the cached row (still present) so listeners
+				# can read pre-delete state; then erase and fire the post-delete hooks.
+				var cached_row: _ModuleTableType = table_dict[pk_value]
+				if has_before_delete_listeners:
+					for listener: Callable in before_delete_listeners:
+						listener.call(cached_row)
+				row_before_delete.emit(table_name_lower, cached_row)
+				table_dict.erase(pk_value)
 				had_any_change = true
 				if has_delete_listeners:
 					for listener: Callable in delete_listeners:
@@ -335,9 +372,13 @@ func clear_local_db() -> void:
 func _emit_clear_for_table(table_name_lower: StringName, rows: Array) -> void:
 	if rows.is_empty():
 		return
+	var before_delete_listeners: Array = _before_delete_listeners_by_table.get(table_name_lower, []).duplicate()
 	var delete_listeners: Array = _delete_listeners_by_table.get(table_name_lower, []).duplicate()
 	var tx_listeners: Array = _transactions_completed_listeners_by_table.get(table_name_lower, []).duplicate()
 	for row: _ModuleTableType in rows:
+		for listener: Callable in before_delete_listeners:
+			listener.call(row)
+		row_before_delete.emit(table_name_lower, row)
 		for listener: Callable in delete_listeners:
 			listener.call(row)
 		row_deleted.emit(table_name_lower, row)

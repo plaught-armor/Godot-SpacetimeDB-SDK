@@ -72,6 +72,34 @@ func where_lte(field: String, value: Variant) -> SpacetimeDBQuery:
 	return self
 
 
+## Adds [code]field IN (v1, v2, ...)[/code]. Empty [param values] is a no-op
+## (an empty IN list is invalid SQL).
+func where_in(field: String, values: Array) -> SpacetimeDBQuery:
+	if values.is_empty():
+		push_error("SpacetimeDBQuery.where_in: empty value list for field '%s'." % field)
+		return self
+	var formatted: Array[String] = []
+	for v: Variant in values:
+		formatted.append(_format_value(v))
+	_conditions.append("%s IN (%s)" % [_validate_identifier(field), ", ".join(formatted)])
+	return self
+
+
+## Adds an OR group of equality checks: [code](f1 = v1 OR f2 = v2 ...)[/code],
+## ANDed with the other conditions. [param pairs] is an [Array] of
+## [code][field, value][/code] two-element arrays. Empty [param pairs] is a no-op.
+func where_any(pairs: Array) -> SpacetimeDBQuery:
+	var ors: Array[String] = []
+	for p: Array in pairs:
+		if p.size() != 2:
+			push_error("SpacetimeDBQuery.where_any: each pair must be [field, value].")
+			continue
+		ors.append("%s = %s" % [_validate_identifier(p[0]), _format_value(p[1])])
+	if not ors.is_empty():
+		_conditions.append("(%s)" % " OR ".join(ors))
+	return self
+
+
 ## Builds and returns the complete SQL string.
 func to_sql() -> String:
 	var sql: String = "SELECT * FROM %s" % _table_name
