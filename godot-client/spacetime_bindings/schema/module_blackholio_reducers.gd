@@ -8,21 +8,21 @@ func _init(p_client: SpacetimeDBClient) -> void:
 	_client = p_client
 ## 0. name: String [br]
 func enter_game(name: String) -> SpacetimeDBReducerCall:
-	return _client.call_reducer('enter_game', [name], [&'string'])
+	return _client.call_reducer('enter_game', [name], [&'string'], &'')
 
 
 func player_split() -> SpacetimeDBReducerCall:
-	return _client.call_reducer('player_split', [], [])
+	return _client.call_reducer('player_split', [], [], &'')
 
 
 func respawn() -> SpacetimeDBReducerCall:
-	return _client.call_reducer('respawn', [], [])
+	return _client.call_reducer('respawn', [], [], &'')
 
 
 func suicide() -> SpacetimeDBReducerCall:
-	return _client.call_reducer('suicide', [], [])
+	return _client.call_reducer('suicide', [], [], &'')
 
 ## 0. direction: BlackholioDbVector2 [br]
 func update_player_input(direction: BlackholioDbVector2) -> SpacetimeDBReducerCall:
-	return _client.call_reducer('update_player_input', [direction], [&'BlackholioDbVector2'])
+	return _client.call_reducer('update_player_input', [direction], [&'BlackholioDbVector2'], &'')
 

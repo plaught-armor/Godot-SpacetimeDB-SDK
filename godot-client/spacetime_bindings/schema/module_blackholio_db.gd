@@ -2,17 +2,19 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name BlackholioModuleDb extends RefCounted
 
-const table_names : Array[StringName] = [&"player", &"circle", &"entity", &"food", &"config"]
+const table_names : Array[StringName] = [&"food", &"player", &"circle", &"config", &"entity", &"consume_entity_event"]
 
+var food: BlackholioFoodTable
 var player: BlackholioPlayerTable
 var circle: BlackholioCircleTable
-var entity: BlackholioEntityTable
-var food: BlackholioFoodTable
 var config: BlackholioConfigTable
+var entity: BlackholioEntityTable
+var consume_entity_event: BlackholioConsumeEntityEventTable
 
 func _init(p_local_db: LocalDatabase) -> void:
+	food = preload('res://spacetime_bindings/schema/tables/blackholio_food_table.gd').new(p_local_db)
 	player = preload('res://spacetime_bindings/schema/tables/blackholio_player_table.gd').new(p_local_db)
 	circle = preload('res://spacetime_bindings/schema/tables/blackholio_circle_table.gd').new(p_local_db)
-	entity = preload('res://spacetime_bindings/schema/tables/blackholio_entity_table.gd').new(p_local_db)
-	food = preload('res://spacetime_bindings/schema/tables/blackholio_food_table.gd').new(p_local_db)
 	config = preload('res://spacetime_bindings/schema/tables/blackholio_config_table.gd').new(p_local_db)
+	entity = preload('res://spacetime_bindings/schema/tables/blackholio_entity_table.gd').new(p_local_db)
+	consume_entity_event = preload('res://spacetime_bindings/schema/tables/blackholio_consume_entity_event_table.gd').new(p_local_db)

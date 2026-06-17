@@ -6,7 +6,7 @@ class_name BlackholioConfig extends _ModuleTableType
 const module_name : String = "Blackholio"
 const table_names: Array[StringName] = [&'config']
 const PRIMARY_KEY: StringName = &"id"
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"u32", &"world_size": &"u64" }
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"i32", &"world_size": &"i64" }
 
 @export var id: int
 @export var world_size: int
