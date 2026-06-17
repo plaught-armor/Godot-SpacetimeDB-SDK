@@ -529,8 +529,15 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			var is_public_list = return_type["is_public"]
 			is_public_list.append(true)
 			return_type["is_public"] = is_public_list
-			return_type["primary_key"] = view_pk_idx
-			return_type["primary_key_name"] = view_pk_name
+			# Query-builder view reusing an existing table's row type: only override
+			# the PK when this view declares its own ViewPrimaryKeys entry. An empty
+			# view_pk_name must NOT clobber the underlying table's PK — the type_def is
+			# shared by every table of this row type, and dropping it kills row_updated
+			# for the table and the view alike. Leaving it inherits the table's PK,
+			# matching SpacetimeDB's assign_query_view_primary_keys.
+			if not view_pk_name.is_empty():
+				return_type["primary_key"] = view_pk_idx
+				return_type["primary_key_name"] = view_pk_name
 		parsed_types_list[type_index] = return_type
 
 		var tables_of_same_type: Array = parsed_tables_list.filter(func(table: Dictionary): return table.get("type_idx", -1) == type_index)
