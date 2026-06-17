@@ -1,6 +1,6 @@
 # Godot SpacetimeDB SDK
 
-GDScript SDK for SpacetimeDB. Godot 4.7 + SpacetimeDB 2.5.0 (tested 2.0.0–2.5.0).
+GDScript SDK for SpacetimeDB. Godot 4.7 + SpacetimeDB 2.5.0 (requires 2.1.0+ for schema v10; tested 2.1.0–2.5.0).
 
 ## Scope
 

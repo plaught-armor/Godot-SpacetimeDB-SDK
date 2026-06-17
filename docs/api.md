@@ -1171,7 +1171,7 @@ The SDK handles serialization between Godot types and SpacetimeDB's BSATN format
 -   **Server -> Client:**
     -   **None (0x00):** Fully supported.
     -   **Gzip (0x02):** Supported.
-    -   **Brotli (0x01):** Not supported. If `CompressionPreference.BROTLI` is set, the SDK automatically falls back to GZIP and logs a warning.
+    -   **Brotli (0x01):** Supported, decoded via Godot's built-in Brotli decoder.
 
 ---
 
