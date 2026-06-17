@@ -13,8 +13,8 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-# spacetimedb = { version = "1.0.0-rc2" }
-# spacetimedb = { path = "../../../SpacetimeDB/crates/bindings" }
-spacetimedb = { git = "https://github.com/ClockworkLabs/SpacetimeDB" }
+# Pin a released crate version (matches the tested SpacetimeDB CLI) rather than
+# git master, which tracks SpacetimeDB main and can break against a released server.
+spacetimedb = "2.5.0"
 log = "0.4"
 rand = "0.8.5"

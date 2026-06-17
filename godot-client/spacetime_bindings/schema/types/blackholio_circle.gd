@@ -6,7 +6,7 @@ class_name BlackholioCircle extends _ModuleTableType
 const module_name : String = "Blackholio"
 const table_names: Array[StringName] = [&'circle']
 const PRIMARY_KEY: StringName = &"entity_id"
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"entity_id": &"u32", &"player_id": &"u32", &"direction": &"BlackholioDbVector2", &"speed": &"f32", &"last_split_time": &"i64" }
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"entity_id": &"i32", &"player_id": &"i32", &"direction": &"BlackholioDbVector2", &"speed": &"f32", &"last_split_time": &"i64" }
 
 @export var entity_id: int
 @export var player_id: int
