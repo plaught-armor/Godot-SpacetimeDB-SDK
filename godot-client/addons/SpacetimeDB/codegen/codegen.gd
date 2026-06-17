@@ -84,7 +84,9 @@ static func _gd_type_from_nested(nested_type: Array, base_gd_type: String) -> St
 			if nested_type.size() >= 2 and StringName(nested_type[1]) == &"Option":
 				return "Array[%s]" % OPTION_CLASS_NAME
 			elif nested_type.size() >= 2 and StringName(nested_type[1]) == &"Array":
-				return "Array" # Can't express Array[Array] in GDScript
+				# GDScript can't express Array[Array[T]]; Array[Array] is the deepest
+				# typed form. BSATN metadata (vec_vec_...) carries the full nesting depth.
+				return "Array[Array]"
 			else:
 				return "Array[%s]" % base_gd_type
 	return base_gd_type
