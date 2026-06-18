@@ -1,4 +1,4 @@
-## Rust-style enum representing the outcome of a reducer call in the v2 protocol.
+## Rust-style enum representing the outcome of a reducer call in the BSATN WS protocol.
 ##
 ## Variants:[br]
 ## [b]ok[/b] — Reducer succeeded; payload is a [TransactionUpdateMessage].[br]

@@ -35,13 +35,11 @@ enum CompressionPreference {
 	GZIP = 2,
 }
 
-## The BSATN sub-protocol identifier sent during the WebSocket handshake.
-const BSATN_PROTOCOL = "v2.bsatn.spacetimedb"
-
-## The v3 BSATN sub-protocol (SpacetimeDB 2.2.0+). Same v2 message schema, but a
-## single WebSocket frame may carry several consecutive BSATN messages. The
-## receive path already drains concatenated messages, and one-message-per-frame
-## sends are valid under both v2 and v3, so enabling v3 needs no framing changes.
+## The BSATN sub-protocol sent during the WebSocket handshake (SpacetimeDB 2.2.0+).
+## A single WebSocket frame may carry several consecutive BSATN messages; the receive
+## path already drains concatenated frames, and one-message-per-frame sends remain
+## valid, so this is the only protocol the client advertises. The legacy v2
+## sub-protocol (servers below 2.2.0) is no longer offered — see the 2.0 changelog.
 const BSATN_PROTOCOL_V3 = "v3.bsatn.spacetimedb"
 
 var version: String = "v1"
@@ -324,8 +322,8 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 	_target_url = "%s%s" % [ws_url_base, query_params]
 	_print_log("SpacetimeDBConnection: Attempting to connect to: " + _target_url)
 
-	# v3 advertised first; pre-2.2.0 servers ignore it and negotiate v2.
-	_websocket.supported_protocols = [BSATN_PROTOCOL_V3, BSATN_PROTOCOL]
+	# v3 only — servers below 2.2.0 (which speak just v2) will fail the handshake.
+	_websocket.supported_protocols = [BSATN_PROTOCOL_V3]
 
 	var err: Error = _websocket.connect_to_url(_target_url)
 	if err != OK:

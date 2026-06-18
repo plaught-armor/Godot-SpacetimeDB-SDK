@@ -1,4 +1,4 @@
-## Identifier for a subscription query set in the SpacetimeDB v2 protocol.
+## Identifier for a subscription query set in the SpacetimeDB BSATN WS protocol.
 ##
 ## Wraps a [code]u32[/code] id assigned by the server when a subscription is
 ## registered. Used to correlate [SubscribeAppliedMessage] and
