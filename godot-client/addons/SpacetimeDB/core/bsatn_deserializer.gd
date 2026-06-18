@@ -623,6 +623,55 @@ func _read_nested_resource(spb: StreamPeerBuffer, prop: Dictionary) -> Object:
 	return nested_instance
 
 
+# Returns the schema GDScript for a property the row loop can parse via a hoisted
+# plan, or null when the bound reader must run as-is.
+#
+# Gate 1 (authoritative): only hoist when _get_reader_callable_for_property actually
+# bound _read_nested_resource. This excludes every schema type with a *custom*
+# reader — ScheduleAt (sum: u8 tag + i64 via read_scheduled_at), Identity, etc. —
+# whose product-of-fields plan would misread the wire. Re-deriving that exclusion
+# by hand is fragile; trust the reader the plan already chose.
+#
+# Gate 2: a RustEnum *field* also binds _read_nested_resource, but _read_nested_resource
+# routes it through _populate_resource_from_bytes' `is RustEnum` tag dispatch — the
+# hoisted path calls _populate_from_plan directly and would skip that. Exclude via the
+# ENUM_OPTIONS constant codegen emits on every concrete RustEnum (own constant, so a
+# hand-rolled RustEnum subclass omitting it is the only escape — codegen is the sole
+# source today).
+func _hoistable_nested_script(prop: Dictionary, reader_callable: Callable) -> GDScript:
+	if reader_callable.get_method() != &"_read_nested_resource":
+		return null
+	if _schema == null or prop.type != TYPE_OBJECT or prop.class_name == &"" or prop.class_name == &"Option":
+		return null
+	var script: GDScript = _schema.get_type(_normalize(prop.class_name))
+	if script == null:
+		return null
+	if script.get_script_constant_map().has(&"ENUM_OPTIONS"):
+		return null
+	return script
+
+
+# Hoisted nested-resource read: instantiate the pre-resolved script + run its plan
+# directly, skipping the per-row schema get_type + plan-cache hashes of
+# _read_nested_resource. The nested plan is built once on first use (lazy avoids any
+# plan-build recursion on self-referential schemas).
+func _read_nested_hoisted(spb: StreamPeerBuffer, step: _PlanStep) -> Object:
+	if not step.nested_plan_ready:
+		step.nested_plan = _get_or_build_plan(step.nested_script)
+		if has_error():
+			return null # leave nested_plan_ready false so a retry rebuilds after clear
+		step.nested_plan_ready = true
+	var nested_instance: Object = step.nested_script.new()
+	if not _populate_from_plan(nested_instance, spb, step.nested_plan):
+		if not has_error():
+			_set_error(
+				"Failed to populate nested resource '%s' of type '%s'" % [step.prop_name, step.nested_script.get_global_name()],
+				spb.get_position(),
+			)
+		return null
+	return nested_instance
+
+
 # --- Generic Deserialization ---
 func _get_primitive_reader_from_bsatn_type(bsatn_type_str: StringName) -> Callable:
 	match bsatn_type_str:
@@ -771,6 +820,14 @@ class _PlanStep:
 	var reader: Callable
 	var prop_name: StringName
 	var prop_type: int
+	# Hoisted nested-resource path. When nested_script is set, the field is a plain
+	# (non-RustEnum, non-Option) nested schema Resource: the row loop instantiates
+	# it + runs nested_plan directly, skipping the per-row schema get_type + plan-cache
+	# hashes _read_nested_resource pays. nested_plan is built lazily on first row (once)
+	# to sidestep any plan-build recursion. nested_script == null → use reader as before.
+	var nested_script: GDScript = null
+	var nested_plan: Array = []
+	var nested_plan_ready: bool = false
 
 
 func _create_deserialization_plan(script: Script) -> Array:
@@ -793,6 +850,7 @@ func _create_deserialization_plan(script: Script) -> Array:
 		step.reader = reader_callable
 		step.prop_name = prop_name
 		step.prop_type = prop.type
+		step.nested_script = _hoistable_nested_script(prop, reader_callable)
 		plan.append(step)
 
 	_deserialization_plan_cache[script] = plan
@@ -836,7 +894,11 @@ func _get_or_build_plan(script: Script) -> Array:
 func _populate_from_plan(resource: Object, spb: StreamPeerBuffer, plan: Array) -> bool:
 	for step: _PlanStep in plan:
 		var value_start_pos: int = spb.get_position()
-		var value: Variant = step.reader.call(spb)
+		var value: Variant
+		if step.nested_script != null:
+			value = _read_nested_hoisted(spb, step)
+		else:
+			value = step.reader.call(spb)
 
 		if _status != ParseStatus.OK:
 			if not _last_error.contains(str(step.prop_name)):
