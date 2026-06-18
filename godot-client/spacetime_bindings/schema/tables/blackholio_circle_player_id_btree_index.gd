@@ -2,13 +2,14 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name BlackholioCirclePlayerIdBTreeIndex extends _ModuleTableBTreeIndex
 
+var _cache: Dictionary[int, Array] = {}
+
 func _init(p_local_db: LocalDatabase) -> void:
-	_db = p_local_db
 	_table_name = &"circle"
 	_field_name = &"player_id"
+	_connect_cache_to_db(_cache, p_local_db)
 
 func filter(col_val: int) -> Array[BlackholioCircle]:
-	var rows: Array = _db.find_by(_table_name, _field_name, col_val)
 	var typed_array: Array[BlackholioCircle] = []
-	typed_array.assign(rows)
+	typed_array.assign(_cache.get(col_val, []))
 	return typed_array
