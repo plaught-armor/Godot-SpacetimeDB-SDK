@@ -2,6 +2,87 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [1.6.0] - 2026-06-17
+
+Client-cache and reconnect correctness pass, broader BSATN type coverage, WebSocket
+keepalive, and tagged-sum (enum-with-payload / `Result`) column support. The new
+serialization types and behaviors are verified end-to-end against a live SpacetimeDB
+2.6.0 server — see [`integration-tests/`](integration-tests/).
+
+### Added
+- **WebSocket keepalive.** `SpacetimeDBConnectionOptions.heartbeat_interval_seconds`
+  (default `15.0`) sends WS pings and surfaces a dead/half-open socket as a close
+  (triggering auto-reconnect) within ~2 intervals, instead of waiting out the OS TCP
+  timeout. `0.0` disables.
+- **Wide BSATN integers** `i128`, `u256`, `i256` (raw `PackedByteArray`, little-endian),
+  and **`Uuid`** columns (wire-identical to `u128`).
+- **`ScheduleAt`.** New `ScheduleAt` resource (`Interval | Time` + microseconds) with
+  full serialize/deserialize; codegen maps `#[scheduled]`-table `scheduled_at` columns
+  to it (previously a lossy `i64` that discarded the variant tag).
+- **Tagged-sum (enum-with-payload) columns.** Rust enums with per-variant data
+  round-trip as `RustEnum` values (`value` = tag, `data` = payload), read and write.
+- **Anonymous inline `Result<T, E>` columns.** Codegen synthesizes a named `RustEnum`
+  type per distinct `Result<T, E>`.
+
+### Fixed
+- **Overlapping-subscription cache correctness.** Rows are now refcounted: a row shared
+  by multiple subscriptions fires `on_insert` once (0→1) and `on_delete` only when the
+  last holder drops it (1→0). Previously a shared row produced spurious updates/deletes.
+  Covers both primary-key tables (keyed by PK) and PK-less tables (keyed by row value,
+  multiplicity-counted).
+- **Unsubscribe now prunes the cache.** `unsubscribe()` requests dropped rows
+  (`SendDroppedRows`) and removes only rows no longer held by another subscription;
+  previously a query's rows lingered indefinitely.
+- **Event tables.** Event-table rows fire `on_insert` but are no longer stored in the
+  cache (`count()` / `iter()` stay empty).
+- **`ConnectionId` byte order.** Deserialization now reverses to canonical order,
+  matching `Identity` and the serializer (was asymmetric → round-trip mismatch).
+- **Fallible-reducer error messages.** The `err` payload (a BSATN length-prefixed
+  string for `Result<_, String>`) is now decoded; previously it came through empty.
+- **`SubscriptionError` on an applied subscription is now pruned precisely.** The SDK
+  tracks per-query row membership, so on an error it drops exactly that query's rows
+  (decrementing refcounts; rows still held by another subscription survive) — no
+  disconnect or full rebuild, and it works regardless of `auto_reconnect`. Previously
+  it reset the connection (reconnect on) or left stale rows (reconnect off).
+- **Reducer/procedure `wait_for_response()` returns the handle.** `await
+  reducers.foo(args).wait_for_response()` now yields the `SpacetimeDBReducerCall` /
+  `SpacetimeDBProcedureCall` itself, so the unambiguous `outcome` (OK / OK_EMPTY / ERROR /
+  INTERNAL_ERROR / TIMEOUT / DISCONNECTED), `decode()`, and result are available in one
+  step — instead of a bare `TransactionUpdateMessage`/bytes that was `null`/empty on
+  timeout, okEmpty, error, and disconnect alike.
+- **Removed a per-call array allocation** from the `find_where` / `first_where` /
+  `find_by` / `first_by` / `count_where` cache-query helpers (they iterated
+  `Dictionary.values()`); they now iterate keys directly, and the `first_*` variants no
+  longer allocate the whole table to return a single row.
+- **Disconnect no longer blocks pending waits.** `query_sql()` and the
+  `wait_for_reducer_response()` / `wait_for_procedure_response()` helpers return
+  empty/`null` immediately on disconnect rather than waiting out their timeout.
+- **One-off query cache** is cleared on reconnect (a post-reconnect request id could
+  otherwise read a stale cached result).
+- **Spurious "Bytes remaining" warnings removed.** Under v3 WebSocket message batching
+  a single packet carries several concatenated messages; after parsing each one the
+  parser saw the next as "trailing bytes" and logged a warning per message (hundreds of
+  thousands under load). The framing loop already consumes batched frames correctly, so
+  the warning was always bogus.
+
+### Performance
+- **Apply hot path.** `LocalDatabase` insert/update/delete now applies primary-key
+  tables in a single pass (was a delta dictionary plus a second pass), skips
+  update-detection for pure insert/delete batches, and keys per-query subscription
+  membership by row hash. Behavior-unchanged; lower per-row cost under load.
+- **Deserializer.** Dropped redundant per-read endian sets and hoisted the per-row
+  deserialization-plan lookup out of the row loop. (Profiling confirms parse is ~85% of
+  the inbound pipeline; the remaining cost is intrinsic to per-row `Resource`
+  construction — see `godot-client/benchmark/`.)
+
+### Docs
+- README **Known Limitations & Caveats** section; documented the new types and behaviors.
+- **`integration-tests/`** — live-server verification modules + headless harnesses
+  (wide ints / `Uuid` / `ScheduleAt`, the cache trio, enum-with-payload and `Result`
+  columns), with run instructions.
+- **`godot-client/benchmark/`** — in-process apply micro-bench, real-workload replay
+  from a captured Blackholio packet stream, and a parse-vs-apply deserializer profiler.
+
 ## [1.5.0] - 2026-06-17
 
 Client feature-parity pass against the official C# and TypeScript SDKs, plus a

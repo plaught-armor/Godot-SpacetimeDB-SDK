@@ -14,7 +14,7 @@
 ##         var tx: TransactionUpdateMessage = outcome.get_ok()
 ## [/codeblock]
 class_name RustEnum
-extends RefCounted
+extends Resource
 
 ## The discriminant tag identifying which variant is active.
 var value: int = 0

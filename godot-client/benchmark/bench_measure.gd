@@ -3,7 +3,7 @@
 # reflects whether the per-frame drain/parse keeps up: heavy inbound that the
 # client can't process cheaply tanks fps. Reports rows/sec applied + fps stats.
 #
-#   <godot> --headless --path . --script res://bench_measure.gd
+#   <godot> --headless --path . --script res://benchmark/bench_measure.gd
 extends SceneTree
 
 const WARMUP_FRAMES: int = 240

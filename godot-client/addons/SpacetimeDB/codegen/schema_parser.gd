@@ -31,9 +31,13 @@ const GDNATIVE_DICTLIKE_TYPES: Dictionary[String, String] = {
 const DEFAULT_TYPE_MAP: Dictionary[String, String] = {
 	"__identity__": "PackedByteArray",
 	"__connection_id__": "PackedByteArray",
+	"__uuid__": "PackedByteArray",
 	"__timestamp_micros_since_unix_epoch__": "int",
 	"__time_duration_micros__": "int",
 	"U128": "PackedByteArray",
+	"I128": "PackedByteArray",
+	"U256": "PackedByteArray",
+	"I256": "PackedByteArray",
 }
 const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 	"I8": "i8",
@@ -45,6 +49,9 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 	"U32": "u32",
 	"U64": "u64",
 	"U128": "u128",
+	"I128": "i128",
+	"U256": "u256",
+	"I256": "i256",
 	"F32": "f32",
 	"F64": "f64",
 	"String": "string", # For BSATN, e.g. option_string or vec_String (if Option<Array<String>>)
@@ -60,6 +67,9 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 	"Color": "color", # For BSATN, e.g. color[f32,f32,f32,f32]
 	"__identity__": "identity",
 	"__connection_id__": "connection_id",
+	# Uuid is Product { __uuid__: u128 } — wire-identical to u128 (16 bytes, reversed
+	# on read yields canonical UUID byte order). Reuse the u128 reader/writer.
+	"__uuid__": "u128",
 	"__timestamp_micros_since_unix_epoch__": "i64",
 	"__time_duration_micros__": "i64",
 }
@@ -79,8 +89,17 @@ static func _find_struct_field_index(struct_fields: Array, field_name: String) -
 			return i
 	return -1
 
+# Synthesized sum types for anonymous inline `Result<T, E>` columns, accumulated by
+# _parse_field_type during a parse and flushed into the type list afterward. Anonymous
+# inline sums (the only ones are Option — handled separately — and Result) have no named
+# Typespace entry, so we synthesize a named RustEnum-style type per distinct Result<T, E>
+# and let the regular enum-with-payload codegen + BSATN path handle it. Keyed by the
+# synthesized bare type name (e.g. "ResultI32String"); reset at the start of each parse.
+static var _synth_result_types: Dictionary = { }
+
 
 static func parse_schema(schema: Dictionary, module_name: String, project_enums: Dictionary = { }) -> SpacetimeParsedSchema:
+	_synth_result_types.clear()
 	var type_map: Dictionary[String, String] = DEFAULT_TYPE_MAP.duplicate() as Dictionary[String, String]
 	type_map.merge(GDNATIVE_PRIMITIVE_TYPES)
 	type_map.merge(GDNATIVE_ARRAYLIKE_TYPES)
@@ -143,6 +162,10 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		elif section.has("Tables"):
 			for td: Dictionary in section["Tables"]:
 				var src: String = td.get("source_name", "")
+				# canonical_name is the name the server registers the table/reducer under and
+				# uses on the wire (TableUpdate identifiers, reducer-call lookup). source_name is
+				# only the original Rust spelling. Verified live: reducers resolve ONLY by
+				# canonical (e.g. insert_one_u_128, not insert_one_u128).
 				var name: String = canonical_names.get(src, src)
 				var indexes: Array = []
 				for idx: Dictionary in td.get("indexes", []):
@@ -275,6 +298,15 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 					parsed_types_list.append(type_data)
 				else:
 					SpacetimePlugin.print_log("Type '%s' has no Product/Sum definition in typespace and is not GDNative. Skipping." % type_name)
+
+	# Flush synthesized Result<T, E> types so codegen emits them (as RustEnum subclasses)
+	# and fields referencing them resolve a type_idx below. Done after the main type loop
+	# so all inline Results encountered while parsing fields/variants are included.
+	for synth_name: String in _synth_result_types:
+		parsed_types_list.append(_synth_result_types[synth_name])
+		var synth_class: String = module_name.to_pascal_case() + synth_name.to_pascal_case()
+		type_map[synth_name] = synth_class
+		meta_type_map[synth_name] = synth_class
 
 	for parsed_type in parsed_types_list:
 		if not parsed_type.has("struct"):
@@ -711,6 +743,56 @@ static func _is_sum_option(sum_def: Dictionary) -> bool:
 	return found_some and found_none and none_is_unit
 
 
+# Structural Result: exactly two variants named "ok" then "err" (lowercase, ok first).
+# Matches SpacetimeDB's `SumType::is_result`. Option is checked separately and wins.
+static func _is_sum_result(sum_def: Dictionary) -> bool:
+	var variants: Array = sum_def.get("variants", [])
+	if variants.size() != 2:
+		return false
+	var n0: String = variants[0].get("name", { }).get("some", "")
+	var n1: String = variants[1].get("name", { }).get("some", "")
+	return n0 == "ok" and n1 == "err"
+
+
+# Synthesizes a named RustEnum-style sum type for an anonymous inline Result<T, E>,
+# returning its bare type name (e.g. "ResultI32String"). The variant payload types are
+# parsed exactly like normal enum variants so the standard enum codegen + BSATN path
+# (u8 tag + payload) handles it. Deduped by name; flushed into the type list by
+# parse_schema via [member _synth_result_types].
+static func _synthesize_result_type(sum_def: Dictionary, schema_types: Array, depth: int) -> String:
+	var variants: Array = sum_def.get("variants", [])
+	var ok_data: Dictionary = { "name": "ok" }
+	var ok_type: String = _parse_field_type(variants[0].get("algebraic_type", { }), ok_data, schema_types, depth + 1)
+	if not ok_type.is_empty():
+		ok_data["type"] = ok_type
+	var err_data: Dictionary = { "name": "err" }
+	var err_type: String = _parse_field_type(variants[1].get("algebraic_type", { }), err_data, schema_types, depth + 1)
+	if not err_type.is_empty():
+		err_data["type"] = err_type
+
+	var synth_name: String = "Result%s%s" % [_result_name_part(ok_data), _result_name_part(err_data)]
+	if not _synth_result_types.has(synth_name):
+		_synth_result_types[synth_name] = {
+			"name": synth_name,
+			"is_sum_type": true,
+			"enum": [ok_data, err_data],
+		}
+	return synth_name
+
+
+# Builds a stable identifier fragment for a Result variant, folding in nesting markers
+# (Vec/Option) so Result<Vec<i32>, _> and Result<i32, _> get distinct synthesized names.
+static func _result_name_part(variant_data: Dictionary) -> String:
+	var part: String = ""
+	for marker: StringName in variant_data.get("nested_type", []):
+		part += String(marker)
+	part += variant_data.get("type", "Unit")
+	var sanitized: String = ""
+	for c: String in part:
+		sanitized += c if c.is_valid_identifier() or c.is_valid_int() else "_"
+	return sanitized
+
+
 const _PARSE_FIELD_TYPE_MAX_DEPTH: int = 32
 
 
@@ -735,6 +817,11 @@ static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_t
 			return ""
 		return elements[0].get('name', { }).get('some', null)
 	elif field_type.has("Sum"):
+		# Anonymous inline Result<T, E> — synthesize a named RustEnum-style type and
+		# return its name so it rides the enum-with-payload path (must precede the
+		# generic collapse below, which would otherwise drop the err variant).
+		if _is_sum_result(field_type.Sum):
+			return _synthesize_result_type(field_type.Sum, schema_types, depth)
 		if _is_sum_option(field_type.Sum):
 			var nested_type = data.get("nested_type", [])
 			nested_type.append(&"Option")

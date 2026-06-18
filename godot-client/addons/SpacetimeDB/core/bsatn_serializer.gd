@@ -15,6 +15,9 @@ extends RefCounted
 const IDENTITY_SIZE: int = 32
 const CONNECTION_ID_SIZE: int = 16
 const U128_SIZE: int = 16
+const I128_SIZE: int = 16
+const U256_SIZE: int = 32
+const I256_SIZE: int = 32
 # Native type handling
 const CONTEXT_WRITERS: Dictionary[StringName, bool] = { &"write_array": true, &"write_option": true, &"write_native_arraylike": true, &"write_nested_resource": true }
 const NATIVE_ARRAYLIKE_TYPES: Array[Variant.Type] = [
@@ -134,6 +137,18 @@ func write_u128(v: PackedByteArray) -> void:
 	_write_fixed_bytes_le(v, U128_SIZE, "U128")
 
 
+func write_i128(v: PackedByteArray) -> void:
+	_write_fixed_bytes_le(v, I128_SIZE, "I128")
+
+
+func write_u256(v: PackedByteArray) -> void:
+	_write_fixed_bytes_le(v, U256_SIZE, "U256")
+
+
+func write_i256(v: PackedByteArray) -> void:
+	_write_fixed_bytes_le(v, I256_SIZE, "I256")
+
+
 func write_bool(v: bool) -> void:
 	_spb.put_u8(1 if v else 0)
 
@@ -163,6 +178,18 @@ func write_connection_id(v: PackedByteArray) -> void:
 
 func write_timestamp(v: int) -> void:
 	write_i64_le(v) # Timestamps are typically i64
+
+
+# ScheduleAt sum: u8 tag (0=Interval, 1=Time) then the i64 microsecond payload.
+func write_scheduled_at(v: ScheduleAt) -> void:
+	if v == null:
+		_set_error("Cannot serialize null ScheduleAt")
+		return
+	if v.kind != ScheduleAt.Kind.INTERVAL and v.kind != ScheduleAt.Kind.TIME:
+		_set_error("Invalid ScheduleAt kind %d" % v.kind)
+		return
+	write_u8(v.kind)
+	write_i64_le(v.micros)
 
 
 # Writes a PackedByteArray prefixed with its u32 length (Vec<u8> format)
@@ -387,6 +414,14 @@ func write_nested_resource(resource: Object, bsatn_type: StringName, prop: Dicti
 		_set_error("Cannot serialize non-RefCounted Object (got: %s)" % resource.get_class())
 		return
 
+	# Tagged-sum (enum-with-payload) fields/values are RustEnum subclasses. They serialize
+	# as a u8 tag + variant payload, NOT as a product of their value/data fields. The
+	# property dispatch only matches the literal "RustEnum" class_name, so subclasses reach
+	# here as a generic Object — detect by instance and delegate to the sum writer.
+	if resource is RustEnum:
+		write_rust_enum(resource)
+		return
+
 	var prop_name: StringName = prop.name
 	var nested_class_name: StringName = prop.class_name
 
@@ -468,6 +503,12 @@ func _get_primitive_writer_from_bsatn_type(bsatn_type_str: StringName) -> Callab
 	match bsatn_type_str:
 		&"u128":
 			return write_u128
+		&"i128":
+			return write_i128
+		&"u256":
+			return write_u256
+		&"i256":
+			return write_i256
 		&"u64":
 			return write_u64_le
 		&"i64":
@@ -494,6 +535,8 @@ func _get_primitive_writer_from_bsatn_type(bsatn_type_str: StringName) -> Callab
 			return write_connection_id
 		&"timestamp":
 			return write_timestamp
+		&"scheduled_at":
+			return write_scheduled_at
 		&"vec_u8":
 			return write_vec_u8
 		&"bool":

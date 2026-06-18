@@ -17,6 +17,9 @@ const MAX_BYTE_ARRAY_LEN: int = 16 * 1024 * 1024 # 16 MiB
 const IDENTITY_SIZE: int = 32
 const CONNECTION_ID_SIZE: int = 16
 const U128_SIZE: int = 16
+const I128_SIZE: int = 16
+const U256_SIZE: int = 32
+const I256_SIZE: int = 32
 const ROW_LIST_FIXED_SIZE: int = 0
 const ROW_LIST_ROW_OFFSETS: int = 1
 const NATIVE_ARRAYLIKE: Array[Variant.Type] = [
@@ -94,21 +97,18 @@ func read_i8(spb: StreamPeerBuffer) -> int:
 func read_i16_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 2):
 		return 0
-	spb.big_endian = false
 	return spb.get_16()
 
 
 func read_i32_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 4):
 		return 0
-	spb.big_endian = false
 	return spb.get_32()
 
 
 func read_i64_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 8):
 		return 0
-	spb.big_endian = false
 	return spb.get_64()
 
 
@@ -121,21 +121,18 @@ func read_u8(spb: StreamPeerBuffer) -> int:
 func read_u16_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 2):
 		return 0
-	spb.big_endian = false
 	return spb.get_u16()
 
 
 func read_u32_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 4):
 		return 0
-	spb.big_endian = false
 	return spb.get_u32()
 
 
 func read_u64_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 8):
 		return 0
-	spb.big_endian = false
 	return spb.get_u64()
 
 
@@ -145,17 +142,33 @@ func read_u128(spb: StreamPeerBuffer) -> PackedByteArray:
 	return num
 
 
+func read_i128(spb: StreamPeerBuffer) -> PackedByteArray:
+	var num: PackedByteArray = read_bytes(spb, I128_SIZE)
+	num.reverse() # LE on the wire; reverse to canonical order (matches read_u128)
+	return num
+
+
+func read_u256(spb: StreamPeerBuffer) -> PackedByteArray:
+	var num: PackedByteArray = read_bytes(spb, U256_SIZE)
+	num.reverse() # LE on the wire; reverse to canonical order
+	return num
+
+
+func read_i256(spb: StreamPeerBuffer) -> PackedByteArray:
+	var num: PackedByteArray = read_bytes(spb, I256_SIZE)
+	num.reverse() # LE on the wire; reverse to canonical order
+	return num
+
+
 func read_f32_le(spb: StreamPeerBuffer) -> float:
 	if not _check_read(spb, 4):
 		return 0.0
-	spb.big_endian = false
 	return spb.get_float()
 
 
 func read_f64_le(spb: StreamPeerBuffer) -> float:
 	if not _check_read(spb, 8):
 		return 0.0
-	spb.big_endian = false
 	return spb.get_double()
 
 
@@ -209,16 +222,27 @@ func read_identity(spb: StreamPeerBuffer) -> PackedByteArray:
 
 
 func read_connection_id(spb: StreamPeerBuffer) -> PackedByteArray:
-	return read_bytes(spb, CONNECTION_ID_SIZE)
+	var connection_id: PackedByteArray = read_bytes(spb, CONNECTION_ID_SIZE)
+	connection_id.reverse() # LE on the wire; reverse to canonical order (matches read_identity + write_connection_id)
+	return connection_id
 
 
 func read_timestamp(spb: StreamPeerBuffer) -> int:
 	return read_i64_le(spb)
 
 
-func read_scheduled_at(spb: StreamPeerBuffer) -> int:
-	read_i8(spb) # skip enum tag
-	return read_timestamp(spb)
+## ScheduleAt sum: u8 tag (0=Interval, 1=Time) then the i64 microsecond payload.
+func read_scheduled_at(spb: StreamPeerBuffer) -> ScheduleAt:
+	var result: ScheduleAt = ScheduleAt.new()
+	var tag: int = read_u8(spb)
+	if has_error():
+		return result
+	if tag != ScheduleAt.Kind.INTERVAL and tag != ScheduleAt.Kind.TIME:
+		_set_error("Invalid ScheduleAt tag %d" % tag, spb.get_position() - 1)
+		return result
+	result.kind = tag
+	result.micros = read_i64_le(spb)
+	return result
 
 
 func read_query_id_data(spb: StreamPeerBuffer) -> QueryIdData:
@@ -331,6 +355,7 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 	_pending_data.append_array(new_data)
 	var parsed_messages: Array[SpacetimeDBServerMessage] = []
 	var spb: StreamPeerBuffer = StreamPeerBuffer.new()
+	spb.big_endian = false # BSATN is little-endian; set once so per-read setters drop.
 	# Parse against a single snapshot, advancing a cursor, and slice the
 	# consumed prefix off _pending_data exactly once after the loop — instead of
 	# rebuilding the buffer (O(n)) after every message.
@@ -611,6 +636,12 @@ func _get_primitive_reader_from_bsatn_type(bsatn_type_str: StringName) -> Callab
 			return read_u64_le
 		&"u128":
 			return read_u128
+		&"i128":
+			return read_i128
+		&"u256":
+			return read_u256
+		&"i256":
+			return read_i256
 		&"i8":
 			return read_i8
 		&"i16":
@@ -782,12 +813,27 @@ func _populate_resource_from_bytes(resource: Object, spb: StreamPeerBuffer) -> b
 	if resource is RustEnum:
 		return _populate_enum_from_bytes(spb, resource, script)
 
+	var plan: Array = _get_or_build_plan(script)
+	if has_error():
+		return false
+	return _populate_from_plan(resource, spb, plan)
+
+
+## Fetches the cached plan for [param script], building (and caching) it on first
+## use. A plan can legitimately be empty (a schema with no storage properties), so
+## the cache miss is distinguished by [method Dictionary.has], not emptiness.
+func _get_or_build_plan(script: Script) -> Array:
 	var plan: Array = _deserialization_plan_cache.get(script, [])
 	if plan.is_empty() and not _deserialization_plan_cache.has(script):
 		plan = _create_deserialization_plan(script)
-		if has_error():
-			return false
+	return plan
 
+
+## Reads each field of [param plan] from [param spb] into [param resource]. Split
+## from [method _populate_resource_from_bytes] so callers with a constant schema
+## (the row-list loop) fetch the plan once instead of re-hashing the plan cache per
+## row.
+func _populate_from_plan(resource: Object, spb: StreamPeerBuffer, plan: Array) -> bool:
 	for step: _PlanStep in plan:
 		var value_start_pos: int = spb.get_position()
 		var value: Variant = step.reader.call(spb)
@@ -857,6 +903,13 @@ func _read_bsatn_row_list_as_resources(
 	var block_start: int = spb.get_position()
 	var block_end: int = block_start + data_len
 
+	# Plan is constant for every row in the block — fetch once instead of re-hashing
+	# the plan cache per row. Table rows are product types (never a bare RustEnum
+	# sum), so the plan path applies to all of them.
+	var row_plan: Array = _get_or_build_plan(row_schema_script)
+	if has_error():
+		return []
+
 	var result: Array[Resource] = []
 	result.resize(count)
 	for i: int in count:
@@ -864,7 +917,7 @@ func _read_bsatn_row_list_as_resources(
 		if spb.get_position() != row_start:
 			spb.seek(row_start)
 		var row_resource: Variant = row_schema_script.new()
-		if not _populate_resource_from_bytes(row_resource, spb):
+		if not _populate_from_plan(row_resource, spb, row_plan):
 			push_error("Failed to parse row %d for table '%s'" % [i, table_name])
 			spb.seek(block_end)
 			return []
@@ -948,6 +1001,7 @@ func _read_table_update_instance(spb: StreamPeerBuffer, resource: TableUpdateDat
 					if has_error():
 						return false # deletes
 			1: # EventTable { events: BsatnRowList } — treated as inserts
+				resource.is_event = true
 				if row_schema_script:
 					var events: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, resource.table_name)
 					if has_error():
@@ -1051,7 +1105,8 @@ func _read_transaction_update_message(spb: StreamPeerBuffer) -> TransactionUpdat
 
 ## v2: UnsubscribeApplied { request_id: u32, query_set_id: QuerySetId, rows: Option<QueryRows> }
 ## Option<QueryRows>: tag 0 = Some(QueryRows), 1 = None
-## We parse the rows into TableUpdateData for LocalDatabase compat (same as SubscribeApplied).
+## Dropped rows are placed in TableUpdateData.deletes so LocalDatabase decrements
+## the refcount and removes only rows no longer held by any remaining subscription.
 func _read_unsubscribe_applied_message(spb: StreamPeerBuffer) -> UnsubscribeAppliedMessage:
 	var resource: UnsubscribeAppliedMessage = UnsubscribeAppliedMessage.new()
 	resource.request_id = read_u32_le(spb)
@@ -1085,7 +1140,7 @@ func _read_unsubscribe_applied_message(spb: StreamPeerBuffer) -> UnsubscribeAppl
 				var rows: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name)
 				if has_error():
 					return null
-				table_update.inserts.assign(rows)
+				table_update.deletes.assign(rows)
 			else:
 				read_bsatn_row_list(spb)
 				if has_error():
@@ -1318,8 +1373,8 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> SpacetimeDBServerMessa
 			return null
 	if has_error():
 		return null
-	var remaining_bytes: int = spb.get_size() - spb.get_position()
-	if remaining_bytes > 0:
-		push_warning("Bytes remaining after parsing message type 0x%02X: %d" % [msg_type, remaining_bytes])
-
+	# No trailing-bytes warning here: this parses ONE message from a buffer that, under the
+	# v3 framing, holds several concatenated messages. get_size() is the whole buffer, so
+	# "remaining" is just the next message — process_bytes_and_extract_messages loops and
+	# parses it. Per-message under-reads are caught by the row-list offset checks.
 	return result

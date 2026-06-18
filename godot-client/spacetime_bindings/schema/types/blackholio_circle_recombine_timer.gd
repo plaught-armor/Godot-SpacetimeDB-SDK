@@ -8,13 +8,13 @@ const table_names: Array[StringName] = []
 const BSATN_TYPES: Dictionary[StringName, StringName] = { &"scheduled_id": &"u64", &"scheduled_at": &"scheduled_at", &"player_id": &"i32" }
 
 @export var scheduled_id: int
-@export var scheduled_at: int
+@export var scheduled_at: ScheduleAt
 @export var player_id: int
 
 ## 0. scheduled_id: int[br]
-## 1. scheduled_at: int[br]
+## 1. scheduled_at: ScheduleAt[br]
 ## 2. player_id: int[br]
-static func create(p_scheduled_id: int, p_scheduled_at: int, p_player_id: int) -> BlackholioCircleRecombineTimer:
+static func create(p_scheduled_id: int, p_scheduled_at: ScheduleAt, p_player_id: int) -> BlackholioCircleRecombineTimer:
 	var result: BlackholioCircleRecombineTimer = BlackholioCircleRecombineTimer.new()
 	result.scheduled_id = p_scheduled_id
 	result.scheduled_at = p_scheduled_at

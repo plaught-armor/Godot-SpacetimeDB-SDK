@@ -52,6 +52,14 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 
 -   **Deep Nesting:** Arbitrary nesting of `Option<T>` and `Vec<T>` types: `Option<Option<T>>`, `Vec<Vec<T>>`, `Option<Vec<Option<T>>>`, etc. Recursive BSATN prefix-based serialization/deserialization.
 -   **Native GDScript Types:** Vector2, Vector2i, Vector3, Vector3i, Vector4, Vector4i, Quaternion, Color, and Plane are serialized as native GDScript types via codegen. Rust enums map to `RustEnum` with generated constants.
+-   **Tagged-sum (enum-with-payload) columns:** Rust enums with per-variant data round-trip as `RustEnum` values (`value` = tag, `data` = payload), read and write. Anonymous inline `Result<T, E>` columns are supported too — codegen synthesizes a named `RustEnum` type per distinct `Result<T, E>`. Verified end-to-end against a live server (see [`integration-tests/`](integration-tests/)).
+-   **Extended scalar types:** `i128` / `u256` / `i256` (raw `PackedByteArray`), `Uuid` (reuses the `u128` wire path), and `ScheduleAt` (the `Interval | Time` tagged union on `#[scheduled]` tables, exposed as a `ScheduleAt` resource). Verified byte-exact end-to-end against a live SpacetimeDB 2.6.0 server (see [`integration-tests/`](integration-tests/)).
+
+## Known Limitations & Caveats
+
+-   **`TimeDuration` is surfaced as `int` microseconds,** not a distinct type. The wire value is correct; only the semantic distinction from `Timestamp` is absent.
+-   **WebSocket keepalive default is 15s:** a main-thread stall longer than the configured `heartbeat_interval_seconds` can trip a false dead-socket detection and reconnect. Tune it, or set it to `0` to disable, via `SpacetimeDBConnectionOptions`.
+-   **Deferred schema-v10 details:** the schema parser does not surface column `default_values` or module namespaces — neither has a functional consumer yet (`default_values` is verified harmless: `auto_inc` tables deserialize fine; namespaces are unused). Implemented when a module needs them. (Canonical/case naming via `ExplicitNames` and fallible-reducer return values + error messages *are* handled.)
 
 ## Contributing
 

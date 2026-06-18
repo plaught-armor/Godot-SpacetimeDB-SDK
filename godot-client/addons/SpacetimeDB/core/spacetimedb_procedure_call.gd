@@ -57,16 +57,20 @@ static func fail(p_error: Error) -> SpacetimeDBProcedureCall:
 	return call
 
 
-## Awaits the server response for up to [param timeout_sec] seconds.[br]
-## Returns the raw return bytes on success, or an empty array on timeout/error.
-func wait_for_response(timeout_sec: float = 10) -> PackedByteArray:
+## Awaits the server response for up to [param timeout_sec] seconds, then returns this
+## handle so the unambiguous outcome is available in one step:[br]
+## [code]var call := await procedures.foo(args).wait_for_response()[/code][br]
+## then inspect [member outcome] / [method is_ok] / [method is_error] / [method decode] /
+## [member return_bytes] / [member error_message]. Distinguishes RETURNED / ERROR /
+## INTERNAL_ERROR / TIMEOUT / DISCONNECTED instead of an ambiguous empty-array return.
+func wait_for_response(timeout_sec: float = 10) -> SpacetimeDBProcedureCall:
 	if error:
-		return PackedByteArray()
-	var res: PackedByteArray = await _client.wait_for_procedure_response(request_id, timeout_sec)
+		return self
+	await _client.wait_for_procedure_response(request_id, timeout_sec)
 	if outcome == Outcome.PENDING:
 		outcome = Outcome.TIMEOUT
 		error_message = "Timeout waiting for procedure response"
-	return res
+	return self
 
 
 ## Decodes [member return_bytes] using the BSATN type provided at call time.[br]

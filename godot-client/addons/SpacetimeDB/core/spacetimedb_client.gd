@@ -40,6 +40,10 @@ signal reconnecting(attempt: int, max_attempts: int)
 signal reconnected
 ## Emitted when all reconnect attempts are exhausted.
 signal reconnect_failed
+## Internal: fired when the socket drops so pending [method _wait_for_response] awaiters
+## (one-off queries, the deprecated reducer/procedure wait helpers) wake immediately
+## instead of blocking out their full timeout.
+signal _response_wait_aborted
 
 # --- Configuration ---
 ## Base URL of the SpacetimeDB server (e.g. [code]http://127.0.0.1:3000[/code]).
@@ -343,8 +347,14 @@ func unsubscribe(query_id: int) -> Error:
 
 	var request_id: int = _next_request_id
 	_next_request_id += 1
-	# 1. Create the correct payload Resource
-	var payload_data: UnsubscribeMessage = UnsubscribeMessage.new(request_id, query_id)
+	# 1. Create the correct payload Resource. SendDroppedRows makes the server echo
+	#    the rows being removed so LocalDatabase can decrement the refcount and evict
+	#    only rows no longer held by any other active subscription.
+	var payload_data: UnsubscribeMessage = UnsubscribeMessage.new(
+		request_id,
+		query_id,
+		UnsubscribeMessage.UnsubscribeFlags.SendDroppedRows,
+	)
 
 	# 2. Serialize the complete ClientMessage using the universal function
 	var message_bytes: PackedByteArray = _serializer.serialize_client_message(
@@ -525,11 +535,20 @@ func _wait_for_response(request_id: int, cache: Dictionary, sig: Signal, timeout
 			result_container[0] = data
 			cache.erase(rid)
 			timer.time_left = 0
+	# Wakes the wait early when the connection drops; leaves result null so the caller
+	# gets the same empty/null it would on timeout, but without the full delay.
+	var abort: Callable = func() -> void:
+		if not done_ref[0]:
+			done_ref[0] = true
+			timer.time_left = 0
 	sig.connect(connection)
+	_response_wait_aborted.connect(abort)
 	await timer.timeout
 	sig.disconnect(connection)
-	if not done_ref[0]:
-		printerr("SpacetimeDBClient: Timeout waiting for response for Req ID: %d" % request_id)
+	_response_wait_aborted.disconnect(abort)
+	if result_container[0] == null:
+		if not done_ref[0]:
+			printerr("SpacetimeDBClient: Timeout waiting for response for Req ID: %d" % request_id)
 		return null
 	print_log("SpacetimeDBClient: Received matching response for Req ID: %d" % request_id)
 	return result_container[0]
@@ -901,10 +920,11 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			sub.applied.emit()
 
 	elif message is UnsubscribeAppliedMessage:
+		var qid: int = message.query_id.id
 		if not message.tables.is_empty():
 			for table_update: TableUpdateData in message.tables:
-				_local_db.apply_table_update(table_update)
-		var qid: int = message.query_id.id
+				_local_db.apply_table_update(table_update, qid)
+		_local_db.forget_query(qid)
 		if current_subscriptions.has(qid):
 			var sub: SpacetimeDBSubscription = current_subscriptions[qid]
 			current_subscriptions.erase(qid)
@@ -925,6 +945,12 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				current_subscriptions.erase(qid)
 				sub.error_message = message.error_message
 				sub.end.emit()
+				# Already-applied subscription: prune exactly its rows. The server sends no
+				# dropped rows on an error, so LocalDatabase reconstructs them from per-query
+				# membership and decrements their refcounts — rows still held by another
+				# subscription survive. No disconnect/rebuild needed, regardless of auto_reconnect.
+				_local_db.prune_query(qid)
+				print_log("SpacetimeDBClient: SubscriptionError on applied query_id %d; pruned its rows." % qid)
 
 	elif message is TransactionUpdateMessage:
 		_handle_transaction_update(message)
@@ -950,9 +976,7 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 					handle.outcome = SpacetimeDBReducerCall.Outcome.OK_EMPTY
 			ReducerOutcomeEnum.Options.err:
 				var err_bytes: PackedByteArray = outcome.get_err()
-				var err_msg: String = err_bytes.get_string_from_utf8()
-				if err_msg.is_empty() and not err_bytes.is_empty():
-					err_msg = "raw error bytes: " + err_bytes.hex_encode()
+				var err_msg: String = _decode_reducer_error(err_bytes)
 				print_log("SpacetimeDBClient: Reducer returned error: %s" % err_msg)
 				if can_stamp:
 					handle.outcome = SpacetimeDBReducerCall.Outcome.ERROR
@@ -1018,6 +1042,23 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		print_log("SpacetimeDBClient: Unhandled message type: " + message.get_class())
 
 
+## Decodes the BSATN payload of a reducer `err` outcome into a readable message.
+## The payload is a BSATN value of the reducer's declared error type; the common case
+## (Result<_, String>) is a u32-length-prefixed UTF-8 string, so strip that prefix.
+## Falls back to raw UTF-8, then a hex dump, for non-string / malformed payloads.
+func _decode_reducer_error(err_bytes: PackedByteArray) -> String:
+	if err_bytes.is_empty():
+		return ""
+	if err_bytes.size() >= 4:
+		var n: int = err_bytes.decode_u32(0)
+		if n == err_bytes.size() - 4:
+			return err_bytes.slice(4).get_string_from_utf8()
+	var raw: String = err_bytes.get_string_from_utf8()
+	if not raw.is_empty():
+		return raw
+	return "raw error bytes: " + err_bytes.hex_encode()
+
+
 func _handle_transaction_update(update_sets: TransactionUpdateMessage) -> void:
 	for dataset: DatabaseUpdateData in update_sets.query_sets:
 		_local_db.apply_database_update(dataset)
@@ -1031,6 +1072,7 @@ func _handle_transaction_update(update_sets: TransactionUpdateMessage) -> void:
 
 
 func _on_connection_disconnected() -> void:
+	_response_wait_aborted.emit()
 	if _intentional_disconnect:
 		_intentional_disconnect = false
 		disconnected.emit()
@@ -1044,6 +1086,7 @@ func _on_connection_disconnected() -> void:
 
 
 func _on_connection_error(code: int, reason: String) -> void:
+	_response_wait_aborted.emit()
 	if _intentional_disconnect:
 		_intentional_disconnect = false
 		connection_error.emit(code, reason)
@@ -1157,6 +1200,10 @@ func _prepare_for_reconnect() -> void:
 			handle.outcome = SpacetimeDBReducerCall.Outcome.DISCONNECTED
 			handle.error_message = "Connection lost during reducer call"
 	_pending_reducer_calls.clear()
+
+	# Cleared so a post-reconnect request_id (counter resets to 0 below) can't read a
+	# stale pre-disconnect one-off result out of the cache.
+	_one_off_query_cache.clear()
 
 	_procedure_result_cache.clear()
 	for handle: SpacetimeDBProcedureCall in _pending_procedure_calls.values():

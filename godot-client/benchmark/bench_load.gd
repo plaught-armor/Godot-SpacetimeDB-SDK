@@ -3,7 +3,7 @@
 # high-volume entity-update stream — the workload the drain/parse optimizations
 # target. Run in the background while bench_measure.gd records.
 #
-#   <godot> --headless --path . --script res://bench_load.gd
+#   <godot> --headless --path . --script res://benchmark/bench_load.gd
 extends SceneTree
 
 const RUN_FRAMES: int = 60 * 90 # ~90s ceiling

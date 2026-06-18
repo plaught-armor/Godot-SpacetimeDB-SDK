@@ -76,6 +76,9 @@ func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
 
 	_websocket.inbound_buffer_size = options.inbound_buffer_size
 	_websocket.outbound_buffer_size = options.outbound_buffer_size
+	# Keepalive: peer pings every interval and closes (code -1) if a pong is missed,
+	# surfacing a dead socket as STATE_CLOSED so the reconnect path can fire.
+	_websocket.heartbeat_interval = options.heartbeat_interval_seconds
 	set_compression_preference(options.compression)
 	self._debug_mode = options.debug_mode
 	set_physics_process(false) # Don't process until connect is called
