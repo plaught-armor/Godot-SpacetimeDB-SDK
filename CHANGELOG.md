@@ -2,6 +2,39 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [1.8.0] - 2026-06-18
+
+Test-gate and codegen-coverage release. No runtime SDK behavior change — this
+release adds the infrastructure to keep the SDK from regressing: a local test
+runner, a pre-push gate, and golden-file coverage that locks the exact text
+codegen emits.
+
+### Added
+- **Local test runner** (`godot-client/run_tests.sh`). Runs every `test_*.gd`
+  headless, one Godot process per test (each `extends SceneTree` and exits with
+  its failure count, so the runner's exit code is the signal). Takes a single
+  test name, honors `GODOT_BIN` and `VERBOSE`, and builds the import cache on
+  first run. Exits `0` on all-green, `1` on any failure.
+- **Pre-push hook** (`.githooks/pre-push`). Runs the suite and blocks the push
+  on failure. Committed but inert until enabled with
+  `git config core.hooksPath .githooks`; override a run with `git push --no-verify`.
+- **Codegen golden tests** (`test_codegen_golden.gd`). Parses the captured v10
+  schema fixtures, runs the generator, and diffs every emitted file against a
+  committed golden (49 files across three modules — types, tables, unique
+  indexes, scheduled and event tables, wide ints, `Uuid`, `Result` and sum
+  types). Catches both changed output and dropped files; regenerate
+  intentionally with `STDB_REGEN_GOLDEN=1`. Codegen *behavior* was already
+  covered by roundtrip tests; the generated *source text* was not.
+- **`CONTRIBUTING.md`** documenting the test, pre-push, and golden-regen workflow.
+
+### Docs
+- The `TimeDuration` / `Timestamp` "surfaced as `int` microseconds" caveat is
+  reframed as a deliberate data-oriented choice rather than a missing feature:
+  both are an `i64` micro count on the wire, and wrapping either in a per-value
+  `Resource` would add heap churn on the hot path to encode a distinction that
+  is a transform concern, not a data-shape one. `ScheduleAt` still models the
+  one case where the variant tag is real wire data.
+
 ## [1.7.0] - 2026-06-18
 
 Inbound-parse performance pass. The BSATN deserializer's per-row hot path is

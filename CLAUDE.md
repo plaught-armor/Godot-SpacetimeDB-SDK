@@ -16,3 +16,4 @@ GDScript SDK for SpacetimeDB. Godot 4.7 + SpacetimeDB 2.6.0 (requires 2.1.0+ for
 - Run `gdscript-formatter` on changed `.gd` files, then verify.
 - Run `validate_script` after editing `.gd` files.
 - For review, invoke the `gdscript-reviewer` subagent.
+- Run the test suite with `godot-client/run_tests.sh` (headless, one process per `test_*.gd`, exit code = fail count). After a deliberate codegen change, regenerate goldens with `STDB_REGEN_GOLDEN=1 .../run_tests.sh` … `test_codegen_golden` and review the diff. See `CONTRIBUTING.md`.

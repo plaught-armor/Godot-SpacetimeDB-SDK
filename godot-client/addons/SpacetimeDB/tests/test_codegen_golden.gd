@@ -23,7 +23,10 @@
 extends SceneTree
 
 const FIXTURES: Array[String] = ["vtypes", "vsum", "vtypes2"]
-const FIXTURE_DIR: String = "res://spacetime_bindings/codegen_debug"
+# Committed test inputs. NOT spacetime_bindings/codegen_debug/ — that dir is
+# gitignored (transient codegen dumps), so fixtures there are absent on a clean
+# clone. These live with the test and codegen never writes here.
+const FIXTURE_DIR: String = "res://addons/SpacetimeDB/tests/fixtures"
 const GOLDEN_DIR: String = "res://addons/SpacetimeDB/tests/golden"
 const TMP_ROOT: String = "user://golden_gen"
 
@@ -52,14 +55,14 @@ func _initialize() -> void:
 
 
 func _run_module(module: String, regen: bool) -> void:
-	var fixture_path: String = "%s/unparsed_schema_%s.json" % [FIXTURE_DIR, module]
+	var fixture_path: String = "%s/%s.json" % [FIXTURE_DIR, module]
 	if not FileAccess.file_exists(fixture_path):
 		_fail("%s: fixture missing (%s)" % [module, fixture_path])
 		return
 
 	var txt: String = FileAccess.get_file_as_string(fixture_path)
 	var json: Variant = JSON.parse_string(txt)
-	if not json is Dictionary:
+	if not (json is Dictionary):
 		_fail("%s: fixture is not a JSON object" % module)
 		return
 
@@ -81,8 +84,13 @@ func _run_module(module: String, regen: bool) -> void:
 		_fail("%s: generator produced no files" % module)
 		return
 
+	var generated_rels: Dictionary[String, bool] = { }
 	for p: String in paths:
+		if not p.begins_with("%s/" % tmp):
+			_fail("%s: generated path outside temp dir: %s" % [module, p])
+			continue
 		var rel: String = p.substr(tmp.length() + 1) # strip "user://golden_gen/<module>/"
+		generated_rels[rel] = true
 		var got: String = FileAccess.get_file_as_string(p)
 		var golden_path: String = "%s/%s/%s" % [GOLDEN_DIR, module, rel]
 		if regen:
@@ -90,6 +98,11 @@ func _run_module(module: String, regen: bool) -> void:
 			_write(golden_path, got)
 			continue
 		_compare(module, rel, golden_path, got)
+
+	# A golden with no matching generated file means codegen dropped it (the loop
+	# above only sees generated files, so a dropped file would otherwise PASS).
+	if not regen:
+		_check_orphans(module, generated_rels)
 
 
 func _compare(module: String, rel: String, golden_path: String, got: String) -> void:
@@ -106,6 +119,37 @@ func _compare(module: String, rel: String, golden_path: String, got: String) -> 
 	_fails += 1
 	printerr("FAIL  %s — output differs from golden" % label)
 	_print_first_diff(got, want)
+
+
+func _check_orphans(module: String, generated_rels: Dictionary[String, bool]) -> void:
+	var module_golden_dir: String = "%s/%s" % [GOLDEN_DIR, module]
+	var golden_rels: PackedStringArray = _list_gd_rel(module_golden_dir, "", 0)
+	for rel: String in golden_rels:
+		if not generated_rels.has(rel):
+			_total += 1
+			_fails += 1
+			printerr("FAIL  %s/%s — golden has no generated counterpart (codegen dropped it, or stale golden)" % [module, rel])
+
+
+## Collects `.gd` file paths under [param base], relative to it. Depth-bounded (NASA rule 2).
+func _list_gd_rel(base: String, prefix: String, depth: int) -> PackedStringArray:
+	var out: PackedStringArray = []
+	if depth > 8:
+		return out
+	var d: DirAccess = DirAccess.open(base)
+	if d == null:
+		return out
+	d.list_dir_begin()
+	var entry: String = d.get_next()
+	while entry != "":
+		var rel: String = entry if prefix.is_empty() else "%s/%s" % [prefix, entry]
+		if d.current_is_dir():
+			out.append_array(_list_gd_rel("%s/%s" % [base, entry], rel, depth + 1))
+		elif entry.ends_with(".gd"):
+			out.append(rel)
+		entry = d.get_next()
+	d.list_dir_end()
+	return out
 
 
 func _print_first_diff(got: String, want: String) -> void:
@@ -138,19 +182,21 @@ func _reset_dir(path: String) -> void:
 	DirAccess.make_dir_recursive_absolute(path)
 
 
-func _rm_rf(path: String) -> void:
+func _rm_rf(path: String, depth: int = 0) -> void:
+	if depth > 8:
+		return
 	var d: DirAccess = DirAccess.open(path)
 	if d == null:
 		return
 	d.list_dir_begin()
-	var name: String = d.get_next()
-	while name != "":
-		var child: String = "%s/%s" % [path, name]
+	var entry: String = d.get_next()
+	while entry != "":
+		var child: String = "%s/%s" % [path, entry]
 		if d.current_is_dir():
-			_rm_rf(child)
+			_rm_rf(child, depth + 1)
 		else:
 			d.remove(child)
-		name = d.get_next()
+		entry = d.get_next()
 	d.list_dir_end()
 	DirAccess.remove_absolute(path)
 

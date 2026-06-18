@@ -1,0 +1,645 @@
+{
+	"sections": [
+		{
+			"Typespace": {
+				"types": [
+					{
+						"Product": {
+							"elements": [
+								{
+									"name": {
+										"some": "scheduled_id"
+									},
+									"algebraic_type": {
+										"U64": []
+									}
+								},
+								{
+									"name": {
+										"some": "scheduled_at"
+									},
+									"algebraic_type": {
+										"Sum": {
+											"variants": [
+												{
+													"name": {
+														"some": "Interval"
+													},
+													"algebraic_type": {
+														"Product": {
+															"elements": [
+																{
+																	"name": {
+																		"some": "__time_duration_micros__"
+																	},
+																	"algebraic_type": {
+																		"I64": []
+																	}
+																}
+															]
+														}
+													}
+												},
+												{
+													"name": {
+														"some": "Time"
+													},
+													"algebraic_type": {
+														"Product": {
+															"elements": [
+																{
+																	"name": {
+																		"some": "__timestamp_micros_since_unix_epoch__"
+																	},
+																	"algebraic_type": {
+																		"I64": []
+																	}
+																}
+															]
+														}
+													}
+												}
+											]
+										}
+									}
+								}
+							]
+						}
+					},
+					{
+						"Product": {
+							"elements": [
+								{
+									"name": {
+										"some": "n"
+									},
+									"algebraic_type": {
+										"I128": []
+									}
+								}
+							]
+						}
+					},
+					{
+						"Product": {
+							"elements": [
+								{
+									"name": {
+										"some": "n"
+									},
+									"algebraic_type": {
+										"I256": []
+									}
+								}
+							]
+						}
+					},
+					{
+						"Product": {
+							"elements": [
+								{
+									"name": {
+										"some": "n"
+									},
+									"algebraic_type": {
+										"U128": []
+									}
+								}
+							]
+						}
+					},
+					{
+						"Product": {
+							"elements": [
+								{
+									"name": {
+										"some": "n"
+									},
+									"algebraic_type": {
+										"U256": []
+									}
+								}
+							]
+						}
+					},
+					{
+						"Product": {
+							"elements": [
+								{
+									"name": {
+										"some": "u"
+									},
+									"algebraic_type": {
+										"Product": {
+											"elements": [
+												{
+													"name": {
+														"some": "__uuid__"
+													},
+													"algebraic_type": {
+														"U128": []
+													}
+												}
+											]
+										}
+									}
+								}
+							]
+						}
+					}
+				]
+			}
+		},
+		{
+			"Types": [
+				{
+					"source_name": {
+						"scope": [],
+						"source_name": "MySchedule"
+					},
+					"ty": 0.0,
+					"custom_ordering": true
+				},
+				{
+					"source_name": {
+						"scope": [],
+						"source_name": "OneI256"
+					},
+					"ty": 2.0,
+					"custom_ordering": true
+				},
+				{
+					"source_name": {
+						"scope": [],
+						"source_name": "OneUuid"
+					},
+					"ty": 5.0,
+					"custom_ordering": true
+				},
+				{
+					"source_name": {
+						"scope": [],
+						"source_name": "OneU128"
+					},
+					"ty": 3.0,
+					"custom_ordering": true
+				},
+				{
+					"source_name": {
+						"scope": [],
+						"source_name": "OneU256"
+					},
+					"ty": 4.0,
+					"custom_ordering": true
+				},
+				{
+					"source_name": {
+						"scope": [],
+						"source_name": "OneI128"
+					},
+					"ty": 1.0,
+					"custom_ordering": true
+				}
+			]
+		},
+		{
+			"Tables": [
+				{
+					"source_name": "my_schedule",
+					"product_type_ref": 0.0,
+					"primary_key": [
+						0.0
+					],
+					"indexes": [
+						{
+							"source_name": {
+								"some": "my_schedule_scheduled_id_idx_btree"
+							},
+							"accessor_name": {
+								"some": "scheduled_id"
+							},
+							"algorithm": {
+								"BTree": [
+									0.0
+								]
+							}
+						}
+					],
+					"constraints": [
+						{
+							"source_name": {
+								"some": "my_schedule_scheduled_id_key"
+							},
+							"data": {
+								"Unique": {
+									"columns": [
+										0.0
+									]
+								}
+							}
+						}
+					],
+					"sequences": [
+						{
+							"source_name": {
+								"some": "my_schedule_scheduled_id_seq"
+							},
+							"column": 0.0,
+							"start": {
+								"none": []
+							},
+							"min_value": {
+								"none": []
+							},
+							"max_value": {
+								"none": []
+							},
+							"increment": 1.0
+						}
+					],
+					"table_type": {
+						"User": []
+					},
+					"table_access": {
+						"Public": []
+					},
+					"default_values": [],
+					"is_event": false
+				},
+				{
+					"source_name": "one_i128",
+					"product_type_ref": 1.0,
+					"primary_key": [],
+					"indexes": [],
+					"constraints": [],
+					"sequences": [],
+					"table_type": {
+						"User": []
+					},
+					"table_access": {
+						"Public": []
+					},
+					"default_values": [],
+					"is_event": false
+				},
+				{
+					"source_name": "one_i256",
+					"product_type_ref": 2.0,
+					"primary_key": [],
+					"indexes": [],
+					"constraints": [],
+					"sequences": [],
+					"table_type": {
+						"User": []
+					},
+					"table_access": {
+						"Public": []
+					},
+					"default_values": [],
+					"is_event": false
+				},
+				{
+					"source_name": "one_u128",
+					"product_type_ref": 3.0,
+					"primary_key": [],
+					"indexes": [],
+					"constraints": [],
+					"sequences": [],
+					"table_type": {
+						"User": []
+					},
+					"table_access": {
+						"Public": []
+					},
+					"default_values": [],
+					"is_event": false
+				},
+				{
+					"source_name": "one_uuid",
+					"product_type_ref": 5.0,
+					"primary_key": [],
+					"indexes": [],
+					"constraints": [],
+					"sequences": [],
+					"table_type": {
+						"User": []
+					},
+					"table_access": {
+						"Public": []
+					},
+					"default_values": [],
+					"is_event": false
+				},
+				{
+					"source_name": "one_u256",
+					"product_type_ref": 4.0,
+					"primary_key": [],
+					"indexes": [],
+					"constraints": [],
+					"sequences": [],
+					"table_type": {
+						"User": []
+					},
+					"table_access": {
+						"Public": []
+					},
+					"default_values": [],
+					"is_event": false
+				}
+			]
+		},
+		{
+			"Reducers": [
+				{
+					"source_name": "add_schedule",
+					"params": {
+						"elements": [
+							{
+								"name": {
+									"some": "micros"
+								},
+								"algebraic_type": {
+									"I64": []
+								}
+							}
+						]
+					},
+					"visibility": {
+						"ClientCallable": []
+					},
+					"ok_return_type": {
+						"Product": {
+							"elements": []
+						}
+					},
+					"err_return_type": {
+						"String": []
+					}
+				},
+				{
+					"source_name": "insert_one_i128",
+					"params": {
+						"elements": [
+							{
+								"name": {
+									"some": "n"
+								},
+								"algebraic_type": {
+									"I128": []
+								}
+							}
+						]
+					},
+					"visibility": {
+						"ClientCallable": []
+					},
+					"ok_return_type": {
+						"Product": {
+							"elements": []
+						}
+					},
+					"err_return_type": {
+						"String": []
+					}
+				},
+				{
+					"source_name": "insert_one_i256",
+					"params": {
+						"elements": [
+							{
+								"name": {
+									"some": "n"
+								},
+								"algebraic_type": {
+									"I256": []
+								}
+							}
+						]
+					},
+					"visibility": {
+						"ClientCallable": []
+					},
+					"ok_return_type": {
+						"Product": {
+							"elements": []
+						}
+					},
+					"err_return_type": {
+						"String": []
+					}
+				},
+				{
+					"source_name": "insert_one_u128",
+					"params": {
+						"elements": [
+							{
+								"name": {
+									"some": "n"
+								},
+								"algebraic_type": {
+									"U128": []
+								}
+							}
+						]
+					},
+					"visibility": {
+						"ClientCallable": []
+					},
+					"ok_return_type": {
+						"Product": {
+							"elements": []
+						}
+					},
+					"err_return_type": {
+						"String": []
+					}
+				},
+				{
+					"source_name": "insert_one_u256",
+					"params": {
+						"elements": [
+							{
+								"name": {
+									"some": "n"
+								},
+								"algebraic_type": {
+									"U256": []
+								}
+							}
+						]
+					},
+					"visibility": {
+						"ClientCallable": []
+					},
+					"ok_return_type": {
+						"Product": {
+							"elements": []
+						}
+					},
+					"err_return_type": {
+						"String": []
+					}
+				},
+				{
+					"source_name": "insert_one_uuid",
+					"params": {
+						"elements": [
+							{
+								"name": {
+									"some": "u"
+								},
+								"algebraic_type": {
+									"Product": {
+										"elements": [
+											{
+												"name": {
+													"some": "__uuid__"
+												},
+												"algebraic_type": {
+													"U128": []
+												}
+											}
+										]
+									}
+								}
+							}
+						]
+					},
+					"visibility": {
+						"ClientCallable": []
+					},
+					"ok_return_type": {
+						"Product": {
+							"elements": []
+						}
+					},
+					"err_return_type": {
+						"String": []
+					}
+				},
+				{
+					"source_name": "on_schedule",
+					"params": {
+						"elements": [
+							{
+								"name": {
+									"some": "_arg"
+								},
+								"algebraic_type": {
+									"Ref": 0.0
+								}
+							}
+						]
+					},
+					"visibility": {
+						"Private": []
+					},
+					"ok_return_type": {
+						"Product": {
+							"elements": []
+						}
+					},
+					"err_return_type": {
+						"String": []
+					}
+				}
+			]
+		},
+		{
+			"Schedules": [
+				{
+					"source_name": {
+						"some": "my_schedule_sched"
+					},
+					"table_name": "my_schedule",
+					"schedule_at_col": 1.0,
+					"function_name": "on_schedule"
+				}
+			]
+		},
+		{
+			"ExplicitNames": {
+				"entries": [
+					{
+						"Table": {
+							"source_name": "my_schedule",
+							"canonical_name": "my_schedule"
+						}
+					},
+					{
+						"Table": {
+							"source_name": "one_i128",
+							"canonical_name": "one_i_128"
+						}
+					},
+					{
+						"Table": {
+							"source_name": "one_i256",
+							"canonical_name": "one_i_256"
+						}
+					},
+					{
+						"Table": {
+							"source_name": "one_u128",
+							"canonical_name": "one_u_128"
+						}
+					},
+					{
+						"Table": {
+							"source_name": "one_uuid",
+							"canonical_name": "one_uuid"
+						}
+					},
+					{
+						"Table": {
+							"source_name": "one_u256",
+							"canonical_name": "one_u_256"
+						}
+					},
+					{
+						"Function": {
+							"source_name": "add_schedule",
+							"canonical_name": "add_schedule"
+						}
+					},
+					{
+						"Function": {
+							"source_name": "insert_one_i128",
+							"canonical_name": "insert_one_i_128"
+						}
+					},
+					{
+						"Function": {
+							"source_name": "insert_one_i256",
+							"canonical_name": "insert_one_i_256"
+						}
+					},
+					{
+						"Function": {
+							"source_name": "insert_one_u128",
+							"canonical_name": "insert_one_u_128"
+						}
+					},
+					{
+						"Function": {
+							"source_name": "insert_one_u256",
+							"canonical_name": "insert_one_u_256"
+						}
+					},
+					{
+						"Function": {
+							"source_name": "insert_one_uuid",
+							"canonical_name": "insert_one_uuid"
+						}
+					},
+					{
+						"Function": {
+							"source_name": "on_schedule",
+							"canonical_name": "on_schedule"
+						}
+					}
+				]
+			}
+		}
+	]
+}

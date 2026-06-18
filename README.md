@@ -57,11 +57,13 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 
 ## Known Limitations & Caveats
 
--   **`TimeDuration` is surfaced as `int` microseconds,** not a distinct type. The wire value is correct; only the semantic distinction from `Timestamp` is absent.
+-   **`TimeDuration` and `Timestamp` surface as `int` microseconds — by design.** Both are an `i64` micro count on the wire, and both come through as a plain `int` (a `Timestamp` is micros since the unix epoch, a `TimeDuration` is an elapsed span). Wrapping either in a distinct `Resource` would allocate one object per value — per row, per reducer result — to encode a distinction that is a *transform* concern (how you format or compare the number), not a *data-shape* one (the bytes are already correct). That is a net-negative trade: heap churn on the hot path for zero wire benefit. Convert at the call site if you want a typed view; the SDK keeps the data POD. (The one place the variant actually matters on the wire — a `#[scheduled]` table's `Interval` vs `Time` — *is* modeled, by `ScheduleAt`, because there the tag is real data, not a label.)
 -   **WebSocket keepalive default is 15s:** a main-thread stall longer than the configured `heartbeat_interval_seconds` can trip a false dead-socket detection and reconnect. Tune it, or set it to `0` to disable, via `SpacetimeDBConnectionOptions`.
 -   **Deferred schema-v10 details:** the schema parser does not surface column `default_values` or module namespaces — neither has a functional consumer yet (`default_values` is verified harmless: `auto_inc` tables deserialize fine; namespaces are unused). Implemented when a module needs them. (Canonical/case naming via `ExplicitNames` and fallible-reducer return values + error messages *are* handled.)
 
 ## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the local workflow — running the test suite (`godot-client/run_tests.sh`), enabling the pre-push gate, and regenerating codegen golden files.
 
 Code of Conduct: Adhere to the Godot [Code of Conduct](https://godotengine.org/code-of-conduct/) and [GDScript style guide](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_styleguide.html). As a contributor, it is important to respect and follow these to maintain positive collaboration and clean code.
 
