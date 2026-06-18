@@ -63,6 +63,8 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 
 ## Contributing
 
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the local workflow — running the test suite (`godot-client/run_tests.sh`), enabling the pre-push gate, and regenerating codegen golden files.
+
 Code of Conduct: Adhere to the Godot [Code of Conduct](https://godotengine.org/code-of-conduct/) and [GDScript style guide](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_styleguide.html). As a contributor, it is important to respect and follow these to maintain positive collaboration and clean code.
 
 ## License
