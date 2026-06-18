@@ -1,4 +1,4 @@
-## Base class for all client-to-server messages in the SpacetimeDB v2 WS protocol.
+## Base class for all client-to-server messages in the SpacetimeDB BSATN WS protocol.
 ##
 ## Subclasses represent specific message types: [SubscribeMessage],
 ## [UnsubscribeMessage], [OneOffQueryMessage], [CallReducerMessage], and

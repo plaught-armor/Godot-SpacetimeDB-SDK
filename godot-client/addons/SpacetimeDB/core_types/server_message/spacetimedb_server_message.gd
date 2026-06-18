@@ -1,4 +1,4 @@
-## Base class for all server-to-client messages in the SpacetimeDB v2 WS protocol.
+## Base class for all server-to-client messages in the SpacetimeDB BSATN WS protocol.
 ##
 ## Each message type corresponds to a variant tag on the wire ([member Type]).
 ## The SDK's message parser reads the tag byte, then delegates to the matching
@@ -9,7 +9,7 @@
 class_name SpacetimeDBServerMessage
 extends SpacetimeDBMessage
 
-## v2 server message type tags (wire values must match protocol exactly).
+## Server message type tags (wire values must match protocol exactly).
 enum Type {
 	INITIAL_CONNECTION = 0x00,
 	SUBSCRIBE_APPLIED = 0x01,

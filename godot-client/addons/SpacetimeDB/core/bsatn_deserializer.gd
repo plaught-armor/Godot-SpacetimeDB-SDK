@@ -285,7 +285,7 @@ func read_vec_u8(spb: StreamPeerBuffer) -> PackedByteArray:
 
 
 #--- BsatnRowList Reader ---
-## Reads the v2 BsatnRowList structure (size hint, per-row offsets, data length)
+## Reads the BsatnRowList structure (size hint, per-row offsets, data length)
 ## and leaves [param spb] positioned at the start of the row data block. Both row
 ## encodings are normalized to a header so callers can either slice rows out or
 ## parse them in place: returns [code]{offsets, count, data_len}[/code] where
@@ -347,7 +347,7 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 	return { }
 
 
-## Reads a v2 BsatnRowList into raw byte slices, one per row. Prefer
+## Reads a BsatnRowList into raw byte slices, one per row. Prefer
 ## [method _read_bsatn_row_list_as_resources] on the hot path — it parses rows in
 ## place without these per-row copies; this stays for callers that only skip past
 ## a row list (unknown schema).
@@ -1086,7 +1086,7 @@ func _populate_enum_from_bytes(spb: StreamPeerBuffer, resource: Object, script: 
 
 
 #--- Specific Message/Structure Readers ---
-## v2: Reads a BsatnRowList and deserializes each row into a Resource array,
+## wire:Reads a BsatnRowList and deserializes each row into a Resource array,
 ## parsing each row in place directly from [param spb] — no per-row byte copy and
 ## no intermediate slice array. [param spb] is left positioned at the end of the
 ## row data block (so the caller resumes correctly even if a row under/over-read).
@@ -1157,7 +1157,7 @@ func _read_bsatn_row_list_as_resources(
 	return result
 
 
-## v2: TableUpdate { table_name: RawIdentifier (string), rows: Array[TableUpdateRows] }
+## wire:TableUpdate { table_name: RawIdentifier (string), rows: Array[TableUpdateRows] }
 ## TableUpdateRows tag: 0=PersistentTable{inserts,deletes}, 1=EventTable{events}
 func _read_table_update_instance(spb: StreamPeerBuffer, resource: TableUpdateData) -> bool:
 	resource.table_name = read_string_with_u32_len(spb)
@@ -1222,7 +1222,7 @@ func _read_table_update_instance(spb: StreamPeerBuffer, resource: TableUpdateDat
 	return true
 
 
-## v2: SubscribeApplied { request_id: u32, query_set_id: QuerySetId{id:u32}, rows: QueryRows }
+## wire:SubscribeApplied { request_id: u32, query_set_id: QuerySetId{id:u32}, rows: QueryRows }
 ## QueryRows { tables: Array[SingleTableRows{table:string, rows:BsatnRowList}] }
 func _read_subscripton_applied_message(spb: StreamPeerBuffer) -> SubscribeAppliedMessage:
 	var resource: SubscribeAppliedMessage = SubscribeAppliedMessage.new()
@@ -1268,7 +1268,7 @@ func _read_subscripton_applied_message(spb: StreamPeerBuffer) -> SubscribeApplie
 	return resource
 
 
-## v2: TransactionUpdate { query_sets: Array[QuerySetUpdate{query_set_id, tables}] }
+## wire:TransactionUpdate { query_sets: Array[QuerySetUpdate{query_set_id, tables}] }
 func _read_transaction_update_message(spb: StreamPeerBuffer) -> TransactionUpdateMessage:
 	var tx_update: TransactionUpdateMessage = TransactionUpdateMessage.new()
 
@@ -1303,7 +1303,7 @@ func _read_transaction_update_message(spb: StreamPeerBuffer) -> TransactionUpdat
 	return tx_update
 
 
-## v2: UnsubscribeApplied { request_id: u32, query_set_id: QuerySetId, rows: Option<QueryRows> }
+## wire:UnsubscribeApplied { request_id: u32, query_set_id: QuerySetId, rows: Option<QueryRows> }
 ## Option<QueryRows>: tag 0 = Some(QueryRows), 1 = None
 ## Dropped rows are placed in TableUpdateData.deletes so LocalDatabase decrements
 ## the refcount and removes only rows no longer held by any remaining subscription.
@@ -1353,7 +1353,7 @@ func _read_unsubscribe_applied_message(spb: StreamPeerBuffer) -> UnsubscribeAppl
 	return resource
 
 
-## v2: SubscriptionError { request_id: Option<u32>, query_set_id: QuerySetId, error: string }
+## wire:SubscriptionError { request_id: Option<u32>, query_set_id: QuerySetId, error: string }
 func _read_subscription_error_message(spb: StreamPeerBuffer) -> SubscriptionErrorMessage:
 	var resource: SubscriptionErrorMessage = SubscriptionErrorMessage.new()
 
@@ -1382,7 +1382,7 @@ func _read_subscription_error_message(spb: StreamPeerBuffer) -> SubscriptionErro
 	return resource
 
 
-## v2: OneOffQueryResult { request_id: u32, result: Result<QueryRows, string> }
+## wire:OneOffQueryResult { request_id: u32, result: Result<QueryRows, string> }
 ## Result: tag 0 = Ok(QueryRows{tables: Array[SingleTableRows]}), tag 1 = Err(string)
 func _read_one_off_query_result_message(spb: StreamPeerBuffer) -> OneOffQueryResponseMessage:
 	var resource: OneOffQueryResponseMessage = OneOffQueryResponseMessage.new()
@@ -1432,7 +1432,7 @@ func _read_one_off_query_result_message(spb: StreamPeerBuffer) -> OneOffQueryRes
 	return resource
 
 
-## v2: ReducerResult { request_id: u32, timestamp: Timestamp, result: ReducerOutcome }
+## wire:ReducerResult { request_id: u32, timestamp: Timestamp, result: ReducerOutcome }
 ## ReducerOutcome: 0=Ok(ReducerOk{ret_value,transaction_update}), 1=OkEmpty, 2=Err(bytes), 3=InternalError(string)
 func _read_reducer_result_message(spb: StreamPeerBuffer) -> ReducerResultMessage:
 	var resource: ReducerResultMessage = ReducerResultMessage.new()
@@ -1477,7 +1477,7 @@ func _read_reducer_result_message(spb: StreamPeerBuffer) -> ReducerResultMessage
 	return resource
 
 
-## v2: ProcedureResult { status: ProcedureStatus, timestamp: Timestamp, total_host_execution_duration: TimeDuration, request_id: u32 }
+## wire:ProcedureResult { status: ProcedureStatus, timestamp: Timestamp, total_host_execution_duration: TimeDuration, request_id: u32 }
 ## ProcedureStatus: 0=Returned(bytes), 1=InternalError(string)
 func _read_procedure_result_message(spb: StreamPeerBuffer) -> ProcedureResultData:
 	var resource: ProcedureResultData = ProcedureResultData.new()

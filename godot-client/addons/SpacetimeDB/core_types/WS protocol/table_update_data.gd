@@ -1,6 +1,6 @@
 ## Row-level changes for a single table within a [DatabaseUpdateData] batch.
 ##
-## Maps the v2 protocol's [code]TableUpdate[/code] structure into a flat
+## Maps the protocol's [code]TableUpdate[/code] structure into a flat
 ## inserts/deletes representation. The server sends either
 ## [code]PersistentTable(inserts, deletes)[/code] or [code]EventTable(events)[/code]
 ## the SDK's parser flattens both forms into [member inserts] and [member deletes].

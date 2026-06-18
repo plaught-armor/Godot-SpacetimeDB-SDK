@@ -2,6 +2,30 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [2.0.0] - 2026-06-18
+
+**Breaking.** The legacy WebSocket v2 sub-protocol is dropped; the client now
+advertises only v3. This raises the minimum server to **SpacetimeDB 2.2.0** (the
+first release that speaks v3). Connecting an SDK 2.0 client to a server below
+2.2.0 fails the handshake — stay on an SDK `1.x` release for those servers.
+
+### Changed
+- **WebSocket handshake advertises `[v3.bsatn.spacetimedb]` only.** Previously the
+  client offered `[v3, v2]` and let pre-2.2.0 servers negotiate v2. v3 reuses the
+  v2 message schema (a single frame may carry several concatenated BSATN messages,
+  which the receive path already drains), so this is a transport-advertise change
+  only — no message-format, deserializer, or codegen change.
+
+### Removed
+- The `BSATN_PROTOCOL` (`v2.bsatn.spacetimedb`) constant and the v2 entry in the
+  advertised sub-protocol list.
+
+### Migration
+- Server on 2.2.0+: no action — the client already preferred v3, so the negotiated
+  protocol is unchanged.
+- Server below 2.2.0: upgrade the server to 2.2.0+, or pin the SDK to the latest
+  `1.x` release.
+
 ## [1.9.0] - 2026-06-18
 
 Connection-robustness release. Hardens auto-reconnect against main-thread stalls
