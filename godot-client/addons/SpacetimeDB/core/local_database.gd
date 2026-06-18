@@ -381,9 +381,9 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 		for inserted_row: _ModuleTableType in table_update.inserts:
 			var ins_hash: int = _row_hash(inserted_row, props)
 			var ins_entry: Array = _pk_less_find(counts, ins_hash, inserted_row, props)
-			if not ins_entry.is_empty():
-				ins_entry[1] += 1 # already present (overlap / multiplicity) — bump silently
-			else:
+			if ins_entry.is_empty():
+				# Globally new value (0->1). It's therefore also new to this query's
+				# membership, so add directly — no membership find needed.
 				_pk_less_add(counts, ins_hash, inserted_row)
 				rows_array.append(inserted_row)
 				had_any_change = true
@@ -391,13 +391,17 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 					for listener: Callable in insert_listeners:
 						listener.call(inserted_row)
 				row_inserted.emit(table_name_lower, inserted_row)
-			# Record this query's delivery (multiplicity, so prune decrements its exact share).
-			if track_pkless_query:
-				var mem_ins: Array = _pk_less_find(pkless_qmem, ins_hash, inserted_row, props)
-				if mem_ins.is_empty():
+				if track_pkless_query:
 					_pk_less_add(pkless_qmem, ins_hash, inserted_row)
-				else:
-					mem_ins[1] += 1
+			else:
+				ins_entry[1] += 1 # already present (overlap / multiplicity) — bump silently
+				# Already present globally; this query may or may not hold it yet (overlap).
+				if track_pkless_query:
+					var mem_ins: Array = _pk_less_find(pkless_qmem, ins_hash, inserted_row, props)
+					if mem_ins.is_empty():
+						_pk_less_add(pkless_qmem, ins_hash, inserted_row)
+					else:
+						mem_ins[1] += 1
 
 		if not table_update.deletes.is_empty():
 			var evicted: Dictionary = { } # instance_id -> true, for a single-pass array compact
@@ -457,15 +461,16 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 	var track_query: bool = query_id >= 0
 	var qmem: Dictionary = _query_table_pk_mem(query_id, table_name_lower) if track_query else { }
 
-	# Pre-pass: pks deleted this update, so the insert pass can detect updates
-	# (delete+insert of the same pk). Empty for the common insert-only update.
+	# Update detection (delete+insert of the same pk) only matters when this update has
+	# BOTH inserts and deletes. Pure inserts (subscribe) and pure deletes (rows leaving)
+	# skip the pk-set build entirely. Null PKs are warned in the delete pass below.
+	var detect_updates: bool = not table_update.inserts.is_empty() and not table_update.deletes.is_empty()
 	var deleted_pks: Dictionary = { }
-	for deleted_row: _ModuleTableType in table_update.deletes:
-		var del_pk: Variant = deleted_row.get(pk_field)
-		if del_pk == null:
-			push_warning("LocalDatabase: Deleted row for table '", table_name_lower, "' has null PK '", pk_field, "'. Skipping.")
-			continue
-		deleted_pks[del_pk] = true
+	if detect_updates:
+		for deleted_row: _ModuleTableType in table_update.deletes:
+			var del_pk: Variant = deleted_row.get(pk_field)
+			if del_pk != null:
+				deleted_pks[del_pk] = true
 
 	for inserted_row: _ModuleTableType in table_update.inserts:
 		var pk_value: Variant = inserted_row.get(pk_field)
@@ -475,7 +480,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 		if track_query:
 			qmem[pk_value] = inserted_row
 		var old_ref: int = ref_table.get(pk_value, 0)
-		if deleted_pks.has(pk_value):
+		if detect_updates and deleted_pks.has(pk_value):
 			# Update: delete+insert of the same pk. Refcount unchanged; mark handled so
 			# the delete pass skips it. Fire on_update only when the value differs.
 			deleted_pks.erase(pk_value)
@@ -507,32 +512,37 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 						listener.call(prev_o, inserted_row)
 				row_updated.emit(table_name_lower, prev_o, inserted_row)
 
-	for deleted_row2: _ModuleTableType in table_update.deletes:
-		var pk_value: Variant = deleted_row2.get(pk_field)
-		# Skip null PKs and pks already consumed as updates (erased from deleted_pks).
-		if pk_value == null or not deleted_pks.has(pk_value):
-			continue
-		var old_ref: int = ref_table.get(pk_value, 0)
-		if old_ref <= 0:
-			continue
-		if track_query:
-			qmem.erase(pk_value)
-		if old_ref > 1:
-			ref_table[pk_value] = old_ref - 1
-			continue
-		ref_table.erase(pk_value)
-		var cached_row: _ModuleTableType = table_dict.get(pk_value)
-		if cached_row != null:
-			had_any_change = true
-			if has_before_delete_listeners:
-				for listener: Callable in before_delete_listeners:
-					listener.call(cached_row)
-			row_before_delete.emit(table_name_lower, cached_row)
-			table_dict.erase(pk_value)
-			if has_delete_listeners:
-				for listener: Callable in delete_listeners:
-					listener.call(cached_row)
-			row_deleted.emit(table_name_lower, cached_row)
+	# Delete pass: skip entirely when there are no deletes, or (when detecting updates)
+	# when every delete was consumed as an update above.
+	if not table_update.deletes.is_empty() and not (detect_updates and deleted_pks.is_empty()):
+		for deleted_row2: _ModuleTableType in table_update.deletes:
+			var pk_value: Variant = deleted_row2.get(pk_field)
+			if pk_value == null:
+				push_warning("LocalDatabase: Deleted row for table '", table_name_lower, "' has null PK '", pk_field, "'. Skipping.")
+				continue
+			if detect_updates and not deleted_pks.has(pk_value):
+				continue # consumed as an update above
+			var old_ref: int = ref_table.get(pk_value, 0)
+			if old_ref <= 0:
+				continue
+			if track_query:
+				qmem.erase(pk_value)
+			if old_ref > 1:
+				ref_table[pk_value] = old_ref - 1
+				continue
+			ref_table.erase(pk_value)
+			var cached_row: _ModuleTableType = table_dict.get(pk_value)
+			if cached_row != null:
+				had_any_change = true
+				if has_before_delete_listeners:
+					for listener: Callable in before_delete_listeners:
+						listener.call(cached_row)
+				row_before_delete.emit(table_name_lower, cached_row)
+				table_dict.erase(pk_value)
+				if has_delete_listeners:
+					for listener: Callable in delete_listeners:
+						listener.call(cached_row)
+				row_deleted.emit(table_name_lower, cached_row)
 
 	if had_any_change:
 		for listener: Callable in tx_listeners:
