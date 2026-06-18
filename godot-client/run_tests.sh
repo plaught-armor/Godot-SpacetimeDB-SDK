@@ -16,7 +16,7 @@ set -u
 
 GODOT_BIN="${GODOT_BIN:-/mnt/based_backup/Repos/godot/bin/godot.linuxbsd.editor.x86_64}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-TESTS_DIR="addons/SpacetimeDB/tests"
+TESTS_DIR="tests"
 
 if [ ! -x "$GODOT_BIN" ]; then
 	echo "error: GODOT_BIN not executable: $GODOT_BIN" >&2
