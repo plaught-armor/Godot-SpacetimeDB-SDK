@@ -13,6 +13,11 @@ signal connected
 signal disconnected
 ## Emitted on abnormal close or connection failure.
 signal connection_error(code: int, reason: String)
+## Emitted when an abnormal close (code -1) lands right after a main-thread stall
+## long enough for the engine heartbeat to have falsely declared the socket dead.
+## The close is real (the engine already closed the peer), but its cause is local,
+## so the client can reconnect immediately instead of treating it as a network drop.
+signal connection_stalled(code: int)
 ## Emitted for each raw BSATN packet received from the server.
 signal message_received(data: PackedByteArray)
 ## Emitted after every send/receive with cumulative totals.
@@ -60,6 +65,17 @@ var _second_messages_sent: int = 0
 var _total_messages_received: int = 0
 var _second_messages_received: int = 0
 
+## How many polls a stall keeps the abnormal-close guard armed. The engine may
+## close on the same poll the stall is observed or the next, so cover both.
+const STALL_GUARD_POLLS: int = 2
+## Wall-clock ms of the previous poll (Time.get_ticks_msec). 0 = no prior poll.
+var _last_poll_ms: int = 0
+## Poll gap (ms) at or above which a stall could have tripped the engine heartbeat.
+## Set from heartbeat_interval at connect; 0 disables stall detection (heartbeat off).
+var _stall_threshold_ms: int = 0
+## Polls remaining in the post-stall guard window; >0 means a stall was just seen.
+var _post_stall_polls: int = 0
+
 
 func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
 	_options = options
@@ -79,12 +95,14 @@ func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
 	# Keepalive: peer pings every interval and closes (code -1) if a pong is missed,
 	# surfacing a dead socket as STATE_CLOSED so the reconnect path can fire.
 	_websocket.heartbeat_interval = options.heartbeat_interval_seconds
+	_stall_threshold_ms = int(options.heartbeat_interval_seconds * 1000.0)
 	set_compression_preference(options.compression)
 	self._debug_mode = options.debug_mode
 	set_physics_process(false) # Don't process until connect is called
 
 
 func _physics_process(_delta: float) -> void:
+	_track_stall()
 	_websocket.poll()
 	var state: WebSocketPeer.State = _websocket.get_ready_state()
 
@@ -122,14 +140,40 @@ func _physics_process(_delta: float) -> void:
 		var reason: String = _websocket.get_close_reason()
 		if _is_connected or _connection_requested: # Only report if we were connected or trying
 			if code == -1: # Abnormal closure
-				printerr("SpacetimeDBConnection: connection_error ", code, " Abnormal closure with reason:")
-				connection_error.emit(code, "Abnormal closure")
+				if _post_stall_polls > 0: # heartbeat tripped by a local stall, not a network drop
+					push_warning("SpacetimeDBConnection: abnormal close right after a main-thread stall — stall-induced, fast reconnect")
+					_post_stall_polls = 0
+					connection_stalled.emit(code)
+				else:
+					printerr("SpacetimeDBConnection: connection_error ", code, " Abnormal closure with reason:")
+					connection_error.emit(code, "Abnormal closure")
 			else:
 				_print_log("SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)" % [code, reason])
 				disconnected.emit() # Normal closure signal
 		_is_connected = false
 		_connection_requested = false
 		set_physics_process(false) # Stop polling
+
+
+## Updates the post-stall guard window. A poll gap at or beyond the heartbeat
+## window means the main thread was frozen long enough for the engine to falsely
+## close the socket on a missed pong; arm the guard so the next abnormal close is
+## classified as stall-induced rather than a network drop.
+func _track_stall() -> void:
+	var now_ms: int = Time.get_ticks_msec()
+	var gap_ms: int = (now_ms - _last_poll_ms) if _last_poll_ms > 0 else 0
+	_last_poll_ms = now_ms
+	if is_stall_gap(gap_ms, _stall_threshold_ms):
+		_post_stall_polls = STALL_GUARD_POLLS
+	elif _post_stall_polls > 0:
+		_post_stall_polls -= 1
+
+
+## True when the wall-clock gap between two polls is large enough that the engine
+## heartbeat could have falsely declared the socket dead. threshold_ms == 0
+## (heartbeat disabled) → never a stall.
+static func is_stall_gap(gap_ms: int, threshold_ms: int) -> bool:
+	return threshold_ms > 0 and gap_ms >= threshold_ms
 
 
 func _notification(what: int) -> void:
@@ -290,6 +334,8 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 	else:
 		_print_log("SpacetimeDBConnection: Connection initiated.")
 		_connection_requested = true
+		_last_poll_ms = 0 # fresh poll clock — first poll sets the baseline, no false stall
+		_post_stall_polls = 0
 		set_physics_process(true)
 
 
