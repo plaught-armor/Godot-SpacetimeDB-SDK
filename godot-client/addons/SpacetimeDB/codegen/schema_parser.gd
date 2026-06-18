@@ -655,29 +655,28 @@ static func _validate_gd_native(type_name: String, type_data: Dictionary) -> boo
 	if type_data.has("gd_arraylike"):
 		var expected_struct_size = 0
 		var expected_primitive_type = "float"
-		match type_name:
-			"Vector4":
-				expected_struct_size = 4
-			"Vector4I":
-				expected_struct_size = 4
-				expected_primitive_type = "int"
-			"Vector3":
-				expected_struct_size = 3
-			"Vector3I":
-				expected_struct_size = 3
-				expected_primitive_type = "int"
-			"Vector2":
-				expected_struct_size = 2
-			"Vector2I":
-				expected_struct_size = 2
-				expected_primitive_type = "int"
-			"Quaternion":
-				expected_struct_size = 4
-			"Color":
-				expected_struct_size = 4
-			_:
-				SpacetimePlugin.print_err("Unsupported array-like GD native type: %s" % [type_name])
-				return false
+		if type_name == "Vector4":
+			expected_struct_size = 4
+		elif type_name == "Vector4I":
+			expected_struct_size = 4
+			expected_primitive_type = "int"
+		elif type_name == "Vector3":
+			expected_struct_size = 3
+		elif type_name == "Vector3I":
+			expected_struct_size = 3
+			expected_primitive_type = "int"
+		elif type_name == "Vector2":
+			expected_struct_size = 2
+		elif type_name == "Vector2I":
+			expected_struct_size = 2
+			expected_primitive_type = "int"
+		elif type_name == "Quaternion":
+			expected_struct_size = 4
+		elif type_name == "Color":
+			expected_struct_size = 4
+		else:
+			SpacetimePlugin.print_err("Unsupported array-like GD native type: %s" % [type_name])
+			return false
 
 		if type_data.struct.size() != expected_struct_size:
 			SpacetimePlugin.print_err("Array-like GD native type '%s' expected length of %d but is %d" % [type_name, expected_struct_size, type_data.struct.size()])

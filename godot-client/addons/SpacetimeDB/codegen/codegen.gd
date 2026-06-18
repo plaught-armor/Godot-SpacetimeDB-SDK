@@ -65,11 +65,11 @@ static func _build_bsatn_type(nested_type: Array, base_meta_type: String, skip_o
 	var start_idx: int = 1 if skip_outermost and not nested_type.is_empty() else 0
 	# Apply wrappers from inside-out
 	for i in range(nested_type.size() - 1, start_idx - 1, -1):
-		match StringName(nested_type[i]):
-			&"Array":
-				bsatn = "vec_%s" % bsatn
-			&"Option":
-				bsatn = "opt_%s" % bsatn
+		var _wrapper: StringName = StringName(nested_type[i])
+		if _wrapper == &"Array":
+			bsatn = "vec_%s" % bsatn
+		elif _wrapper == &"Option":
+			bsatn = "opt_%s" % bsatn
 	return bsatn
 
 
@@ -77,18 +77,18 @@ static func _build_bsatn_type(nested_type: Array, base_meta_type: String, skip_o
 static func _gd_type_from_nested(nested_type: Array, base_gd_type: String) -> String:
 	if nested_type.is_empty():
 		return base_gd_type
-	match StringName(nested_type[0]):
-		&"Option":
-			return OPTION_CLASS_NAME
-		&"Array":
-			if nested_type.size() >= 2 and StringName(nested_type[1]) == &"Option":
-				return "Array[%s]" % OPTION_CLASS_NAME
-			elif nested_type.size() >= 2 and StringName(nested_type[1]) == &"Array":
-				# GDScript can't express Array[Array[T]]; Array[Array] is the deepest
-				# typed form. BSATN metadata (vec_vec_...) carries the full nesting depth.
-				return "Array[Array]"
-			else:
-				return "Array[%s]" % base_gd_type
+	var _outer: StringName = StringName(nested_type[0])
+	if _outer == &"Option":
+		return OPTION_CLASS_NAME
+	elif _outer == &"Array":
+		if nested_type.size() >= 2 and StringName(nested_type[1]) == &"Option":
+			return "Array[%s]" % OPTION_CLASS_NAME
+		elif nested_type.size() >= 2 and StringName(nested_type[1]) == &"Array":
+			# GDScript can't express Array[Array[T]]; Array[Array] is the deepest
+			# typed form. BSATN metadata (vec_vec_...) carries the full nesting depth.
+			return "Array[Array]"
+		else:
+			return "Array[%s]" % base_gd_type
 	return base_gd_type
 
 

@@ -299,51 +299,50 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 		return { }
 	var offsets: PackedInt64Array = PackedInt64Array()
 
-	match size_hint_type:
-		ROW_LIST_FIXED_SIZE:
-			var row_size: int = read_u16_le(spb)
-			var data_len: int = read_u32_le(spb)
-			if has_error():
-				return { }
-			if row_size == 0:
-				if data_len != 0:
-					_set_error("FixedSize row_size is 0 but data_len is %d" % data_len, start_pos)
-					return { }
-				return { "offsets": PackedInt64Array([0]), "count": 0, "data_len": 0 }
-			if data_len % row_size != 0:
-				_set_error("FixedSize data_len %d not divisible by row_size %d" % [data_len, row_size], start_pos)
-				return { }
-			var num_rows: int = data_len / row_size
-			offsets.resize(num_rows + 1)
-			for i: int in num_rows + 1:
-				offsets[i] = i * row_size
-			return { "offsets": offsets, "count": num_rows, "data_len": data_len }
-		ROW_LIST_ROW_OFFSETS:
-			var num_offsets: int = read_u32_le(spb)
-			if has_error():
-				return { }
-			offsets.resize(num_offsets + 1)
-			for i: int in num_offsets:
-				offsets[i] = read_u64_le(spb)
-				if has_error():
-					return { }
-			var data_len: int = read_u32_le(spb)
-			if has_error():
-				return { }
-			offsets[num_offsets] = data_len
-			for i: int in num_offsets:
-				var start_offset: int = offsets[i]
-				var end_offset: int = offsets[i + 1]
-				if start_offset < 0 or end_offset < start_offset or end_offset > data_len:
-					_set_error(
-						"Invalid row offsets: start=%d, end=%d, data_len=%d, row=%d" % [start_offset, end_offset, data_len, i],
-						start_pos,
-					)
-					return { }
-			return { "offsets": offsets, "count": num_offsets, "data_len": data_len }
-		_:
-			_set_error("Unknown RowSizeHint type: %d" % size_hint_type, start_pos)
+	if size_hint_type == ROW_LIST_FIXED_SIZE:
+		var row_size: int = read_u16_le(spb)
+		var data_len: int = read_u32_le(spb)
+		if has_error():
 			return { }
+		if row_size == 0:
+			if data_len != 0:
+				_set_error("FixedSize row_size is 0 but data_len is %d" % data_len, start_pos)
+				return { }
+			return { "offsets": PackedInt64Array([0]), "count": 0, "data_len": 0 }
+		if data_len % row_size != 0:
+			_set_error("FixedSize data_len %d not divisible by row_size %d" % [data_len, row_size], start_pos)
+			return { }
+		var num_rows: int = data_len / row_size
+		offsets.resize(num_rows + 1)
+		for i: int in num_rows + 1:
+			offsets[i] = i * row_size
+		return { "offsets": offsets, "count": num_rows, "data_len": data_len }
+	elif size_hint_type == ROW_LIST_ROW_OFFSETS:
+		var num_offsets: int = read_u32_le(spb)
+		if has_error():
+			return { }
+		offsets.resize(num_offsets + 1)
+		for i: int in num_offsets:
+			offsets[i] = read_u64_le(spb)
+			if has_error():
+				return { }
+		var data_len: int = read_u32_le(spb)
+		if has_error():
+			return { }
+		offsets[num_offsets] = data_len
+		for i: int in num_offsets:
+			var start_offset: int = offsets[i]
+			var end_offset: int = offsets[i + 1]
+			if start_offset < 0 or end_offset < start_offset or end_offset > data_len:
+				_set_error(
+					"Invalid row offsets: start=%d, end=%d, data_len=%d, row=%d" % [start_offset, end_offset, data_len, i],
+					start_pos,
+				)
+				return { }
+		return { "offsets": offsets, "count": num_offsets, "data_len": data_len }
+	else:
+		_set_error("Unknown RowSizeHint type: %d" % size_hint_type, start_pos)
+		return { }
 
 	return { }
 
@@ -600,23 +599,27 @@ func _read_native_arraylike(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_
 	for component_type: StringName in components_str.split(","):
 		components.append(_read_value_from_bsatn_type(spb, component_type, prop_name))
 
-	match prop.type:
-		TYPE_VECTOR2:
-			return Vector2.ZERO if has_error() else Vector2(components[0], components[1])
-		TYPE_VECTOR2I:
-			return Vector2i.ZERO if has_error() else Vector2i(components[0], components[1])
-		TYPE_VECTOR3:
-			return Vector3.ZERO if has_error() else Vector3(components[0], components[1], components[2])
-		TYPE_VECTOR3I:
-			return Vector3i.ZERO if has_error() else Vector3i(components[0], components[1], components[2])
-		TYPE_VECTOR4:
-			return Vector4.ZERO if has_error() else Vector4(components[0], components[1], components[2], components[3])
-		TYPE_VECTOR4I:
-			return Vector4i.ZERO if has_error() else Vector4i(components[0], components[1], components[2], components[3])
-		TYPE_QUATERNION:
-			return Quaternion.IDENTITY if has_error() else Quaternion(components[0], components[1], components[2], components[3])
-		TYPE_COLOR:
-			return Color.BLACK if has_error() else Color(components[0], components[1], components[2], components[3])
+	# if-elif, not match: this runs per native-vector field per row. A GDScript match
+	# arm costs ~10 opcodes (typeof check + value compare + bool materialization +
+	# branch) vs ~2 for an if branch (validated == + jump). Float vectors first (most
+	# common: positions/colors), int variants last.
+	var t: int = prop.type
+	if t == TYPE_VECTOR2:
+		return Vector2.ZERO if has_error() else Vector2(components[0], components[1])
+	elif t == TYPE_VECTOR3:
+		return Vector3.ZERO if has_error() else Vector3(components[0], components[1], components[2])
+	elif t == TYPE_VECTOR4:
+		return Vector4.ZERO if has_error() else Vector4(components[0], components[1], components[2], components[3])
+	elif t == TYPE_COLOR:
+		return Color.BLACK if has_error() else Color(components[0], components[1], components[2], components[3])
+	elif t == TYPE_QUATERNION:
+		return Quaternion.IDENTITY if has_error() else Quaternion(components[0], components[1], components[2], components[3])
+	elif t == TYPE_VECTOR2I:
+		return Vector2i.ZERO if has_error() else Vector2i(components[0], components[1])
+	elif t == TYPE_VECTOR3I:
+		return Vector3i.ZERO if has_error() else Vector3i(components[0], components[1], components[2])
+	elif t == TYPE_VECTOR4I:
+		return Vector4i.ZERO if has_error() else Vector4i(components[0], components[1], components[2], components[3])
 
 	_set_error("Unsupported native arraylike type for property '%s'" % prop_name, start_pos)
 	return null
@@ -707,53 +710,55 @@ func _read_nested_hoisted(spb: StreamPeerBuffer, step: _PlanStep) -> Object:
 
 # --- Generic Deserialization ---
 func _get_primitive_reader_from_bsatn_type(bsatn_type_str: StringName) -> Callable:
-	match bsatn_type_str:
-		&"u8":
-			return read_u8
-		&"u16":
-			return read_u16_le
-		&"u32":
-			return read_u32_le
-		&"u64":
-			return read_u64_le
-		&"u128":
-			return read_u128
-		&"i128":
-			return read_i128
-		&"u256":
-			return read_u256
-		&"i256":
-			return read_i256
-		&"i8":
-			return read_i8
-		&"i16":
-			return read_i16_le
-		&"i32":
-			return read_i32_le
-		&"i64":
-			return read_i64_le
-		&"f32":
-			return read_f32_le
-		&"f64":
-			return read_f64_le
-		&"bool":
-			return read_bool
-		&"string":
-			return read_string_with_u32_len
-		&"vec_u8":
-			return read_vec_u8
-		&"identity":
-			return read_identity
-		&"connection_id":
-			return read_connection_id
-		&"timestamp":
-			return read_timestamp
-		&"scheduled_at":
-			return read_scheduled_at
-		&"transactionupdatemessage":
-			return _read_transaction_update_message
-		_:
-			return Callable()
+	# if-elif, not match: reached per element on the recursive vec/option/nested path
+	# (_read_value_from_bsatn_type) plus at plan-build. A GDScript match arm costs ~10
+	# opcodes (typeof + value compare + bool materialization + branch) vs ~2 for an if
+	# branch. Ordered by expected field frequency so common types short-circuit early.
+	if bsatn_type_str == &"u32":
+		return read_u32_le
+	elif bsatn_type_str == &"i32":
+		return read_i32_le
+	elif bsatn_type_str == &"u64":
+		return read_u64_le
+	elif bsatn_type_str == &"i64":
+		return read_i64_le
+	elif bsatn_type_str == &"f32":
+		return read_f32_le
+	elif bsatn_type_str == &"bool":
+		return read_bool
+	elif bsatn_type_str == &"string":
+		return read_string_with_u32_len
+	elif bsatn_type_str == &"u8":
+		return read_u8
+	elif bsatn_type_str == &"u16":
+		return read_u16_le
+	elif bsatn_type_str == &"i8":
+		return read_i8
+	elif bsatn_type_str == &"i16":
+		return read_i16_le
+	elif bsatn_type_str == &"f64":
+		return read_f64_le
+	elif bsatn_type_str == &"vec_u8":
+		return read_vec_u8
+	elif bsatn_type_str == &"identity":
+		return read_identity
+	elif bsatn_type_str == &"connection_id":
+		return read_connection_id
+	elif bsatn_type_str == &"timestamp":
+		return read_timestamp
+	elif bsatn_type_str == &"scheduled_at":
+		return read_scheduled_at
+	elif bsatn_type_str == &"u128":
+		return read_u128
+	elif bsatn_type_str == &"i128":
+		return read_i128
+	elif bsatn_type_str == &"u256":
+		return read_u256
+	elif bsatn_type_str == &"i256":
+		return read_i256
+	elif bsatn_type_str == &"transactionupdatemessage":
+		return _read_transaction_update_message
+	return Callable()
 
 
 func _get_reader_callable_for_property(prop: Dictionary, bsatn_type_str: StringName) -> Callable:
@@ -774,19 +779,18 @@ func _get_reader_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 			elif not reader.is_valid() and debug_mode:
 				push_warning("Unknown BSATN_TYPES entry '%s' for property '%s'. Falling back to Variant.Type." % [bsatn_type_str, prop.name])
 		if not reader.is_valid():
-			match prop_type:
-				TYPE_BOOL:
-					reader = read_bool
-				TYPE_INT:
-					reader = read_i64_le
-				TYPE_FLOAT:
-					reader = read_f32_le
-				TYPE_STRING:
-					reader = read_string_with_u32_len
-				TYPE_PACKED_BYTE_ARRAY:
-					reader = read_vec_u8
-				TYPE_OBJECT:
-					reader = _read_nested_resource.bind(prop)
+			if prop_type == TYPE_BOOL:
+				reader = read_bool
+			elif prop_type == TYPE_INT:
+				reader = read_i64_le
+			elif prop_type == TYPE_FLOAT:
+				reader = read_f32_le
+			elif prop_type == TYPE_STRING:
+				reader = read_string_with_u32_len
+			elif prop_type == TYPE_PACKED_BYTE_ARRAY:
+				reader = read_vec_u8
+			elif prop_type == TYPE_OBJECT:
+				reader = _read_nested_resource.bind(prop)
 		return reader
 
 
@@ -927,29 +931,29 @@ func _populate_resource_from_bytes(resource: Object, spb: StreamPeerBuffer) -> b
 ## or complex readers (arrays, options, nested, bool, strings, wide ints, native
 ## vectors) don't match and stay COMPLEX (the Callable / nested-hoist path).
 func _inline_type_code(reader: Callable) -> int:
-	match reader.get_method():
-		&"read_u32_le":
-			return TC.U32
-		&"read_i32_le":
-			return TC.I32
-		&"read_u64_le":
-			return TC.U64
-		&"read_i64_le":
-			return TC.I64
-		&"read_f32_le":
-			return TC.F32
-		&"read_f64_le":
-			return TC.F64
-		&"read_u8":
-			return TC.U8
-		&"read_u16_le":
-			return TC.U16
-		&"read_i8":
-			return TC.I8
-		&"read_i16_le":
-			return TC.I16
-		_:
-			return TC.COMPLEX
+	var _m: StringName = reader.get_method()
+	if _m == &"read_u32_le":
+		return TC.U32
+	elif _m == &"read_i32_le":
+		return TC.I32
+	elif _m == &"read_u64_le":
+		return TC.U64
+	elif _m == &"read_i64_le":
+		return TC.I64
+	elif _m == &"read_f32_le":
+		return TC.F32
+	elif _m == &"read_f64_le":
+		return TC.F64
+	elif _m == &"read_u8":
+		return TC.U8
+	elif _m == &"read_u16_le":
+		return TC.U16
+	elif _m == &"read_i8":
+		return TC.I8
+	elif _m == &"read_i16_le":
+		return TC.I16
+	else:
+		return TC.COMPLEX
 
 
 ## Fetches the cached plan for [param script], building (and caching) it on first
@@ -1177,42 +1181,41 @@ func _read_table_update_instance(spb: StreamPeerBuffer, resource: TableUpdateDat
 		if has_error():
 			return false
 
-		match tag:
-			0: # PersistentTable { inserts: BsatnRowList, deletes: BsatnRowList }
-				if row_schema_script:
-					var inserts: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, resource.table_name)
-					if has_error():
-						return false
-					all_inserts.append_array(inserts)
-					var deletes: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, resource.table_name)
-					if has_error():
-						return false
-					all_deletes.append_array(deletes)
-				else:
-					if debug_mode:
-						push_warning("No schema for '%s', skipping PersistentTable rows." % resource.table_name)
-					read_bsatn_row_list(spb)
-					if has_error():
-						return false # inserts
-					read_bsatn_row_list(spb)
-					if has_error():
-						return false # deletes
-			1: # EventTable { events: BsatnRowList } — treated as inserts
-				resource.is_event = true
-				if row_schema_script:
-					var events: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, resource.table_name)
-					if has_error():
-						return false
-					all_inserts.append_array(events)
-				else:
-					if debug_mode:
-						push_warning("No schema for '%s', skipping EventTable rows." % resource.table_name)
-					read_bsatn_row_list(spb)
-					if has_error():
-						return false
-			_:
-				_set_error("Unknown TableUpdateRows tag %d for table '%s'" % [tag, resource.table_name], spb.get_position() - 1)
-				return false
+		if tag == 0: # PersistentTable { inserts: BsatnRowList, deletes: BsatnRowList }
+			if row_schema_script:
+				var inserts: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, resource.table_name)
+				if has_error():
+					return false
+				all_inserts.append_array(inserts)
+				var deletes: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, resource.table_name)
+				if has_error():
+					return false
+				all_deletes.append_array(deletes)
+			else:
+				if debug_mode:
+					push_warning("No schema for '%s', skipping PersistentTable rows." % resource.table_name)
+				read_bsatn_row_list(spb)
+				if has_error():
+					return false # inserts
+				read_bsatn_row_list(spb)
+				if has_error():
+					return false # deletes
+		elif tag == 1: # EventTable { events: BsatnRowList } — treated as inserts
+			resource.is_event = true
+			if row_schema_script:
+				var events: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, resource.table_name)
+				if has_error():
+					return false
+				all_inserts.append_array(events)
+			else:
+				if debug_mode:
+					push_warning("No schema for '%s', skipping EventTable rows." % resource.table_name)
+				read_bsatn_row_list(spb)
+				if has_error():
+					return false
+		else:
+			_set_error("Unknown TableUpdateRows tag %d for table '%s'" % [tag, resource.table_name], spb.get_position() - 1)
+			return false
 
 	resource.inserts.assign(all_inserts)
 	resource.deletes.assign(all_deletes)
@@ -1391,41 +1394,40 @@ func _read_one_off_query_result_message(spb: StreamPeerBuffer) -> OneOffQueryRes
 	if has_error():
 		return null
 
-	match result_tag:
-		0: # Ok(QueryRows)
-			var table_count: int = read_u32_le(spb)
-			if has_error():
-				return null
-			for _i: int in range(table_count):
-				if has_error():
-					return null
-				var table_name: String = read_string_with_u32_len(spb)
-				if has_error():
-					return null
-				var table_update: TableUpdateData = TableUpdateData.new()
-				table_update.table_name = table_name
-				var table_name_lower: StringName = _normalize(table_name)
-				var row_schema_script: GDScript = _schema.get_type(table_name_lower)
-				if row_schema_script:
-					var inserts: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name)
-					if has_error():
-						return null
-					table_update.inserts.assign(inserts)
-				else:
-					if debug_mode:
-						push_warning("No schema for '%s' in OneOffQueryResult, skipping rows." % table_name)
-					read_bsatn_row_list(spb)
-					if has_error():
-						return null
-				resource.tables.append(table_update)
-		1: # Err(string)
-			resource.is_error = true
-			resource.error_message = read_string_with_u32_len(spb)
-			if has_error():
-				return null
-		_:
-			_set_error("Invalid Result tag %d in OneOffQueryResult (expected 0=Ok, 1=Err)" % result_tag, spb.get_position() - 1)
+	if result_tag == 0: # Ok(QueryRows)
+		var table_count: int = read_u32_le(spb)
+		if has_error():
 			return null
+		for _i: int in range(table_count):
+			if has_error():
+				return null
+			var table_name: String = read_string_with_u32_len(spb)
+			if has_error():
+				return null
+			var table_update: TableUpdateData = TableUpdateData.new()
+			table_update.table_name = table_name
+			var table_name_lower: StringName = _normalize(table_name)
+			var row_schema_script: GDScript = _schema.get_type(table_name_lower)
+			if row_schema_script:
+				var inserts: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name)
+				if has_error():
+					return null
+				table_update.inserts.assign(inserts)
+			else:
+				if debug_mode:
+					push_warning("No schema for '%s' in OneOffQueryResult, skipping rows." % table_name)
+				read_bsatn_row_list(spb)
+				if has_error():
+					return null
+			resource.tables.append(table_update)
+	elif result_tag == 1: # Err(string)
+		resource.is_error = true
+		resource.error_message = read_string_with_u32_len(spb)
+		if has_error():
+			return null
+	else:
+		_set_error("Invalid Result tag %d in OneOffQueryResult (expected 0=Ok, 1=Err)" % result_tag, spb.get_position() - 1)
+		return null
 
 	return resource
 
@@ -1450,28 +1452,27 @@ func _read_reducer_result_message(spb: StreamPeerBuffer) -> ReducerResultMessage
 	outcome.value = outcome_tag
 	resource.reducer_result = outcome
 
-	match outcome_tag:
-		ReducerOutcomeEnum.Options.ok:
-			resource.ret_value = read_vec_u8(spb)
-			if has_error():
-				return null
-			var tx_update: TransactionUpdateMessage = _read_transaction_update_message(spb)
-			if has_error():
-				return null
-			outcome.data = tx_update
-		ReducerOutcomeEnum.Options.okEmpty:
-			outcome.data = null
-		ReducerOutcomeEnum.Options.err:
-			outcome.data = read_vec_u8(spb)
-			if has_error():
-				return null
-		ReducerOutcomeEnum.Options.internalError:
-			outcome.data = read_string_with_u32_len(spb)
-			if has_error():
-				return null
-		_:
-			_set_error("Unknown ReducerOutcome tag: %d" % outcome_tag, spb.get_position() - 1)
+	if outcome_tag == ReducerOutcomeEnum.Options.ok:
+		resource.ret_value = read_vec_u8(spb)
+		if has_error():
 			return null
+		var tx_update: TransactionUpdateMessage = _read_transaction_update_message(spb)
+		if has_error():
+			return null
+		outcome.data = tx_update
+	elif outcome_tag == ReducerOutcomeEnum.Options.okEmpty:
+		outcome.data = null
+	elif outcome_tag == ReducerOutcomeEnum.Options.err:
+		outcome.data = read_vec_u8(spb)
+		if has_error():
+			return null
+	elif outcome_tag == ReducerOutcomeEnum.Options.internalError:
+		outcome.data = read_string_with_u32_len(spb)
+		if has_error():
+			return null
+	else:
+		_set_error("Unknown ReducerOutcome tag: %d" % outcome_tag, spb.get_position() - 1)
+		return null
 
 	return resource
 
@@ -1486,18 +1487,17 @@ func _read_procedure_result_message(spb: StreamPeerBuffer) -> ProcedureResultDat
 		return null
 	resource.status_tag = status_tag
 
-	match status_tag:
-		0: # Returned(bytes)
-			resource.return_bytes = read_vec_u8(spb)
-			if has_error():
-				return null
-		1: # InternalError(string)
-			resource.error_message = read_string_with_u32_len(spb)
-			if has_error():
-				return null
-		_:
-			_set_error("Unknown ProcedureStatus tag: %d" % status_tag, spb.get_position() - 1)
+	if status_tag == 0: # Returned(bytes)
+		resource.return_bytes = read_vec_u8(spb)
+		if has_error():
 			return null
+	elif status_tag == 1: # InternalError(string)
+		resource.error_message = read_string_with_u32_len(spb)
+		if has_error():
+			return null
+	else:
+		_set_error("Unknown ProcedureStatus tag: %d" % status_tag, spb.get_position() - 1)
+		return null
 
 	resource.timestamp = read_timestamp(spb)
 	if has_error():
@@ -1548,26 +1548,25 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> SpacetimeDBServerMessa
 		_set_error("Unknown server message type: 0x%02X" % msg_type, 1)
 		return null
 
-	match msg_type:
-		SpacetimeDBServerMessage.INITIAL_CONNECTION:
-			result = _read_generic_server_message(msg_type, script_path, spb)
-		SpacetimeDBServerMessage.SUBSCRIBE_APPLIED:
-			result = _read_subscripton_applied_message(spb)
-		SpacetimeDBServerMessage.UNSUBSCRIBE_APPLIED:
-			result = _read_unsubscribe_applied_message(spb)
-		SpacetimeDBServerMessage.SUBSCRIPTION_ERROR:
-			result = _read_subscription_error_message(spb)
-		SpacetimeDBServerMessage.TRANSACTION_UPDATE:
-			result = _read_transaction_update_message(spb)
-		SpacetimeDBServerMessage.ONE_OFF_QUERY_RESPONSE:
-			result = _read_one_off_query_result_message(spb)
-		SpacetimeDBServerMessage.REDUCER_RESULT:
-			result = _read_reducer_result_message(spb)
-		SpacetimeDBServerMessage.PROCEDURE_RESULT:
-			result = _read_procedure_result_message(spb)
-		_:
-			_set_error("Unknown server message type: 0x%02X" % msg_type, start_pos)
-			return null
+	if msg_type == SpacetimeDBServerMessage.INITIAL_CONNECTION:
+		result = _read_generic_server_message(msg_type, script_path, spb)
+	elif msg_type == SpacetimeDBServerMessage.SUBSCRIBE_APPLIED:
+		result = _read_subscripton_applied_message(spb)
+	elif msg_type == SpacetimeDBServerMessage.UNSUBSCRIBE_APPLIED:
+		result = _read_unsubscribe_applied_message(spb)
+	elif msg_type == SpacetimeDBServerMessage.SUBSCRIPTION_ERROR:
+		result = _read_subscription_error_message(spb)
+	elif msg_type == SpacetimeDBServerMessage.TRANSACTION_UPDATE:
+		result = _read_transaction_update_message(spb)
+	elif msg_type == SpacetimeDBServerMessage.ONE_OFF_QUERY_RESPONSE:
+		result = _read_one_off_query_result_message(spb)
+	elif msg_type == SpacetimeDBServerMessage.REDUCER_RESULT:
+		result = _read_reducer_result_message(spb)
+	elif msg_type == SpacetimeDBServerMessage.PROCEDURE_RESULT:
+		result = _read_procedure_result_message(spb)
+	else:
+		_set_error("Unknown server message type: 0x%02X" % msg_type, start_pos)
+		return null
 	if has_error():
 		return null
 	# No trailing-bytes warning here: this parses ONE message from a buffer that, under the
