@@ -2,12 +2,19 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name BlackholioConfigTable extends _ModuleTable
 
+signal inserted(row: BlackholioConfig)
+signal updated(old_row: BlackholioConfig, new_row: BlackholioConfig)
+signal deleted(row: BlackholioConfig)
+
 var id: BlackholioConfigIdUniqueIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"config"
 	id = BlackholioConfigIdUniqueIndex.new(p_local_db)
+	on_insert(_emit_inserted)
+	on_update(_emit_updated)
+	on_delete(_emit_deleted)
 
 func iter() -> Array[BlackholioConfig]:
 	var rows: Array[_ModuleTableType] = super()
@@ -32,3 +39,24 @@ func find_by(field: StringName, value: Variant) -> Array[BlackholioConfig]:
 
 func first_by(field: StringName, value: Variant) -> BlackholioConfig:
 	return super(field, value) as BlackholioConfig
+
+func find_by_id(value: int) -> Array[BlackholioConfig]:
+	return find_by(&"id", value)
+
+func first_by_id(value: int) -> BlackholioConfig:
+	return first_by(&"id", value)
+
+func find_by_world_size(value: int) -> Array[BlackholioConfig]:
+	return find_by(&"world_size", value)
+
+func first_by_world_size(value: int) -> BlackholioConfig:
+	return first_by(&"world_size", value)
+
+func _emit_inserted(row: _ModuleTableType) -> void:
+	inserted.emit(row as BlackholioConfig)
+
+func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
+	updated.emit(old_row as BlackholioConfig, new_row as BlackholioConfig)
+
+func _emit_deleted(row: _ModuleTableType) -> void:
+	deleted.emit(row as BlackholioConfig)

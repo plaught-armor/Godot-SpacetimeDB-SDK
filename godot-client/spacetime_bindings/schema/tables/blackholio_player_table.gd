@@ -2,14 +2,21 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name BlackholioPlayerTable extends _ModuleTable
 
-var identity: BlackholioPlayerIdentityUniqueIndex
+signal inserted(row: BlackholioPlayer)
+signal updated(old_row: BlackholioPlayer, new_row: BlackholioPlayer)
+signal deleted(row: BlackholioPlayer)
+
 var player_id: BlackholioPlayerPlayerIdUniqueIndex
+var identity: BlackholioPlayerIdentityUniqueIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"player"
-	identity = BlackholioPlayerIdentityUniqueIndex.new(p_local_db)
 	player_id = BlackholioPlayerPlayerIdUniqueIndex.new(p_local_db)
+	identity = BlackholioPlayerIdentityUniqueIndex.new(p_local_db)
+	on_insert(_emit_inserted)
+	on_update(_emit_updated)
+	on_delete(_emit_deleted)
 
 func iter() -> Array[BlackholioPlayer]:
 	var rows: Array[_ModuleTableType] = super()
@@ -34,3 +41,30 @@ func find_by(field: StringName, value: Variant) -> Array[BlackholioPlayer]:
 
 func first_by(field: StringName, value: Variant) -> BlackholioPlayer:
 	return super(field, value) as BlackholioPlayer
+
+func find_by_identity(value: PackedByteArray) -> Array[BlackholioPlayer]:
+	return find_by(&"identity", value)
+
+func first_by_identity(value: PackedByteArray) -> BlackholioPlayer:
+	return first_by(&"identity", value)
+
+func find_by_player_id(value: int) -> Array[BlackholioPlayer]:
+	return find_by(&"player_id", value)
+
+func first_by_player_id(value: int) -> BlackholioPlayer:
+	return first_by(&"player_id", value)
+
+func find_by_name(value: String) -> Array[BlackholioPlayer]:
+	return find_by(&"name", value)
+
+func first_by_name(value: String) -> BlackholioPlayer:
+	return first_by(&"name", value)
+
+func _emit_inserted(row: _ModuleTableType) -> void:
+	inserted.emit(row as BlackholioPlayer)
+
+func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
+	updated.emit(old_row as BlackholioPlayer, new_row as BlackholioPlayer)
+
+func _emit_deleted(row: _ModuleTableType) -> void:
+	deleted.emit(row as BlackholioPlayer)

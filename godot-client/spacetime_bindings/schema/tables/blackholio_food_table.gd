@@ -2,12 +2,19 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name BlackholioFoodTable extends _ModuleTable
 
+signal inserted(row: BlackholioFood)
+signal updated(old_row: BlackholioFood, new_row: BlackholioFood)
+signal deleted(row: BlackholioFood)
+
 var entity_id: BlackholioFoodEntityIdUniqueIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"food"
 	entity_id = BlackholioFoodEntityIdUniqueIndex.new(p_local_db)
+	on_insert(_emit_inserted)
+	on_update(_emit_updated)
+	on_delete(_emit_deleted)
 
 func iter() -> Array[BlackholioFood]:
 	var rows: Array[_ModuleTableType] = super()
@@ -32,3 +39,18 @@ func find_by(field: StringName, value: Variant) -> Array[BlackholioFood]:
 
 func first_by(field: StringName, value: Variant) -> BlackholioFood:
 	return super(field, value) as BlackholioFood
+
+func find_by_entity_id(value: int) -> Array[BlackholioFood]:
+	return find_by(&"entity_id", value)
+
+func first_by_entity_id(value: int) -> BlackholioFood:
+	return first_by(&"entity_id", value)
+
+func _emit_inserted(row: _ModuleTableType) -> void:
+	inserted.emit(row as BlackholioFood)
+
+func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
+	updated.emit(old_row as BlackholioFood, new_row as BlackholioFood)
+
+func _emit_deleted(row: _ModuleTableType) -> void:
+	deleted.emit(row as BlackholioFood)

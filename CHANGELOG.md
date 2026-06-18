@@ -2,6 +2,28 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [2.1.0] - 2026-06-18
+
+Codegen developer-experience release. Generated table classes gain typed change
+signals and typed per-field finders. Pure additions to the generated text — no
+base-class, runtime, or wire change; regenerate bindings to pick them up.
+
+### Added
+- **Typed table change signals.** Each generated table wrapper now exposes
+  `inserted(row)`, `updated(old_row, new_row)`, and `deleted(row)` signals typed to
+  the concrete row class, wired to the base `on_insert` / `on_update` / `on_delete`
+  listeners. A table-scoped, editor-discoverable parallel to the existing Callable
+  API.
+- **Typed per-field finders.** Each table wrapper generates `find_by_<field>(value)`
+  and `first_by_<field>(value)` for every scalar field — a compile-checked field name
+  and value type and a typed return, replacing the stringly-typed
+  `find_by(&"field", value)`. Generated for non-nested, non-arraylike fields only.
+
+### Notes
+- The committed Blackholio example bindings (`godot-client/spacetime_bindings/`) are
+  regenerated against a live module and demonstrate the new signals and finders;
+  the regenerated bindings compile as part of the project.
+
 ## [2.0.0] - 2026-06-18
 
 **Breaking.** The legacy WebSocket v2 sub-protocol is dropped; the client now

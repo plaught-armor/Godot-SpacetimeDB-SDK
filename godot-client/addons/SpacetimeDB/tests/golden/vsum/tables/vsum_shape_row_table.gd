@@ -2,12 +2,19 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name VsumShapeRowTable extends _ModuleTable
 
+signal inserted(row: VsumShapeRow)
+signal updated(old_row: VsumShapeRow, new_row: VsumShapeRow)
+signal deleted(row: VsumShapeRow)
+
 var id: VsumShapeRowIdUniqueIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"shape_row"
 	id = VsumShapeRowIdUniqueIndex.new(p_local_db)
+	on_insert(_emit_inserted)
+	on_update(_emit_updated)
+	on_delete(_emit_deleted)
 
 func iter() -> Array[VsumShapeRow]:
 	var rows: Array[_ModuleTableType] = super()
@@ -32,3 +39,18 @@ func find_by(field: StringName, value: Variant) -> Array[VsumShapeRow]:
 
 func first_by(field: StringName, value: Variant) -> VsumShapeRow:
 	return super(field, value) as VsumShapeRow
+
+func find_by_id(value: int) -> Array[VsumShapeRow]:
+	return find_by(&"id", value)
+
+func first_by_id(value: int) -> VsumShapeRow:
+	return first_by(&"id", value)
+
+func _emit_inserted(row: _ModuleTableType) -> void:
+	inserted.emit(row as VsumShapeRow)
+
+func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
+	updated.emit(old_row as VsumShapeRow, new_row as VsumShapeRow)
+
+func _emit_deleted(row: _ModuleTableType) -> void:
+	deleted.emit(row as VsumShapeRow)

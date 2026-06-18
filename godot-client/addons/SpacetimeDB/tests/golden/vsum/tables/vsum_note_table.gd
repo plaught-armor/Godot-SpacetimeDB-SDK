@@ -2,10 +2,17 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name VsumNoteTable extends _ModuleTable
 
+signal inserted(row: VsumNote)
+signal updated(old_row: VsumNote, new_row: VsumNote)
+signal deleted(row: VsumNote)
+
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"note"
+	on_insert(_emit_inserted)
+	on_update(_emit_updated)
+	on_delete(_emit_deleted)
 
 func iter() -> Array[VsumNote]:
 	var rows: Array[_ModuleTableType] = super()
@@ -30,3 +37,18 @@ func find_by(field: StringName, value: Variant) -> Array[VsumNote]:
 
 func first_by(field: StringName, value: Variant) -> VsumNote:
 	return super(field, value) as VsumNote
+
+func find_by_text(value: String) -> Array[VsumNote]:
+	return find_by(&"text", value)
+
+func first_by_text(value: String) -> VsumNote:
+	return first_by(&"text", value)
+
+func _emit_inserted(row: _ModuleTableType) -> void:
+	inserted.emit(row as VsumNote)
+
+func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
+	updated.emit(old_row as VsumNote, new_row as VsumNote)
+
+func _emit_deleted(row: _ModuleTableType) -> void:
+	deleted.emit(row as VsumNote)
