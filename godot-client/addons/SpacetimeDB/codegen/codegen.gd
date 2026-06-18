@@ -645,7 +645,11 @@ func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictiona
 ## Fields of a table struct that get typed finders, as [[safe_name, gd_type], ...].
 ## Restricted to value-comparable built-in types — find_by does an `==` match, so a
 ## generated Resource field (reference equality, never matches a fresh value), a native
-## vector/color, an enum, or a nested array would all produce a finder that can't work.
+## vector/color, or a nested array would all produce a finder that can't work. This
+## also (deliberately) excludes enum columns: every enum — even a unit-variant one —
+## codegens as a `RustEnum` Resource (the tag lives in `.value`), so it is a Resource
+## field too and an `==` finder on it would never match. Don't add enum finders here
+## without first making find_by compare by the enum tag.
 func _table_scalar_fields(schema: SpacetimeParsedSchema, type_def: Dictionary) -> Array:
 	# GDScript built-ins with value `==` semantics. PackedByteArray covers identity /
 	# connection_id / uuid / wide ints; int covers timestamp/duration micros.
