@@ -21,8 +21,8 @@ base-class, runtime, or wire change; regenerate bindings to pick them up.
 
 ### Notes
 - The committed Blackholio example bindings (`godot-client/spacetime_bindings/`) are
-  not regenerated here (their source schema needs a live server); regenerate against
-  a 2.2.0+ module to surface the new signals and finders.
+  regenerated against a live module and demonstrate the new signals and finders;
+  the regenerated bindings compile as part of the project.
 
 ## [2.0.0] - 2026-06-18
 
