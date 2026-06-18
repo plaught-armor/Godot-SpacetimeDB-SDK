@@ -151,14 +151,13 @@ func _on_request_completed(result: int, response_code: int, headers: PackedStrin
 	_pending_request_type = RequestType.NONE
 
 	# Route the response based on the captured state
-	match request_type_that_completed:
-		RequestType.TOKEN:
-			_handle_token_response(result, response_code, headers, body)
-		RequestType.REDUCER_CALL:
-			_handle_reducer_response(result, response_code, headers, body)
-		RequestType.NONE:
-			# This might happen if the request failed immediately before the state was properly set,
-			# or if the signal fires unexpectedly after state reset (less likely).
-			push_warning("SpacetimeDBRestAPI: Received request completion signal but no request type was pending.")
-		_:
-			printerr("SpacetimeDBRestAPI: Internal error - completed request type was unknown: ", request_type_that_completed)
+	if request_type_that_completed == RequestType.TOKEN:
+		_handle_token_response(result, response_code, headers, body)
+	elif request_type_that_completed == RequestType.REDUCER_CALL:
+		_handle_reducer_response(result, response_code, headers, body)
+	elif request_type_that_completed == RequestType.NONE:
+		# This might happen if the request failed immediately before the state was properly set,
+		# or if the signal fires unexpectedly after state reset (less likely).
+		push_warning("SpacetimeDBRestAPI: Received request completion signal but no request type was pending.")
+	else:
+		printerr("SpacetimeDBRestAPI: Internal error - completed request type was unknown: ", request_type_that_completed)

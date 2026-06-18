@@ -850,19 +850,18 @@ func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
 		return PackedByteArray()
 	var compression: int = raw_bytes.get(0)
 	var payload: PackedByteArray = raw_bytes.slice(1)
-	match compression:
-		0:
-			pass
-		1:
-			payload = DataDecompressor.decompress_brotli(payload)
-			if payload.is_empty():
-				printerr("SpacetimeDBClient: Brotli decompression failed, dropping frame.")
-				return PackedByteArray()
-		2:
-			payload = DataDecompressor.decompress_packet(payload)
-		_:
-			printerr("SpacetimeDBClient: Unknown compression tag %d, dropping frame." % compression)
+	if compression == 0:
+		pass
+	elif compression == 1:
+		payload = DataDecompressor.decompress_brotli(payload)
+		if payload.is_empty():
+			printerr("SpacetimeDBClient: Brotli decompression failed, dropping frame.")
 			return PackedByteArray()
+	elif compression == 2:
+		payload = DataDecompressor.decompress_packet(payload)
+	else:
+		printerr("SpacetimeDBClient: Unknown compression tag %d, dropping frame." % compression)
+		return PackedByteArray()
 	return payload
 
 
@@ -962,36 +961,36 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		var handle: SpacetimeDBReducerCall = _pending_reducer_calls.get(rid)
 		# Only stamp the handle if it's still PENDING (avoids overwriting a TIMEOUT verdict)
 		var can_stamp: bool = handle and handle.outcome == SpacetimeDBReducerCall.Outcome.PENDING
-		match outcome.value:
-			ReducerOutcomeEnum.Options.ok:
-				tx_update = outcome.get_ok()
-				if tx_update != null:
-					_handle_transaction_update(tx_update)
-				if can_stamp:
-					handle.outcome = SpacetimeDBReducerCall.Outcome.OK
-					handle.transaction_update = tx_update
-					handle.ret_value = message.ret_value
-			ReducerOutcomeEnum.Options.okEmpty:
-				if can_stamp:
-					handle.outcome = SpacetimeDBReducerCall.Outcome.OK_EMPTY
-			ReducerOutcomeEnum.Options.err:
-				var err_bytes: PackedByteArray = outcome.get_err()
-				var err_msg: String = _decode_reducer_error(err_bytes)
-				print_log("SpacetimeDBClient: Reducer returned error: %s" % err_msg)
-				if can_stamp:
-					handle.outcome = SpacetimeDBReducerCall.Outcome.ERROR
-					handle.error_message = err_msg
-			ReducerOutcomeEnum.Options.internalError:
-				var err_msg: String = outcome.get_internal_error()
-				printerr("SpacetimeDBClient: Reducer internal error: ", err_msg)
-				if can_stamp:
-					handle.outcome = SpacetimeDBReducerCall.Outcome.INTERNAL_ERROR
-					handle.error_message = err_msg
-			_:
-				push_error("SpacetimeDBClient: unknown status_tag %d" % outcome.value)
-				if can_stamp:
-					handle.outcome = SpacetimeDBReducerCall.Outcome.INTERNAL_ERROR
-					handle.error_message = "unknown reducer outcome tag %d" % outcome.value
+		var _outcome_value: int = outcome.value
+		if _outcome_value == ReducerOutcomeEnum.Options.ok:
+			tx_update = outcome.get_ok()
+			if tx_update != null:
+				_handle_transaction_update(tx_update)
+			if can_stamp:
+				handle.outcome = SpacetimeDBReducerCall.Outcome.OK
+				handle.transaction_update = tx_update
+				handle.ret_value = message.ret_value
+		elif _outcome_value == ReducerOutcomeEnum.Options.okEmpty:
+			if can_stamp:
+				handle.outcome = SpacetimeDBReducerCall.Outcome.OK_EMPTY
+		elif _outcome_value == ReducerOutcomeEnum.Options.err:
+			var err_bytes: PackedByteArray = outcome.get_err()
+			var err_msg: String = _decode_reducer_error(err_bytes)
+			print_log("SpacetimeDBClient: Reducer returned error: %s" % err_msg)
+			if can_stamp:
+				handle.outcome = SpacetimeDBReducerCall.Outcome.ERROR
+				handle.error_message = err_msg
+		elif _outcome_value == ReducerOutcomeEnum.Options.internalError:
+			var err_msg: String = outcome.get_internal_error()
+			printerr("SpacetimeDBClient: Reducer internal error: ", err_msg)
+			if can_stamp:
+				handle.outcome = SpacetimeDBReducerCall.Outcome.INTERNAL_ERROR
+				handle.error_message = err_msg
+		else:
+			push_error("SpacetimeDBClient: unknown status_tag %d" % outcome.value)
+			if can_stamp:
+				handle.outcome = SpacetimeDBReducerCall.Outcome.INTERNAL_ERROR
+				handle.error_message = "unknown reducer outcome tag %d" % outcome.value
 		_pending_reducer_calls.erase(rid)
 		_reducer_result_cache[rid] = tx_update
 		_evict_oldest(_reducer_result_cache)
@@ -1016,22 +1015,22 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		var can_stamp: bool = handle and handle.outcome == SpacetimeDBProcedureCall.Outcome.PENDING
 		var ret_bytes: PackedByteArray = PackedByteArray()
 
-		match message.status_tag:
-			0: # Returned
-				ret_bytes = message.return_bytes
-				if can_stamp:
-					handle.outcome = SpacetimeDBProcedureCall.Outcome.RETURNED
-					handle.return_bytes = ret_bytes
-			1: # InternalError
-				printerr("SpacetimeDBClient: Procedure internal error: ", message.error_message)
-				if can_stamp:
-					handle.outcome = SpacetimeDBProcedureCall.Outcome.INTERNAL_ERROR
-					handle.error_message = message.error_message
-			_:
-				push_error("SpacetimeDBClient: unknown status_tag %d" % message.status_tag)
-				if can_stamp:
-					handle.outcome = SpacetimeDBProcedureCall.Outcome.INTERNAL_ERROR
-					handle.error_message = "unknown procedure status_tag %d" % message.status_tag
+		var _status_tag: int = message.status_tag
+		if _status_tag == 0: # Returned
+			ret_bytes = message.return_bytes
+			if can_stamp:
+				handle.outcome = SpacetimeDBProcedureCall.Outcome.RETURNED
+				handle.return_bytes = ret_bytes
+		elif _status_tag == 1: # InternalError
+			printerr("SpacetimeDBClient: Procedure internal error: ", message.error_message)
+			if can_stamp:
+				handle.outcome = SpacetimeDBProcedureCall.Outcome.INTERNAL_ERROR
+				handle.error_message = message.error_message
+		else:
+			push_error("SpacetimeDBClient: unknown status_tag %d" % message.status_tag)
+			if can_stamp:
+				handle.outcome = SpacetimeDBProcedureCall.Outcome.INTERNAL_ERROR
+				handle.error_message = "unknown procedure status_tag %d" % message.status_tag
 
 		_pending_procedure_calls.erase(rid)
 		_procedure_result_cache[rid] = ret_bytes

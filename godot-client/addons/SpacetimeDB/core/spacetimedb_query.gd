@@ -115,26 +115,26 @@ func _to_string() -> String:
 
 
 static func _format_value(value: Variant) -> String:
-	match typeof(value):
-		TYPE_STRING:
-			return "'%s'" % value.replace("'", "''")
-		TYPE_BOOL:
-			return "true" if value else "false"
-		TYPE_PACKED_BYTE_ARRAY:
-			# SpacetimeDB hex literal: bare 0x... (not a quoted string).
-			return "0x%s" % (value as PackedByteArray).hex_encode()
-		TYPE_FLOAT:
-			var f: float = value
-			if is_nan(f):
-				push_error("SpacetimeDBQuery: NaN cannot be represented in SQL.")
-				return "NULL"
-			if is_inf(f):
-				push_error("SpacetimeDBQuery: Infinity cannot be represented in SQL.")
-				return "NULL"
-			# Lossless round-trip for double; locale-independent.
-			return "%.17g" % f
-		_:
-			return str(value)
+	var _vt: int = typeof(value)
+	if _vt == TYPE_STRING:
+		return "'%s'" % value.replace("'", "''")
+	elif _vt == TYPE_BOOL:
+		return "true" if value else "false"
+	elif _vt == TYPE_PACKED_BYTE_ARRAY:
+		# SpacetimeDB hex literal: bare 0x... (not a quoted string).
+		return "0x%s" % (value as PackedByteArray).hex_encode()
+	elif _vt == TYPE_FLOAT:
+		var f: float = value
+		if is_nan(f):
+			push_error("SpacetimeDBQuery: NaN cannot be represented in SQL.")
+			return "NULL"
+		if is_inf(f):
+			push_error("SpacetimeDBQuery: Infinity cannot be represented in SQL.")
+			return "NULL"
+		# Lossless round-trip for double; locale-independent.
+		return "%.17g" % f
+	else:
+		return str(value)
 
 # --- Identifier validation ---
 

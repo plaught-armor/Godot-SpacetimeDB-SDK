@@ -504,48 +504,47 @@ func _get_primitive_writer_from_bsatn_type(bsatn_type_str: StringName) -> Callab
 	# if-elif, not match: reached per element on the recursive vec/option path
 	# (_write_value_from_bsatn_type) plus at plan-build. match arm ~10 opcodes vs ~2
 	# for an if branch; ordered by expected field frequency.
-	var t: StringName = bsatn_type_str
-	if t == &"u32":
+	if bsatn_type_str == &"u32":
 		return write_u32_le
-	elif t == &"i32":
+	elif bsatn_type_str == &"i32":
 		return write_i32_le
-	elif t == &"u64":
+	elif bsatn_type_str == &"u64":
 		return write_u64_le
-	elif t == &"i64":
+	elif bsatn_type_str == &"i64":
 		return write_i64_le
-	elif t == &"f32":
+	elif bsatn_type_str == &"f32":
 		return write_f32_le
-	elif t == &"bool":
+	elif bsatn_type_str == &"bool":
 		return write_bool
-	elif t == &"string":
+	elif bsatn_type_str == &"string":
 		return write_string_with_u32_len
-	elif t == &"u8":
+	elif bsatn_type_str == &"u8":
 		return write_u8
-	elif t == &"u16":
+	elif bsatn_type_str == &"u16":
 		return write_u16_le
-	elif t == &"i8":
+	elif bsatn_type_str == &"i8":
 		return write_i8
-	elif t == &"i16":
+	elif bsatn_type_str == &"i16":
 		return write_i16_le
-	elif t == &"f64":
+	elif bsatn_type_str == &"f64":
 		return write_f64_le
-	elif t == &"vec_u8":
+	elif bsatn_type_str == &"vec_u8":
 		return write_vec_u8
-	elif t == &"identity":
+	elif bsatn_type_str == &"identity":
 		return write_identity
-	elif t == &"connection_id":
+	elif bsatn_type_str == &"connection_id":
 		return write_connection_id
-	elif t == &"timestamp":
+	elif bsatn_type_str == &"timestamp":
 		return write_timestamp
-	elif t == &"scheduled_at":
+	elif bsatn_type_str == &"scheduled_at":
 		return write_scheduled_at
-	elif t == &"u128":
+	elif bsatn_type_str == &"u128":
 		return write_u128
-	elif t == &"i128":
+	elif bsatn_type_str == &"i128":
 		return write_i128
-	elif t == &"u256":
+	elif bsatn_type_str == &"u256":
 		return write_u256
-	elif t == &"i256":
+	elif bsatn_type_str == &"i256":
 		return write_i256
 	return Callable()
 
@@ -576,45 +575,42 @@ func _get_writer_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 
 		# 2. Fallback to default based on property's Variant.Type
 		if not writer_callable.is_valid():
-			match prop_type:
-				TYPE_NIL:
-					_set_error("Cannot serialize null argument.")
-				TYPE_BOOL:
-					writer_callable = write_bool
-				TYPE_INT:
-					match bsatn_type_str:
-						&"u8":
-							writer_callable = write_u8
-						&"u16":
-							writer_callable = write_u16_le
-						&"u32":
-							writer_callable = write_u32_le
-						&"u64":
-							writer_callable = write_u64_le
-						&"i8":
-							writer_callable = write_i8
-						&"i16":
-							writer_callable = write_i16_le
-						&"i32":
-							writer_callable = write_i32_le
-						_:
-							writer_callable = write_i64_le # Default i64
-				TYPE_FLOAT:
-					match bsatn_type_str:
-						&"f64":
-							writer_callable = write_f64_le
-						_:
-							writer_callable = write_f32_le # Default f32
-				TYPE_STRING:
-					writer_callable = write_string_with_u32_len
-				TYPE_PACKED_BYTE_ARRAY:
-					writer_callable = write_vec_u8
-				TYPE_OBJECT:
-					writer_callable = write_nested_resource
-				# TYPE_ARRAY, and native array-like types (TYPE_VECTOR2, TYPE_QUATERNION, etc.) are handled above
-				_:
-					# Writer remains invalid for unsupported types
-					pass
+			if prop_type == TYPE_NIL:
+				_set_error("Cannot serialize null argument.")
+			elif prop_type == TYPE_BOOL:
+				writer_callable = write_bool
+			elif prop_type == TYPE_INT:
+				if bsatn_type_str == &"u8":
+					writer_callable = write_u8
+				elif bsatn_type_str == &"u16":
+					writer_callable = write_u16_le
+				elif bsatn_type_str == &"u32":
+					writer_callable = write_u32_le
+				elif bsatn_type_str == &"u64":
+					writer_callable = write_u64_le
+				elif bsatn_type_str == &"i8":
+					writer_callable = write_i8
+				elif bsatn_type_str == &"i16":
+					writer_callable = write_i16_le
+				elif bsatn_type_str == &"i32":
+					writer_callable = write_i32_le
+				else:
+					writer_callable = write_i64_le # Default i64
+			elif prop_type == TYPE_FLOAT:
+				if bsatn_type_str == &"f64":
+					writer_callable = write_f64_le
+				else:
+					writer_callable = write_f32_le # Default f32
+			elif prop_type == TYPE_STRING:
+				writer_callable = write_string_with_u32_len
+			elif prop_type == TYPE_PACKED_BYTE_ARRAY:
+				writer_callable = write_vec_u8
+			elif prop_type == TYPE_OBJECT:
+				writer_callable = write_nested_resource
+			# TYPE_ARRAY, and native array-like types (TYPE_VECTOR2, TYPE_QUATERNION, etc.) are handled above
+			else:
+				# Writer remains invalid for unsupported types
+				pass
 
 		if not writer_callable.is_valid() and not bsatn_type_str.is_empty() and debug_mode:
 			push_warning("Unknown 'bsatn_type' metadata value: '%s' for property '%s'. No suitable writer found." % [bsatn_type_str, prop_name])
@@ -624,33 +620,32 @@ func _get_writer_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 
 #Helper to generate a zero struct from a bsatn type
 func _generate_default_type(bsatn_type_name: StringName) -> Variant:
-	match bsatn_type_name:
-		&"i8", &"i16", &"i32", &"i64", &"u8", &"u16", &"u32", &"u64":
-			return int(0)
-		&"f32", &"f64":
-			return float(0)
-		&"bool":
-			return false
-		&"string":
-			return ""
-		&"vector2":
-			return Vector2.ZERO
-		&"vector2i":
-			return Vector2i.ZERO
-		&"vector3":
-			return Vector3.ZERO
-		&"vector3i":
-			return Vector3i.ZERO
-		&"vector4":
-			return Vector4.ZERO
-		&"vector4i":
-			return Vector4i.ZERO
-		&"color":
-			return Color.BLACK
-		&"quaternion":
-			return Quaternion.IDENTITY
-		_:
-			return null
+	if bsatn_type_name == &"i8" or bsatn_type_name == &"i16" or bsatn_type_name == &"i32" or bsatn_type_name == &"i64" or bsatn_type_name == &"u8" or bsatn_type_name == &"u16" or bsatn_type_name == &"u32" or bsatn_type_name == &"u64":
+		return int(0)
+	elif bsatn_type_name == &"f32" or bsatn_type_name == &"f64":
+		return float(0)
+	elif bsatn_type_name == &"bool":
+		return false
+	elif bsatn_type_name == &"string":
+		return ""
+	elif bsatn_type_name == &"vector2":
+		return Vector2.ZERO
+	elif bsatn_type_name == &"vector2i":
+		return Vector2i.ZERO
+	elif bsatn_type_name == &"vector3":
+		return Vector3.ZERO
+	elif bsatn_type_name == &"vector3i":
+		return Vector3i.ZERO
+	elif bsatn_type_name == &"vector4":
+		return Vector4.ZERO
+	elif bsatn_type_name == &"vector4i":
+		return Vector4i.ZERO
+	elif bsatn_type_name == &"color":
+		return Color.BLACK
+	elif bsatn_type_name == &"quaternion":
+		return Quaternion.IDENTITY
+	else:
+		return null
 
 
 ## Helper function to serialize a value based on BSATN type string.

@@ -88,70 +88,68 @@ func _physics_process(_delta: float) -> void:
 	_websocket.poll()
 	var state: WebSocketPeer.State = _websocket.get_ready_state()
 
-	match state:
-		WebSocketPeer.STATE_OPEN:
-			if not _is_connected:
-				negotiated_protocol = _websocket.get_selected_protocol()
-				_print_log("SpacetimeDBConnection: Connection established (protocol: %s)." % negotiated_protocol)
-				_is_connected = true
-				_connection_requested = false
-				connected.emit()
-
-			# Process incoming packets
-			while _websocket.get_available_packet_count() > 0:
-				var packet_bytes: PackedByteArray = _websocket.get_packet()
-				if packet_bytes.is_empty():
-					continue
-
-				_total_bytes_received += packet_bytes.size()
-				_second_bytes_received += packet_bytes.size()
-				_total_messages_received += 1
-				_second_messages_received += 1
-
-				message_received.emit(packet_bytes)
-				total_messages.emit(_total_messages_sent, _total_messages_received)
-				total_bytes.emit(_total_bytes_sent, _total_bytes_received)
-		WebSocketPeer.STATE_CONNECTING:
-			# Still trying to connect
-			pass
-		WebSocketPeer.STATE_CLOSING:
-			# Connection is closing
-			_print_log("SpacetimeDBConnection: connection closing")
-			pass
-		WebSocketPeer.STATE_CLOSED:
-			var code: int = _websocket.get_close_code()
-			var reason: String = _websocket.get_close_reason()
-			if _is_connected or _connection_requested: # Only report if we were connected or trying
-				if code == -1: # Abnormal closure
-					printerr("SpacetimeDBConnection: connection_error ", code, " Abnormal closure with reason:")
-					connection_error.emit(code, "Abnormal closure")
-				else:
-					_print_log("SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)" % [code, reason])
-					disconnected.emit() # Normal closure signal
-			_is_connected = false
+	if state == WebSocketPeer.STATE_OPEN:
+		if not _is_connected:
+			negotiated_protocol = _websocket.get_selected_protocol()
+			_print_log("SpacetimeDBConnection: Connection established (protocol: %s)." % negotiated_protocol)
+			_is_connected = true
 			_connection_requested = false
-			set_physics_process(false) # Stop polling
+			connected.emit()
+
+		# Process incoming packets
+		while _websocket.get_available_packet_count() > 0:
+			var packet_bytes: PackedByteArray = _websocket.get_packet()
+			if packet_bytes.is_empty():
+				continue
+
+			_total_bytes_received += packet_bytes.size()
+			_second_bytes_received += packet_bytes.size()
+			_total_messages_received += 1
+			_second_messages_received += 1
+
+			message_received.emit(packet_bytes)
+			total_messages.emit(_total_messages_sent, _total_messages_received)
+			total_bytes.emit(_total_bytes_sent, _total_bytes_received)
+	elif state == WebSocketPeer.STATE_CONNECTING:
+		# Still trying to connect
+		pass
+	elif state == WebSocketPeer.STATE_CLOSING:
+		# Connection is closing
+		_print_log("SpacetimeDBConnection: connection closing")
+		pass
+	elif state == WebSocketPeer.STATE_CLOSED:
+		var code: int = _websocket.get_close_code()
+		var reason: String = _websocket.get_close_reason()
+		if _is_connected or _connection_requested: # Only report if we were connected or trying
+			if code == -1: # Abnormal closure
+				printerr("SpacetimeDBConnection: connection_error ", code, " Abnormal closure with reason:")
+				connection_error.emit(code, "Abnormal closure")
+			else:
+				_print_log("SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)" % [code, reason])
+				disconnected.emit() # Normal closure signal
+		_is_connected = false
+		_connection_requested = false
+		set_physics_process(false) # Stop polling
 
 
 func _notification(what: int) -> void:
-	match what:
-		NOTIFICATION_PREDELETE:
-			if _options and _options.monitor_mode:
-				for suffix: String in [
-					"_second_received_packets",
-					"_second_received_bytes",
-					"_total_received_packets",
-					"_total_received_kbytes",
-					"_second_sent_packets",
-					"_second_sent_bytes",
-					"_total_sent_packets",
-					"_total_sent_kbytes",
-				]:
-					Performance.remove_custom_monitor("spacetime/" + _db_name + suffix)
-		NOTIFICATION_CRASH, NOTIFICATION_WM_CLOSE_REQUEST:
-			if is_websocket_active():
-				get_tree().auto_accept_quit = false
-				_handle_game_closing()
+	if what == NOTIFICATION_PREDELETE:
+		if _options and _options.monitor_mode:
+			for suffix: String in [
+				"_second_received_packets",
+				"_second_received_bytes",
+				"_total_received_packets",
+				"_total_received_kbytes",
+				"_second_sent_packets",
+				"_second_sent_bytes",
+				"_total_sent_packets",
+				"_total_sent_kbytes",
+			]:
+				Performance.remove_custom_monitor("spacetime/" + _db_name + suffix)
+	elif what == NOTIFICATION_CRASH or what == NOTIFICATION_WM_CLOSE_REQUEST:
+		if is_websocket_active():
+			get_tree().auto_accept_quit = false
+			_handle_game_closing()
 
 
 func get_second_sent_bytes() -> int:
@@ -253,15 +251,14 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 	# Convert enum value to string for the URL parameter
 	var compression_str: String
 
-	match preferred_compression:
-		CompressionPreference.NONE:
-			compression_str = "None" # Use string "None" as seen in C# enum
-		CompressionPreference.BROTLI:
-			compression_str = "Brotli"
-		CompressionPreference.GZIP:
-			compression_str = "Gzip"
-		_:
-			compression_str = "None" # Fallback
+	if preferred_compression == CompressionPreference.NONE:
+		compression_str = "None" # Use string "None" as seen in C# enum
+	elif preferred_compression == CompressionPreference.BROTLI:
+		compression_str = "Brotli"
+	elif preferred_compression == CompressionPreference.GZIP:
+		compression_str = "Gzip"
+	else:
+		compression_str = "None" # Fallback
 
 	query_params += "&compression=%s" % compression_str
 	query_params += "&confirmed=%s" % ("true" if _options.confirmed_reads else "false")
