@@ -140,6 +140,11 @@ var _reconnect_attempt: int = 0
 var _reconnect_immediate: bool = false
 var _intentional_disconnect: bool = false
 var _saved_subscription_queries: Array[PackedStringArray] = []
+## Bumped on every new reconnect cycle (start/cancel/resubscribe). A resubscribe
+## settle-callback captures the epoch live when it was armed and bails if the epoch
+## has since moved on, so a superseded cycle's late `applied`/`end` can't clear the
+## saved queries or spuriously emit `reconnected` on a cycle that already moved past it.
+var _resubscribe_epoch: int = 0
 var _reconnect_timer: SceneTreeTimer = null
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
@@ -273,8 +278,15 @@ func disconnect_db() -> void:
 	_intentional_disconnect = true
 	_cancel_reconnection()
 	_token = ""
-	if _connection:
+	if _connection and _connection.is_connected_db():
 		_connection.disconnect_from_server()
+	else:
+		# Socket already closed (e.g. cancelled mid-backoff during a reconnect):
+		# disconnect_from_server() would be a no-op and emit nothing, leaving callers
+		# waiting on disconnected forever and the intentional flag stuck. Surface the
+		# terminal signal here instead.
+		_intentional_disconnect = false
+		disconnected.emit()
 
 
 ## Returns [code]true[/code] if the WebSocket is currently open.
@@ -1117,6 +1129,7 @@ func _on_connection_stalled(code: int) -> void:
 		_intentional_disconnect = false
 		return
 	if _reconnect_state == _ReconnectState.RECONNECTING:
+		_reconnect_immediate = true # a stall during reconnect keeps the fast path
 		_schedule_next_reconnect_attempt()
 	elif connection_options and connection_options.auto_reconnect:
 		print_log("SpacetimeDBClient: stall-induced close (code %d) — fast reconnect, no backoff." % code)
@@ -1132,11 +1145,20 @@ func _start_reconnection(immediate: bool = false) -> void:
 	_reconnect_state = _ReconnectState.RECONNECTING
 	_reconnect_attempt = 0
 	_reconnect_immediate = immediate
+	# Supersede any in-flight resubscribe cycle so its late settles bail (see _resubscribe_epoch).
+	_resubscribe_epoch += 1
 
-	_saved_subscription_queries.clear()
-	for sub: SpacetimeDBSubscription in current_subscriptions.values():
-		if sub.queries.size() > 0:
-			_saved_subscription_queries.append(sub.queries.duplicate())
+	# Only rebuild the saved set when it's empty. A re-drop that lands mid-resubscribe
+	# must keep the queries from the interrupted cycle — at that moment they sit in
+	# pending_subscriptions (not yet applied), so rebuilding from current_subscriptions
+	# alone would lose them.
+	if _saved_subscription_queries.is_empty():
+		for sub: SpacetimeDBSubscription in current_subscriptions.values():
+			if sub.queries.size() > 0:
+				_saved_subscription_queries.append(sub.queries.duplicate())
+		for sub: SpacetimeDBSubscription in pending_subscriptions.values():
+			if sub.queries.size() > 0:
+				_saved_subscription_queries.append(sub.queries.duplicate())
 	print_log("SpacetimeDBClient: Saved %d subscription query sets for re-subscription." % _saved_subscription_queries.size())
 
 	_schedule_next_reconnect_attempt()
@@ -1272,6 +1294,8 @@ func _cancel_reconnection() -> void:
 	print_log("SpacetimeDBClient: Cancelling reconnection.")
 	_reconnect_state = _ReconnectState.IDLE
 	_reconnect_attempt = 0
+	_reconnect_immediate = false
+	_resubscribe_epoch += 1 # supersede any in-flight resubscribe settles
 	_saved_subscription_queries.clear()
 
 	if _reconnect_timer and _reconnect_timer.time_left > 0:
@@ -1281,34 +1305,48 @@ func _cancel_reconnection() -> void:
 
 
 func _resubscribe_saved_queries() -> void:
-	var total_sets: int = _saved_subscription_queries.size()
+	_resubscribe_epoch += 1
+	var epoch: int = _resubscribe_epoch
+	# Snapshot so a re-entrant _start_reconnection rebuilding _saved_subscription_queries
+	# (on a drop mid-resubscribe) can't disturb this loop (mutation-during-iteration).
+	var query_sets: Array[PackedStringArray] = _saved_subscription_queries.duplicate()
+	var total_sets: int = query_sets.size()
 	var applied_count: Array[int] = [0]
 
-	for queries: PackedStringArray in _saved_subscription_queries:
+	if total_sets == 0:
+		_finish_resubscribe(epoch)
+		return
+
+	for queries: PackedStringArray in query_sets:
 		var sub: SpacetimeDBSubscription = subscribe(queries)
 		if sub.error != OK:
 			printerr("SpacetimeDBClient: Failed to re-subscribe during reconnection: %s" % error_string(sub.error))
 			applied_count[0] += 1
 			if applied_count[0] >= total_sets:
-				_saved_subscription_queries.clear()
-				reconnected.emit()
+				_finish_resubscribe(epoch)
 			continue
 
 		var settled: Array[bool] = [false]
 		var on_settled: Callable = func() -> void:
-			if settled[0]:
+			# Bail if this sub already settled, or a newer reconnect cycle superseded us.
+			if settled[0] or epoch != _resubscribe_epoch:
 				return
 			settled[0] = true
 			applied_count[0] += 1
 			print_log("SpacetimeDBClient: Re-subscription settled (%d/%d)." % [applied_count[0], total_sets])
 			if applied_count[0] >= total_sets:
-				_saved_subscription_queries.clear()
-				reconnected.emit()
+				_finish_resubscribe(epoch)
 		sub.applied.connect(on_settled, CONNECT_ONE_SHOT)
 		sub.end.connect(on_settled, CONNECT_ONE_SHOT)
 
-	if total_sets == 0:
-		reconnected.emit()
+
+## Completes a resubscribe cycle: clears the saved set and emits [signal reconnected],
+## but only if [param epoch] is still current — a superseded cycle does nothing.
+func _finish_resubscribe(epoch: int) -> void:
+	if epoch != _resubscribe_epoch:
+		return
+	_saved_subscription_queries.clear()
+	reconnected.emit()
 
 
 func _evict_oldest(cache: Dictionary) -> void:
