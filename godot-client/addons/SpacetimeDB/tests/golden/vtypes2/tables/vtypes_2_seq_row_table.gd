@@ -2,12 +2,19 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name Vtypes2SeqRowTable extends _ModuleTable
 
+signal inserted(row: Vtypes2SeqRow)
+signal updated(old_row: Vtypes2SeqRow, new_row: Vtypes2SeqRow)
+signal deleted(row: Vtypes2SeqRow)
+
 var id: Vtypes2SeqRowIdUniqueIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"seq_row"
 	id = Vtypes2SeqRowIdUniqueIndex.new(p_local_db)
+	on_insert(_emit_inserted)
+	on_update(_emit_updated)
+	on_delete(_emit_deleted)
 
 func iter() -> Array[Vtypes2SeqRow]:
 	var rows: Array[_ModuleTableType] = super()
@@ -32,3 +39,24 @@ func find_by(field: StringName, value: Variant) -> Array[Vtypes2SeqRow]:
 
 func first_by(field: StringName, value: Variant) -> Vtypes2SeqRow:
 	return super(field, value) as Vtypes2SeqRow
+
+func find_by_id(value: int) -> Array[Vtypes2SeqRow]:
+	return find_by(&"id", value)
+
+func first_by_id(value: int) -> Vtypes2SeqRow:
+	return first_by(&"id", value)
+
+func find_by_v(value: int) -> Array[Vtypes2SeqRow]:
+	return find_by(&"v", value)
+
+func first_by_v(value: int) -> Vtypes2SeqRow:
+	return first_by(&"v", value)
+
+func _emit_inserted(row: _ModuleTableType) -> void:
+	inserted.emit(row as Vtypes2SeqRow)
+
+func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
+	updated.emit(old_row as Vtypes2SeqRow, new_row as Vtypes2SeqRow)
+
+func _emit_deleted(row: _ModuleTableType) -> void:
+	deleted.emit(row as Vtypes2SeqRow)

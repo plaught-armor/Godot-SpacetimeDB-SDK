@@ -2,12 +2,19 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name Vtypes2ThingTable extends _ModuleTable
 
+signal inserted(row: Vtypes2Thing)
+signal updated(old_row: Vtypes2Thing, new_row: Vtypes2Thing)
+signal deleted(row: Vtypes2Thing)
+
 var id: Vtypes2ThingIdUniqueIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"thing"
 	id = Vtypes2ThingIdUniqueIndex.new(p_local_db)
+	on_insert(_emit_inserted)
+	on_update(_emit_updated)
+	on_delete(_emit_deleted)
 
 func iter() -> Array[Vtypes2Thing]:
 	var rows: Array[_ModuleTableType] = super()
@@ -32,3 +39,24 @@ func find_by(field: StringName, value: Variant) -> Array[Vtypes2Thing]:
 
 func first_by(field: StringName, value: Variant) -> Vtypes2Thing:
 	return super(field, value) as Vtypes2Thing
+
+func find_by_id(value: int) -> Array[Vtypes2Thing]:
+	return find_by(&"id", value)
+
+func first_by_id(value: int) -> Vtypes2Thing:
+	return first_by(&"id", value)
+
+func find_by_label(value: String) -> Array[Vtypes2Thing]:
+	return find_by(&"label", value)
+
+func first_by_label(value: String) -> Vtypes2Thing:
+	return first_by(&"label", value)
+
+func _emit_inserted(row: _ModuleTableType) -> void:
+	inserted.emit(row as Vtypes2Thing)
+
+func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
+	updated.emit(old_row as Vtypes2Thing, new_row as Vtypes2Thing)
+
+func _emit_deleted(row: _ModuleTableType) -> void:
+	deleted.emit(row as Vtypes2Thing)

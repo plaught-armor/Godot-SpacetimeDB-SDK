@@ -2,10 +2,17 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name VtypesOneU256Table extends _ModuleTable
 
+signal inserted(row: VtypesOneU256)
+signal updated(old_row: VtypesOneU256, new_row: VtypesOneU256)
+signal deleted(row: VtypesOneU256)
+
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"one_u_256"
+	on_insert(_emit_inserted)
+	on_update(_emit_updated)
+	on_delete(_emit_deleted)
 
 func iter() -> Array[VtypesOneU256]:
 	var rows: Array[_ModuleTableType] = super()
@@ -30,3 +37,18 @@ func find_by(field: StringName, value: Variant) -> Array[VtypesOneU256]:
 
 func first_by(field: StringName, value: Variant) -> VtypesOneU256:
 	return super(field, value) as VtypesOneU256
+
+func find_by_n(value: PackedByteArray) -> Array[VtypesOneU256]:
+	return find_by(&"n", value)
+
+func first_by_n(value: PackedByteArray) -> VtypesOneU256:
+	return first_by(&"n", value)
+
+func _emit_inserted(row: _ModuleTableType) -> void:
+	inserted.emit(row as VtypesOneU256)
+
+func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
+	updated.emit(old_row as VtypesOneU256, new_row as VtypesOneU256)
+
+func _emit_deleted(row: _ModuleTableType) -> void:
+	deleted.emit(row as VtypesOneU256)
