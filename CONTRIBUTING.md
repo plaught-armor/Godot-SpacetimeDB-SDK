@@ -12,7 +12,7 @@ codegen golden files.
 
 ## Running the tests
 
-The suite lives in `godot-client/addons/SpacetimeDB/tests/`. Each test is a
+The suite lives in `godot-client/tests/`. Each test is a
 standalone script that extends `SceneTree`, asserts as it runs, and exits with
 its failure count (`0` means everything passed). Run the whole suite with:
 
@@ -42,10 +42,9 @@ To push without running the suite (for a docs-only change, say), use
 ## Codegen golden tests
 
 `test_codegen_golden.gd` locks the exact GDScript text that codegen emits. It
-parses the captured schema fixtures under
-`godot-client/spacetime_bindings/codegen_debug/`, runs the generator, and diffs
-every emitted file against the committed golden in
-`godot-client/addons/SpacetimeDB/tests/golden/`.
+parses the captured schema fixtures under `godot-client/tests/fixtures/`, runs
+the generator, and diffs every emitted file against the committed golden in
+`godot-client/tests/golden/`.
 
 If you make a **deliberate** change to codegen output, regenerate the goldens
 and review the diff before committing:
@@ -53,7 +52,7 @@ and review the diff before committing:
 ```sh
 cd godot-client
 STDB_REGEN_GOLDEN=1 ./run_tests.sh test_codegen_golden   # or run the script directly
-git diff addons/SpacetimeDB/tests/golden                 # review every change
+git diff tests/golden                                    # review every change
 ```
 
 A golden diff you did not intend is a regression — investigate before
