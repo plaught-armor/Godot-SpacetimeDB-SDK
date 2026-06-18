@@ -920,10 +920,11 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			sub.applied.emit()
 
 	elif message is UnsubscribeAppliedMessage:
+		var qid: int = message.query_id.id
 		if not message.tables.is_empty():
 			for table_update: TableUpdateData in message.tables:
-				_local_db.apply_table_update(table_update)
-		var qid: int = message.query_id.id
+				_local_db.apply_table_update(table_update, qid)
+		_local_db.forget_query(qid)
 		if current_subscriptions.has(qid):
 			var sub: SpacetimeDBSubscription = current_subscriptions[qid]
 			current_subscriptions.erase(qid)
@@ -944,23 +945,12 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				current_subscriptions.erase(qid)
 				sub.error_message = message.error_message
 				sub.end.emit()
-				# This subscription was already applied, so its rows are in the local cache —
-				# but the server sends no dropped rows on a SubscriptionError and we have no
-				# per-query row tracking, so they can't be pruned selectively. If auto-reconnect
-				# is on, reset the connection to invalidate the cache; the reconnect rebuilds it
-				# from the remaining subscriptions (this one excluded, since it was just erased
-				# from current_subscriptions above). With no reconnect path we can't rebuild, so
-				# keep the live connection rather than strand the client, and warn instead.
-				if connection_options and connection_options.auto_reconnect:
-					print_log(
-						"SpacetimeDBClient: SubscriptionError on applied query_id %d; resetting connection to clear stale cache." % qid,
-					)
-					if _connection:
-						_connection.disconnect_from_server()
-				else:
-					push_warning(
-						"SpacetimeDBClient: SubscriptionError on applied query_id %d; cache may retain its rows (no auto_reconnect to rebuild)." % qid,
-					)
+				# Already-applied subscription: prune exactly its rows. The server sends no
+				# dropped rows on an error, so LocalDatabase reconstructs them from per-query
+				# membership and decrements their refcounts — rows still held by another
+				# subscription survive. No disconnect/rebuild needed, regardless of auto_reconnect.
+				_local_db.prune_query(qid)
+				print_log("SpacetimeDBClient: SubscriptionError on applied query_id %d; pruned its rows." % qid)
 
 	elif message is TransactionUpdateMessage:
 		_handle_transaction_update(message)

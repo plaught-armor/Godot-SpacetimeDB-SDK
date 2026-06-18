@@ -39,9 +39,21 @@ serialization types and behaviors are verified end-to-end against a live Spaceti
   matching `Identity` and the serializer (was asymmetric → round-trip mismatch).
 - **Fallible-reducer error messages.** The `err` payload (a BSATN length-prefixed
   string for `Result<_, String>`) is now decoded; previously it came through empty.
-- **`SubscriptionError` on an applied subscription.** With auto-reconnect enabled, the
-  connection is reset so the cache rebuilds from the remaining subscriptions, instead
-  of leaving stale rows; warns when auto-reconnect is off.
+- **`SubscriptionError` on an applied subscription is now pruned precisely.** The SDK
+  tracks per-query row membership, so on an error it drops exactly that query's rows
+  (decrementing refcounts; rows still held by another subscription survive) — no
+  disconnect or full rebuild, and it works regardless of `auto_reconnect`. Previously
+  it reset the connection (reconnect on) or left stale rows (reconnect off).
+- **Reducer/procedure `wait_for_response()` returns the handle.** `await
+  reducers.foo(args).wait_for_response()` now yields the `SpacetimeDBReducerCall` /
+  `SpacetimeDBProcedureCall` itself, so the unambiguous `outcome` (OK / OK_EMPTY / ERROR /
+  INTERNAL_ERROR / TIMEOUT / DISCONNECTED), `decode()`, and result are available in one
+  step — instead of a bare `TransactionUpdateMessage`/bytes that was `null`/empty on
+  timeout, okEmpty, error, and disconnect alike.
+- **Removed a per-call array allocation** from the `find_where` / `first_where` /
+  `find_by` / `first_by` / `count_where` cache-query helpers (they iterated
+  `Dictionary.values()`); they now iterate keys directly, and the `first_*` variants no
+  longer allocate the whole table to return a single row.
 - **Disconnect no longer blocks pending waits.** `query_sql()` and the
   `wait_for_reducer_response()` / `wait_for_procedure_response()` helpers return
   empty/`null` immediately on disconnect rather than waiting out their timeout.

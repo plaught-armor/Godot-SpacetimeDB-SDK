@@ -28,6 +28,11 @@ var _ref_counts: Dictionary[StringName, Dictionary] = { }
 ## A distinct row value held by N overlapping subscriptions has count N; on_insert fires
 ## on 0->1, on_delete on 1->0. Mirrors the per-row entries in _pk_less_tables.
 var _pk_less_counts: Dictionary[StringName, Dictionary] = { }
+## Per-query row membership: query_id -> { table -> (PK: { pk -> row }) | (PK-less: Array[row]) }.
+## Records which rows each subscription contributes so a SubscriptionError on an already-
+## applied query can be pruned precisely (decrement those rows' refcounts, evict any that
+## no other query holds) — the server sends no dropped rows on an error, unlike unsubscribe.
+var _query_rows: Dictionary[int, Dictionary] = { }
 
 ## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -236,12 +241,69 @@ func _pk_less_remove(counts: Dictionary, h: int, entry: Array) -> void:
 		counts.erase(h)
 
 
+# --- Per-query membership (for prune_query) ---
+func _query_table_pk_mem(query_id: int, table: StringName) -> Dictionary:
+	if not _query_rows.has(query_id):
+		_query_rows[query_id] = { }
+	var tables: Dictionary = _query_rows[query_id]
+	if not tables.has(table):
+		tables[table] = { } # pk -> row
+	return tables[table]
+
+
+func _query_table_pkless_mem(query_id: int, table: StringName) -> Array:
+	if not _query_rows.has(query_id):
+		_query_rows[query_id] = { }
+	var tables: Dictionary = _query_rows[query_id]
+	if not tables.has(table):
+		tables[table] = [] # Array[row]
+	return tables[table]
+
+
+func _array_remove_first_equal(arr: Array, row: _ModuleTableType, props: Array[StringName]) -> void:
+	for i: int in range(arr.size()):
+		if _rows_equal(arr[i], row, props):
+			arr.remove_at(i)
+			return
+
+
+## Drops every row contributed by [param query_id] from the cache. Used on a
+## SubscriptionError for an already-applied subscription (the server sends no dropped
+## rows on an error): decrements each row's refcount via the normal delete path and
+## evicts only rows no other subscription holds — the same effect as an unsubscribe,
+## reconstructed from locally-tracked per-query membership.
+func prune_query(query_id: int) -> void:
+	if not _query_rows.has(query_id):
+		return
+	var tables: Dictionary = _query_rows[query_id]
+	# Direct key iteration (no .keys() alloc). apply_table_update below mutates the inner
+	# membership containers but never adds/removes a table key here, so this is safe.
+	for table_name_lower: StringName in tables:
+		var membership: Variant = tables[table_name_lower]
+		var drop: TableUpdateData = TableUpdateData.new()
+		drop.table_name = table_name_lower
+		if membership is Dictionary:
+			drop.deletes.assign(membership.values())
+		elif membership is Array:
+			drop.deletes.assign(membership)
+		if not drop.deletes.is_empty():
+			apply_table_update(drop, query_id)
+	_query_rows.erase(query_id)
+
+
+## Drops the per-query membership index for [param query_id] without touching the cache
+## (the rows were already removed via the normal delete path, e.g. an unsubscribe whose
+## dropped rows the server echoed). Prevents the index from growing unbounded.
+func forget_query(query_id: int) -> void:
+	_query_rows.erase(query_id)
+
+
 ## Applies all table updates from a [SubscribeAppliedMessage] to the local store.
 func apply_database_subscription_applied(db_update: SubscribeAppliedMessage) -> void:
 	if not db_update:
 		return
 	for table_update: TableUpdateData in db_update.tables:
-		apply_table_update(table_update)
+		apply_table_update(table_update, db_update.query_set_id.id)
 
 
 ## Applies all table updates from a [DatabaseUpdateData] to the local store.
@@ -249,12 +311,14 @@ func apply_database_update(db_update: DatabaseUpdateData) -> void:
 	if not db_update:
 		return
 	for table_update: TableUpdateData in db_update.tables:
-		apply_table_update(table_update)
+		apply_table_update(table_update, db_update.query_id.id)
 
 
 ## Applies a single [TableUpdateData] — processes inserts then deletes, dispatches
 ## listener callbacks and signals, and handles both PK-keyed and PK-less tables.
-func apply_table_update(table_update: TableUpdateData) -> void:
+## [param query_id] (>= 0) records which subscription contributed each row, so a
+## [method prune_query] can later drop exactly that query's rows on a SubscriptionError.
+func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> void:
 	var table_name_lower: StringName = _normalize(table_update.table_name)
 
 	if not _tables.has(table_name_lower):
@@ -324,6 +388,9 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 					for listener: Callable in insert_listeners:
 						listener.call(inserted_row)
 				row_inserted.emit(table_name_lower, inserted_row)
+			# Record this query's delivery (per delivery, so prune decrements its exact share).
+			if query_id >= 0:
+				_query_table_pkless_mem(query_id, table_name_lower).append(inserted_row)
 
 		if not table_update.deletes.is_empty():
 			var evicted: Dictionary = { } # instance_id -> true, for a single-pass array compact
@@ -333,6 +400,8 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 				if del_entry.is_empty() or del_entry[1] <= 0:
 					continue
 				del_entry[1] -= 1
+				if query_id >= 0:
+					_array_remove_first_equal(_query_table_pkless_mem(query_id, table_name_lower), deleted_row, props)
 				if del_entry[1] == 0:
 					var cached_row: _ModuleTableType = del_entry[0]
 					_pk_less_remove(counts, del_hash, del_entry)
@@ -417,6 +486,16 @@ func apply_table_update(table_update: TableUpdateData) -> void:
 		else:
 			ref_table.erase(pk_value)
 
+		# Track whether THIS query now holds the pk (insert) or dropped it (pure delete),
+		# so a SubscriptionError on the query can prune exactly its rows. An update
+		# (insert_count>0) keeps it held; a pure delete (no insert) drops it.
+		if query_id >= 0:
+			var qmem: Dictionary = _query_table_pk_mem(query_id, table_name_lower)
+			if insert_count > 0:
+				qmem[pk_value] = new_row
+			elif delete_count > 0:
+				qmem.erase(pk_value)
+
 		if not was_present and is_present:
 			table_dict[pk_value] = new_row
 			had_any_change = true
@@ -469,6 +548,7 @@ func clear_local_db() -> void:
 		_pk_less_tables[table_name_lower].clear()
 	_ref_counts.clear()
 	_pk_less_counts.clear()
+	_query_rows.clear()
 
 
 ## Emits delete + transactions-completed callbacks for every row in [param rows].
@@ -531,7 +611,9 @@ func find_where(table_name: StringName, predicate: Callable) -> Array[_ModuleTab
 			if predicate.call(row):
 				result.append(row)
 	elif _tables.has(key):
-		for row: _ModuleTableType in _tables[key].values():
+		var t: Dictionary = _tables[key]
+		for pk: Variant in t:
+			var row: _ModuleTableType = t[pk]
 			if predicate.call(row):
 				result.append(row)
 	return result
@@ -545,7 +627,9 @@ func first_where(table_name: StringName, predicate: Callable) -> _ModuleTableTyp
 			if predicate.call(row):
 				return row
 	elif _tables.has(key):
-		for row: _ModuleTableType in _tables[key].values():
+		var t: Dictionary = _tables[key]
+		for pk: Variant in t:
+			var row: _ModuleTableType = t[pk]
 			if predicate.call(row):
 				return row
 	return null
@@ -560,7 +644,9 @@ func find_by(table_name: StringName, field: StringName, value: Variant) -> Array
 			if row.get(field) == value:
 				result.append(row)
 	elif _tables.has(key):
-		for row: _ModuleTableType in _tables[key].values():
+		var t: Dictionary = _tables[key]
+		for pk: Variant in t:
+			var row: _ModuleTableType = t[pk]
 			if row.get(field) == value:
 				result.append(row)
 	return result
@@ -574,7 +660,9 @@ func first_by(table_name: StringName, field: StringName, value: Variant) -> _Mod
 			if row.get(field) == value:
 				return row
 	elif _tables.has(key):
-		for row: _ModuleTableType in _tables[key].values():
+		var t: Dictionary = _tables[key]
+		for pk: Variant in t:
+			var row: _ModuleTableType = t[pk]
 			if row.get(field) == value:
 				return row
 	return null
@@ -589,7 +677,9 @@ func count_where(table_name: StringName, predicate: Callable) -> int:
 			if predicate.call(row):
 				c += 1
 	elif _tables.has(key):
-		for row: _ModuleTableType in _tables[key].values():
+		var t: Dictionary = _tables[key]
+		for pk: Variant in t:
+			var row: _ModuleTableType = t[pk]
 			if predicate.call(row):
 				c += 1
 	return c
@@ -603,3 +693,4 @@ func clear_all_tables() -> void:
 		_pk_less_tables[table_name].clear()
 	_ref_counts.clear()
 	_pk_less_counts.clear()
+	_query_rows.clear()

@@ -61,16 +61,20 @@ static func fail(p_error: Error) -> SpacetimeDBReducerCall:
 	return reducer_call
 
 
-## Awaits the server response for up to [param timeout_sec] seconds.[br]
-## Returns the [TransactionUpdateMessage] on success, or [code]null[/code] on timeout/error.
-func wait_for_response(timeout_sec: float = 10) -> TransactionUpdateMessage:
+## Awaits the server response for up to [param timeout_sec] seconds, then returns this
+## handle so the unambiguous outcome is available in one step:[br]
+## [code]var call := await reducers.foo(args).wait_for_response()[/code][br]
+## then inspect [member outcome] / [method is_ok] / [method is_error] / [method decode] /
+## [member transaction_update] / [member error_message]. Unlike a bare [TransactionUpdateMessage]
+## return, this distinguishes OK / OK_EMPTY / ERROR / INTERNAL_ERROR / TIMEOUT / DISCONNECTED.
+func wait_for_response(timeout_sec: float = 10) -> SpacetimeDBReducerCall:
 	if error:
-		return null
-	var res: TransactionUpdateMessage = await _client.wait_for_reducer_response(request_id, timeout_sec)
+		return self
+	await _client.wait_for_reducer_response(request_id, timeout_sec)
 	if outcome == Outcome.PENDING:
 		outcome = Outcome.TIMEOUT
 		error_message = "Timeout waiting for reducer response"
-	return res
+	return self
 
 
 ## Decodes [member ret_value] using the reducer's ok return type provided at call

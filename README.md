@@ -57,9 +57,7 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 
 ## Known Limitations & Caveats
 
--   **`SubscriptionError` on an already-applied subscription with auto-reconnect off:** the server sends no dropped rows on a subscription error and the SDK keeps no per-query row index, so it cannot prune that query's rows selectively. With `auto_reconnect` enabled the connection is reset and the cache rebuilt from the remaining subscriptions; with it disabled the rows may linger in the local cache (a runtime warning is emitted).
 -   **`TimeDuration` is surfaced as `int` microseconds,** not a distinct type. The wire value is correct; only the semantic distinction from `Timestamp` is absent.
--   **Disconnect resolves pending waits as empty/null:** `query_sql()` and the `wait_for_reducer_response()` / `wait_for_procedure_response()` helpers return empty/`null` immediately on disconnect rather than blocking their timeout. A `null` reducer-wait result is ambiguous (timeout, `okEmpty`, or error) — use the `SpacetimeDBReducerCall` handle's `Outcome` enum when the distinction matters.
 -   **WebSocket keepalive default is 15s:** a main-thread stall longer than the configured `heartbeat_interval_seconds` can trip a false dead-socket detection and reconnect. Tune it, or set it to `0` to disable, via `SpacetimeDBConnectionOptions`.
 -   **Deferred schema-v10 details:** the schema parser does not surface column `default_values` or module namespaces — neither has a functional consumer yet (`default_values` is verified harmless: `auto_inc` tables deserialize fine; namespaces are unused). Implemented when a module needs them. (Canonical/case naming via `ExplicitNames` and fallible-reducer return values + error messages *are* handled.)
 
