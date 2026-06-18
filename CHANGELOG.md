@@ -2,6 +2,38 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [1.9.0] - 2026-06-18
+
+Connection-robustness release. Hardens auto-reconnect against main-thread stalls
+and a set of reconnect/resubscribe edge cases. No breaking changes.
+
+### Added
+- **Stall-aware reconnect.** A main-thread stall longer than `heartbeat_interval`
+  makes Godot's `WebSocketPeer` miss a pong and close the socket (`code -1`) — the
+  close is engine-side and unavoidable, but its cause is local, not a network drop.
+  The connection now measures the wall-clock gap between polls; a gap at or beyond
+  the heartbeat window arms a short guard, and an abnormal close inside it is
+  surfaced on a new `connection_stalled` signal instead of `connection_error`. The
+  client reconnects immediately (backoff skipped on the first attempt), reusing the
+  existing save/restore-subscriptions path, so a stall recovers near-instantly and
+  quietly rather than ramping a multi-second backoff.
+
+### Fixed
+- **Re-drop mid-resubscribe could lose subscriptions and double-fire `reconnected`.**
+  Queries from an interrupted resubscribe cycle sit in `pending_subscriptions` (not
+  yet applied), so rebuilding the saved set from `current_subscriptions` alone
+  dropped them; and a superseded cycle's late `applied`/`end` still ran. A
+  per-cycle epoch now bails stale settle callbacks, and the saved set is rebuilt
+  (from both current and pending subscriptions) only when empty.
+- **`_resubscribe_saved_queries` mutated the list it was iterating.** The saved
+  array is now snapshotted up front and the clear+emit deferred until after the
+  loop.
+- **`disconnect_db()` on an already-closed socket emitted nothing.** When cancelled
+  mid-backoff during a reconnect, `disconnect_from_server()` was a no-op, leaving
+  callers waiting on `disconnected` forever and the intentional-disconnect flag
+  stuck. It now self-emits `disconnected` and clears the flag when not connected.
+- A stall during an in-flight reconnect now keeps the no-backoff fast path.
+
 ## [1.8.0] - 2026-06-18
 
 Test-gate and codegen-coverage release. No runtime SDK behavior change — this
