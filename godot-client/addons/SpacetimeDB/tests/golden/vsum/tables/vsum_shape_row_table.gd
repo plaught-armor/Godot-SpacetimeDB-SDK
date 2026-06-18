@@ -46,12 +46,6 @@ func find_by_id(value: int) -> Array[VsumShapeRow]:
 func first_by_id(value: int) -> VsumShapeRow:
 	return first_by(&"id", value)
 
-func find_by_shape(value: VsumShape) -> Array[VsumShapeRow]:
-	return find_by(&"shape", value)
-
-func first_by_shape(value: VsumShape) -> VsumShapeRow:
-	return first_by(&"shape", value)
-
 func _emit_inserted(row: _ModuleTableType) -> void:
 	inserted.emit(row as VsumShapeRow)
 

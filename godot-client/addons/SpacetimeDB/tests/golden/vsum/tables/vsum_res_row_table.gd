@@ -46,12 +46,6 @@ func find_by_id(value: int) -> Array[VsumResRow]:
 func first_by_id(value: int) -> VsumResRow:
 	return first_by(&"id", value)
 
-func find_by_r(value: VsumResultI32String) -> Array[VsumResRow]:
-	return find_by(&"r", value)
-
-func first_by_r(value: VsumResultI32String) -> VsumResRow:
-	return first_by(&"r", value)
-
 func _emit_inserted(row: _ModuleTableType) -> void:
 	inserted.emit(row as VsumResRow)
 

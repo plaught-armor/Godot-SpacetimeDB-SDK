@@ -2,10 +2,17 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name BlackholioConsumeEntityEventTable extends _ModuleTable
 
+signal inserted(row: BlackholioConsumeEntityEvent)
+signal updated(old_row: BlackholioConsumeEntityEvent, new_row: BlackholioConsumeEntityEvent)
+signal deleted(row: BlackholioConsumeEntityEvent)
+
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"consume_entity_event"
+	on_insert(_emit_inserted)
+	on_update(_emit_updated)
+	on_delete(_emit_deleted)
 
 func iter() -> Array[BlackholioConsumeEntityEvent]:
 	var rows: Array[_ModuleTableType] = super()
@@ -30,3 +37,24 @@ func find_by(field: StringName, value: Variant) -> Array[BlackholioConsumeEntity
 
 func first_by(field: StringName, value: Variant) -> BlackholioConsumeEntityEvent:
 	return super(field, value) as BlackholioConsumeEntityEvent
+
+func find_by_consumed_entity_id(value: int) -> Array[BlackholioConsumeEntityEvent]:
+	return find_by(&"consumed_entity_id", value)
+
+func first_by_consumed_entity_id(value: int) -> BlackholioConsumeEntityEvent:
+	return first_by(&"consumed_entity_id", value)
+
+func find_by_consumer_entity_id(value: int) -> Array[BlackholioConsumeEntityEvent]:
+	return find_by(&"consumer_entity_id", value)
+
+func first_by_consumer_entity_id(value: int) -> BlackholioConsumeEntityEvent:
+	return first_by(&"consumer_entity_id", value)
+
+func _emit_inserted(row: _ModuleTableType) -> void:
+	inserted.emit(row as BlackholioConsumeEntityEvent)
+
+func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
+	updated.emit(old_row as BlackholioConsumeEntityEvent, new_row as BlackholioConsumeEntityEvent)
+
+func _emit_deleted(row: _ModuleTableType) -> void:
+	deleted.emit(row as BlackholioConsumeEntityEvent)

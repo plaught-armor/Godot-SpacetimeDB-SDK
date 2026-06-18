@@ -624,21 +624,23 @@ func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictiona
 	return content
 
 
-## Scalar (non-nested, non-arraylike) fields of a table struct as [[safe_name, gd_type], ...].
-## Only these get typed finders — find_by on an array/vector/ScheduleAt value is meaningless.
+## Fields of a table struct that get typed finders, as [[safe_name, gd_type], ...].
+## Restricted to value-comparable built-in types — find_by does an `==` match, so a
+## generated Resource field (reference equality, never matches a fresh value), a native
+## vector/color, an enum, or a nested array would all produce a finder that can't work.
 func _table_scalar_fields(schema: SpacetimeParsedSchema, type_def: Dictionary) -> Array:
+	# GDScript built-ins with value `==` semantics. PackedByteArray covers identity /
+	# connection_id / uuid / wide ints; int covers timestamp/duration micros.
+	const VALUE_TYPES: Array[String] = ["int", "float", "String", "bool", "StringName", "PackedByteArray"]
 	var out: Array = []
 	for field: Dictionary in type_def.get("struct", []):
 		if not field.get("nested_type", []).is_empty():
-			continue
-		var field_type: Variant = _get_type_def(schema, field.type_idx) if field.has("type_idx") else null
-		if field_type and field_type.has("gd_arraylike"):
 			continue
 		var field_name: String = _safe_name(field.get("name", ""))
 		if field_name == "scheduled_at":
 			continue
 		var gd_type: String = schema.type_map.get(field.get("type", "Variant"), "Variant")
-		if gd_type == "Variant":
+		if gd_type not in VALUE_TYPES:
 			continue
 		out.append([field_name, gd_type])
 	return out

@@ -2,6 +2,10 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name BlackholioCircleTable extends _ModuleTable
 
+signal inserted(row: BlackholioCircle)
+signal updated(old_row: BlackholioCircle, new_row: BlackholioCircle)
+signal deleted(row: BlackholioCircle)
+
 var entity_id: BlackholioCircleEntityIdUniqueIndex
 var player_id: BlackholioCirclePlayerIdBTreeIndex
 
@@ -10,6 +14,9 @@ func _init(p_local_db: LocalDatabase) -> void:
 	_table_name = &"circle"
 	entity_id = BlackholioCircleEntityIdUniqueIndex.new(p_local_db)
 	player_id = BlackholioCirclePlayerIdBTreeIndex.new(p_local_db)
+	on_insert(_emit_inserted)
+	on_update(_emit_updated)
+	on_delete(_emit_deleted)
 
 func iter() -> Array[BlackholioCircle]:
 	var rows: Array[_ModuleTableType] = super()
@@ -34,3 +41,36 @@ func find_by(field: StringName, value: Variant) -> Array[BlackholioCircle]:
 
 func first_by(field: StringName, value: Variant) -> BlackholioCircle:
 	return super(field, value) as BlackholioCircle
+
+func find_by_entity_id(value: int) -> Array[BlackholioCircle]:
+	return find_by(&"entity_id", value)
+
+func first_by_entity_id(value: int) -> BlackholioCircle:
+	return first_by(&"entity_id", value)
+
+func find_by_player_id(value: int) -> Array[BlackholioCircle]:
+	return find_by(&"player_id", value)
+
+func first_by_player_id(value: int) -> BlackholioCircle:
+	return first_by(&"player_id", value)
+
+func find_by_speed(value: float) -> Array[BlackholioCircle]:
+	return find_by(&"speed", value)
+
+func first_by_speed(value: float) -> BlackholioCircle:
+	return first_by(&"speed", value)
+
+func find_by_last_split_time(value: int) -> Array[BlackholioCircle]:
+	return find_by(&"last_split_time", value)
+
+func first_by_last_split_time(value: int) -> BlackholioCircle:
+	return first_by(&"last_split_time", value)
+
+func _emit_inserted(row: _ModuleTableType) -> void:
+	inserted.emit(row as BlackholioCircle)
+
+func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
+	updated.emit(old_row as BlackholioCircle, new_row as BlackholioCircle)
+
+func _emit_deleted(row: _ModuleTableType) -> void:
+	deleted.emit(row as BlackholioCircle)
