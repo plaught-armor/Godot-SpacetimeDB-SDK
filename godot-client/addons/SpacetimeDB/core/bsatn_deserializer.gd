@@ -89,50 +89,66 @@ func clear_error() -> void:
 
 #--- Primitive Readers ---
 func read_i8(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 1):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 1 > spb.get_size():
+		return _read_underflow_int(spb, 1)
 	return spb.get_8()
 
 
 func read_i16_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 2):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 2 > spb.get_size():
+		return _read_underflow_int(spb, 2)
 	return spb.get_16()
 
 
 func read_i32_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 4):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 4 > spb.get_size():
+		return _read_underflow_int(spb, 4)
 	return spb.get_32()
 
 
 func read_i64_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 8):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 8 > spb.get_size():
+		return _read_underflow_int(spb, 8)
 	return spb.get_64()
 
 
 func read_u8(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 1):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 1 > spb.get_size():
+		return _read_underflow_int(spb, 1)
 	return spb.get_u8()
 
 
 func read_u16_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 2):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 2 > spb.get_size():
+		return _read_underflow_int(spb, 2)
 	return spb.get_u16()
 
 
 func read_u32_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 4):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 4 > spb.get_size():
+		return _read_underflow_int(spb, 4)
 	return spb.get_u32()
 
 
 func read_u64_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 8):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 8 > spb.get_size():
+		return _read_underflow_int(spb, 8)
 	return spb.get_u64()
 
 
@@ -161,13 +177,19 @@ func read_i256(spb: StreamPeerBuffer) -> PackedByteArray:
 
 
 func read_f32_le(spb: StreamPeerBuffer) -> float:
-	if not _check_read(spb, 4):
+	if _status != ParseStatus.OK:
+		return 0.0
+	if spb.get_position() + 4 > spb.get_size():
+		_read_underflow_int(spb, 4)
 		return 0.0
 	return spb.get_float()
 
 
 func read_f64_le(spb: StreamPeerBuffer) -> float:
-	if not _check_read(spb, 8):
+	if _status != ParseStatus.OK:
+		return 0.0
+	if spb.get_position() + 8 > spb.get_size():
+		_read_underflow_int(spb, 8)
 		return 0.0
 	return spb.get_double()
 
@@ -405,8 +427,19 @@ func _set_error(msg: String, position: int = -1, status: ParseStatus = ParseStat
 	printerr(_last_error)
 
 
+# Slow path for inlined readers: sets the underflow error and returns 0. Kept out of
+# the hot readers so their happy path is just the bounds compare + the native get_*.
+func _read_underflow_int(spb: StreamPeerBuffer, bytes_needed: int) -> int:
+	_set_error(
+		"Attempted to read %d bytes past end of buffer (size: %d)." % [bytes_needed, spb.get_size()],
+		spb.get_position(),
+		ParseStatus.NEEDS_MORE,
+	)
+	return 0
+
+
 func _check_read(spb: StreamPeerBuffer, bytes_needed: int) -> bool:
-	if has_error():
+	if _status != ParseStatus.OK: # inlined has_error()
 		return false
 	if spb.get_position() + bytes_needed > spb.get_size():
 		_set_error(
