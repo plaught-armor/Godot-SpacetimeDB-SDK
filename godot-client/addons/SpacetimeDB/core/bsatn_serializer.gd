@@ -368,27 +368,28 @@ func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary
 		v = _generate_default_type(bsatn_struct_type)
 	var value_type: int = typeof(v)
 
+	# if-elif, not match: per native-vector field per send. match arm ~10 opcodes vs
+	# ~2 for an if branch (see deserializer _read_native_arraylike). Float vectors first.
 	var components: Array
-	match value_type:
-		TYPE_VECTOR2:
-			components = [v.x, v.y]
-		TYPE_VECTOR2I:
-			components = [v.x, v.y]
-		TYPE_VECTOR3:
-			components = [v.x, v.y, v.z]
-		TYPE_VECTOR3I:
-			components = [v.x, v.y, v.z]
-		TYPE_VECTOR4:
-			components = [v.x, v.y, v.z, v.w]
-		TYPE_VECTOR4I:
-			components = [v.x, v.y, v.z, v.w]
-		TYPE_QUATERNION:
-			components = [v.x, v.y, v.z, v.w]
-		TYPE_COLOR:
-			components = [v.r, v.g, v.b, v.a]
-		_:
-			_set_error("Unsupported array-like gd type '%s' ('%s'). Could not assign components array." % [prop_name, type_string(value_type)])
-			return
+	if value_type == TYPE_VECTOR2:
+		components = [v.x, v.y]
+	elif value_type == TYPE_VECTOR3:
+		components = [v.x, v.y, v.z]
+	elif value_type == TYPE_VECTOR4:
+		components = [v.x, v.y, v.z, v.w]
+	elif value_type == TYPE_COLOR:
+		components = [v.r, v.g, v.b, v.a]
+	elif value_type == TYPE_QUATERNION:
+		components = [v.x, v.y, v.z, v.w]
+	elif value_type == TYPE_VECTOR2I:
+		components = [v.x, v.y]
+	elif value_type == TYPE_VECTOR3I:
+		components = [v.x, v.y, v.z]
+	elif value_type == TYPE_VECTOR4I:
+		components = [v.x, v.y, v.z, v.w]
+	else:
+		_set_error("Unsupported array-like gd type '%s' ('%s'). Could not assign components array." % [prop_name, type_string(value_type)])
+		return
 
 	var bsatn_types_for_components: String = result.get_string("components")
 	if bsatn_types_for_components.is_empty():
@@ -500,51 +501,53 @@ func _get_value_class_name(value: Variant) -> String:
 
 # Helper to get the specific BSATN writer METHOD NAME based on metadata value.
 func _get_primitive_writer_from_bsatn_type(bsatn_type_str: StringName) -> Callable:
-	match bsatn_type_str:
-		&"u128":
-			return write_u128
-		&"i128":
-			return write_i128
-		&"u256":
-			return write_u256
-		&"i256":
-			return write_i256
-		&"u64":
-			return write_u64_le
-		&"i64":
-			return write_i64_le
-		&"f64":
-			return write_f64_le
-		&"u32":
-			return write_u32_le
-		&"i32":
-			return write_i32_le
-		&"f32":
-			return write_f32_le
-		&"u16":
-			return write_u16_le
-		&"i16":
-			return write_i16_le
-		&"u8":
-			return write_u8
-		&"i8":
-			return write_i8
-		&"identity":
-			return write_identity
-		&"connection_id":
-			return write_connection_id
-		&"timestamp":
-			return write_timestamp
-		&"scheduled_at":
-			return write_scheduled_at
-		&"vec_u8":
-			return write_vec_u8
-		&"bool":
-			return write_bool
-		&"string":
-			return write_string_with_u32_len
-		_:
-			return Callable()
+	# if-elif, not match: reached per element on the recursive vec/option path
+	# (_write_value_from_bsatn_type) plus at plan-build. match arm ~10 opcodes vs ~2
+	# for an if branch; ordered by expected field frequency.
+	var t: StringName = bsatn_type_str
+	if t == &"u32":
+		return write_u32_le
+	elif t == &"i32":
+		return write_i32_le
+	elif t == &"u64":
+		return write_u64_le
+	elif t == &"i64":
+		return write_i64_le
+	elif t == &"f32":
+		return write_f32_le
+	elif t == &"bool":
+		return write_bool
+	elif t == &"string":
+		return write_string_with_u32_len
+	elif t == &"u8":
+		return write_u8
+	elif t == &"u16":
+		return write_u16_le
+	elif t == &"i8":
+		return write_i8
+	elif t == &"i16":
+		return write_i16_le
+	elif t == &"f64":
+		return write_f64_le
+	elif t == &"vec_u8":
+		return write_vec_u8
+	elif t == &"identity":
+		return write_identity
+	elif t == &"connection_id":
+		return write_connection_id
+	elif t == &"timestamp":
+		return write_timestamp
+	elif t == &"scheduled_at":
+		return write_scheduled_at
+	elif t == &"u128":
+		return write_u128
+	elif t == &"i128":
+		return write_i128
+	elif t == &"u256":
+		return write_u256
+	elif t == &"i256":
+		return write_i256
+	return Callable()
 
 
 func _get_writer_callable_for_property(prop: Dictionary, bsatn_type_str: StringName) -> Callable:

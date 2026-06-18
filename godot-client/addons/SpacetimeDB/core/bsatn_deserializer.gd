@@ -600,23 +600,27 @@ func _read_native_arraylike(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_
 	for component_type: StringName in components_str.split(","):
 		components.append(_read_value_from_bsatn_type(spb, component_type, prop_name))
 
-	match prop.type:
-		TYPE_VECTOR2:
-			return Vector2.ZERO if has_error() else Vector2(components[0], components[1])
-		TYPE_VECTOR2I:
-			return Vector2i.ZERO if has_error() else Vector2i(components[0], components[1])
-		TYPE_VECTOR3:
-			return Vector3.ZERO if has_error() else Vector3(components[0], components[1], components[2])
-		TYPE_VECTOR3I:
-			return Vector3i.ZERO if has_error() else Vector3i(components[0], components[1], components[2])
-		TYPE_VECTOR4:
-			return Vector4.ZERO if has_error() else Vector4(components[0], components[1], components[2], components[3])
-		TYPE_VECTOR4I:
-			return Vector4i.ZERO if has_error() else Vector4i(components[0], components[1], components[2], components[3])
-		TYPE_QUATERNION:
-			return Quaternion.IDENTITY if has_error() else Quaternion(components[0], components[1], components[2], components[3])
-		TYPE_COLOR:
-			return Color.BLACK if has_error() else Color(components[0], components[1], components[2], components[3])
+	# if-elif, not match: this runs per native-vector field per row. A GDScript match
+	# arm costs ~10 opcodes (typeof check + value compare + bool materialization +
+	# branch) vs ~2 for an if branch (validated == + jump). Float vectors first (most
+	# common: positions/colors), int variants last.
+	var t: int = prop.type
+	if t == TYPE_VECTOR2:
+		return Vector2.ZERO if has_error() else Vector2(components[0], components[1])
+	elif t == TYPE_VECTOR3:
+		return Vector3.ZERO if has_error() else Vector3(components[0], components[1], components[2])
+	elif t == TYPE_VECTOR4:
+		return Vector4.ZERO if has_error() else Vector4(components[0], components[1], components[2], components[3])
+	elif t == TYPE_COLOR:
+		return Color.BLACK if has_error() else Color(components[0], components[1], components[2], components[3])
+	elif t == TYPE_QUATERNION:
+		return Quaternion.IDENTITY if has_error() else Quaternion(components[0], components[1], components[2], components[3])
+	elif t == TYPE_VECTOR2I:
+		return Vector2i.ZERO if has_error() else Vector2i(components[0], components[1])
+	elif t == TYPE_VECTOR3I:
+		return Vector3i.ZERO if has_error() else Vector3i(components[0], components[1], components[2])
+	elif t == TYPE_VECTOR4I:
+		return Vector4i.ZERO if has_error() else Vector4i(components[0], components[1], components[2], components[3])
 
 	_set_error("Unsupported native arraylike type for property '%s'" % prop_name, start_pos)
 	return null
@@ -707,53 +711,56 @@ func _read_nested_hoisted(spb: StreamPeerBuffer, step: _PlanStep) -> Object:
 
 # --- Generic Deserialization ---
 func _get_primitive_reader_from_bsatn_type(bsatn_type_str: StringName) -> Callable:
-	match bsatn_type_str:
-		&"u8":
-			return read_u8
-		&"u16":
-			return read_u16_le
-		&"u32":
-			return read_u32_le
-		&"u64":
-			return read_u64_le
-		&"u128":
-			return read_u128
-		&"i128":
-			return read_i128
-		&"u256":
-			return read_u256
-		&"i256":
-			return read_i256
-		&"i8":
-			return read_i8
-		&"i16":
-			return read_i16_le
-		&"i32":
-			return read_i32_le
-		&"i64":
-			return read_i64_le
-		&"f32":
-			return read_f32_le
-		&"f64":
-			return read_f64_le
-		&"bool":
-			return read_bool
-		&"string":
-			return read_string_with_u32_len
-		&"vec_u8":
-			return read_vec_u8
-		&"identity":
-			return read_identity
-		&"connection_id":
-			return read_connection_id
-		&"timestamp":
-			return read_timestamp
-		&"scheduled_at":
-			return read_scheduled_at
-		&"transactionupdatemessage":
-			return _read_transaction_update_message
-		_:
-			return Callable()
+	# if-elif, not match: reached per element on the recursive vec/option/nested path
+	# (_read_value_from_bsatn_type) plus at plan-build. A GDScript match arm costs ~10
+	# opcodes (typeof + value compare + bool materialization + branch) vs ~2 for an if
+	# branch. Ordered by expected field frequency so common types short-circuit early.
+	var t: StringName = bsatn_type_str
+	if t == &"u32":
+		return read_u32_le
+	elif t == &"i32":
+		return read_i32_le
+	elif t == &"u64":
+		return read_u64_le
+	elif t == &"i64":
+		return read_i64_le
+	elif t == &"f32":
+		return read_f32_le
+	elif t == &"bool":
+		return read_bool
+	elif t == &"string":
+		return read_string_with_u32_len
+	elif t == &"u8":
+		return read_u8
+	elif t == &"u16":
+		return read_u16_le
+	elif t == &"i8":
+		return read_i8
+	elif t == &"i16":
+		return read_i16_le
+	elif t == &"f64":
+		return read_f64_le
+	elif t == &"vec_u8":
+		return read_vec_u8
+	elif t == &"identity":
+		return read_identity
+	elif t == &"connection_id":
+		return read_connection_id
+	elif t == &"timestamp":
+		return read_timestamp
+	elif t == &"scheduled_at":
+		return read_scheduled_at
+	elif t == &"u128":
+		return read_u128
+	elif t == &"i128":
+		return read_i128
+	elif t == &"u256":
+		return read_u256
+	elif t == &"i256":
+		return read_i256
+	elif t == &"transactionupdatemessage":
+		return _read_transaction_update_message
+	return Callable()
 
 
 func _get_reader_callable_for_property(prop: Dictionary, bsatn_type_str: StringName) -> Callable:
