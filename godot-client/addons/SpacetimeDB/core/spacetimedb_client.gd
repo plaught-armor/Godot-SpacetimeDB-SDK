@@ -134,6 +134,10 @@ var _next_request_id: int = 0
 enum _ReconnectState { IDLE, RECONNECTING }
 var _reconnect_state: _ReconnectState = _ReconnectState.IDLE
 var _reconnect_attempt: int = 0
+## Set when the next reconnect should skip the backoff delay (stall-induced close —
+## the socket dropped from a local freeze, not a network fault). Consumed on the
+## first scheduled attempt.
+var _reconnect_immediate: bool = false
 var _intentional_disconnect: bool = false
 var _saved_subscription_queries: Array[PackedStringArray] = []
 var _reconnect_timer: SceneTreeTimer = null
@@ -206,6 +210,7 @@ func initialize_and_connect() -> void:
 	_connection = SpacetimeDBConnection.new(connection_options, database_name)
 	_connection.disconnected.connect(_on_connection_disconnected)
 	_connection.connection_error.connect(_on_connection_error)
+	_connection.connection_stalled.connect(_on_connection_stalled)
 	_connection.message_received.connect(_on_websocket_message_received)
 	_connection.name = "Connection"
 	add_child(_connection)
@@ -1102,12 +1107,31 @@ func _on_connection_error(code: int, reason: String) -> void:
 		connection_error.emit(code, reason)
 
 
-func _start_reconnection() -> void:
+## Handles a stall-induced abnormal close. The socket really did close, but the
+## cause was a local main-thread freeze (the engine heartbeat missed a pong while
+## the thread was stalled), not a network fault — so reconnect immediately without
+## the escalating backoff a genuine drop would warrant.
+func _on_connection_stalled(code: int) -> void:
+	_response_wait_aborted.emit()
+	if _intentional_disconnect:
+		_intentional_disconnect = false
+		return
+	if _reconnect_state == _ReconnectState.RECONNECTING:
+		_schedule_next_reconnect_attempt()
+	elif connection_options and connection_options.auto_reconnect:
+		print_log("SpacetimeDBClient: stall-induced close (code %d) — fast reconnect, no backoff." % code)
+		_start_reconnection(true)
+	else:
+		connection_error.emit(code, "Abnormal closure (stall)")
+
+
+func _start_reconnection(immediate: bool = false) -> void:
 	if _reconnect_state == _ReconnectState.RECONNECTING:
 		return
 
 	_reconnect_state = _ReconnectState.RECONNECTING
 	_reconnect_attempt = 0
+	_reconnect_immediate = immediate
 
 	_saved_subscription_queries.clear()
 	for sub: SpacetimeDBSubscription in current_subscriptions.values():
@@ -1131,7 +1155,8 @@ func _schedule_next_reconnect_attempt() -> void:
 		return
 
 	_reconnect_attempt += 1
-	var backoff: float = _calculate_backoff(_reconnect_attempt)
+	var backoff: float = 0.0 if _reconnect_immediate else _calculate_backoff(_reconnect_attempt)
+	_reconnect_immediate = false # one-shot: only the first stall-induced attempt skips backoff
 	var max_str: String = str(max_attempts) if max_attempts > 0 else "inf"
 	print_log("SpacetimeDBClient: Reconnect attempt %d/%s in %.2f seconds." % [_reconnect_attempt, max_str, backoff])
 
