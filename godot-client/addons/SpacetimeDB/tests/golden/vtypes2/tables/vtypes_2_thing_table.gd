@@ -41,10 +41,14 @@ func first_by(field: StringName, value: Variant) -> Vtypes2Thing:
 	return super(field, value) as Vtypes2Thing
 
 func find_by_id(value: int) -> Array[Vtypes2Thing]:
-	return find_by(&"id", value)
+	var row: Vtypes2Thing = id.find(value)
+	var result: Array[Vtypes2Thing] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_id(value: int) -> Vtypes2Thing:
-	return first_by(&"id", value)
+	return id.find(value)
 
 func find_by_label(value: String) -> Array[Vtypes2Thing]:
 	return find_by(&"label", value)

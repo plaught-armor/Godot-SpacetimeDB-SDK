@@ -41,10 +41,14 @@ func first_by(field: StringName, value: Variant) -> BlackholioConfig:
 	return super(field, value) as BlackholioConfig
 
 func find_by_id(value: int) -> Array[BlackholioConfig]:
-	return find_by(&"id", value)
+	var row: BlackholioConfig = id.find(value)
+	var result: Array[BlackholioConfig] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_id(value: int) -> BlackholioConfig:
-	return first_by(&"id", value)
+	return id.find(value)
 
 func find_by_world_size(value: int) -> Array[BlackholioConfig]:
 	return find_by(&"world_size", value)

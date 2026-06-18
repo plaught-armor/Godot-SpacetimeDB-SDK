@@ -43,16 +43,24 @@ func first_by(field: StringName, value: Variant) -> BlackholioPlayer:
 	return super(field, value) as BlackholioPlayer
 
 func find_by_identity(value: PackedByteArray) -> Array[BlackholioPlayer]:
-	return find_by(&"identity", value)
+	var row: BlackholioPlayer = identity.find(value)
+	var result: Array[BlackholioPlayer] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_identity(value: PackedByteArray) -> BlackholioPlayer:
-	return first_by(&"identity", value)
+	return identity.find(value)
 
 func find_by_player_id(value: int) -> Array[BlackholioPlayer]:
-	return find_by(&"player_id", value)
+	var row: BlackholioPlayer = player_id.find(value)
+	var result: Array[BlackholioPlayer] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_player_id(value: int) -> BlackholioPlayer:
-	return first_by(&"player_id", value)
+	return player_id.find(value)
 
 func find_by_name(value: String) -> Array[BlackholioPlayer]:
 	return find_by(&"name", value)

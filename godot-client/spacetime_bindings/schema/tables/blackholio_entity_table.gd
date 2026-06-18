@@ -41,10 +41,14 @@ func first_by(field: StringName, value: Variant) -> BlackholioEntity:
 	return super(field, value) as BlackholioEntity
 
 func find_by_entity_id(value: int) -> Array[BlackholioEntity]:
-	return find_by(&"entity_id", value)
+	var row: BlackholioEntity = entity_id.find(value)
+	var result: Array[BlackholioEntity] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_entity_id(value: int) -> BlackholioEntity:
-	return first_by(&"entity_id", value)
+	return entity_id.find(value)
 
 func find_by_mass(value: int) -> Array[BlackholioEntity]:
 	return find_by(&"mass", value)

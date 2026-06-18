@@ -2,6 +2,19 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [2.2.0] - 2026-06-18
+
+### Changed
+- **Unique-indexed finders are now O(1).** The generated `find_by_<field>` /
+  `first_by_<field>` for a field backed by a *unique* index now routes through that
+  index's `find()` — a constant-time lookup against the live `Dictionary` cache —
+  instead of the linear `find_by` scan. For a table of N rows, a lookup by a
+  unique-indexed field drops from N comparisons to a single dictionary get.
+  `first_by_<field>` returns the row directly; `find_by_<field>` wraps it in a
+  0-or-1 array. Non-unique (btree) and non-indexed fields keep the linear path —
+  the btree index's `filter()` is itself a linear `find_by`, so routing there would
+  add a hop for no gain. Regenerate bindings to pick this up.
+
 ## [2.1.0] - 2026-06-18
 
 Codegen developer-experience release. Generated table classes gain typed change

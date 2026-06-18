@@ -604,14 +604,27 @@ func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictiona
 			"\treturn super(field, value) as %s\n" % type_name)
 
 	# Typed per-field finders — compile-checked field name + value type, vs the
-	# stringly-typed find_by(&"field", value). Scalar fields only.
+	# stringly-typed find_by(&"field", value). Scalar fields only. A field with a
+	# unique index routes through its O(1) cache (`.find()`) instead of the linear
+	# find_by scan; everything else keeps the linear fallback (the btree index's
+	# filter() is itself a linear find_by, so routing there would only add a hop).
 	for field_data: Array in _table_scalar_fields(schema, type_def):
 		var f_name: String = field_data[0]
 		var f_type: String = field_data[1]
-		content += ("\nfunc find_by_%s(value: %s) -> Array[%s]:\n" % [f_name, f_type, type_name] +
-				"\treturn find_by(&\"%s\", value)\n" % f_name)
-		content += ("\nfunc first_by_%s(value: %s) -> %s:\n" % [f_name, f_type, type_name] +
-				"\treturn first_by(&\"%s\", value)\n" % f_name)
+		if unique_index_fields.has(f_name):
+			content += ("\nfunc find_by_%s(value: %s) -> Array[%s]:\n" % [f_name, f_type, type_name] +
+					"\tvar row: %s = %s.find(value)\n" % [type_name, f_name] +
+					"\tvar result: Array[%s] = []\n" % type_name +
+					"\tif row != null:\n" +
+					"\t\tresult.append(row)\n" +
+					"\treturn result\n")
+			content += ("\nfunc first_by_%s(value: %s) -> %s:\n" % [f_name, f_type, type_name] +
+					"\treturn %s.find(value)\n" % f_name)
+		else:
+			content += ("\nfunc find_by_%s(value: %s) -> Array[%s]:\n" % [f_name, f_type, type_name] +
+					"\treturn find_by(&\"%s\", value)\n" % f_name)
+			content += ("\nfunc first_by_%s(value: %s) -> %s:\n" % [f_name, f_type, type_name] +
+					"\treturn first_by(&\"%s\", value)\n" % f_name)
 
 	# Cast helpers backing the typed change signals.
 	content += ("\nfunc _emit_inserted(row: _ModuleTableType) -> void:\n" +
