@@ -1358,8 +1358,8 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> SpacetimeDBServerMessa
 			return null
 	if has_error():
 		return null
-	var remaining_bytes: int = spb.get_size() - spb.get_position()
-	if remaining_bytes > 0:
-		push_warning("Bytes remaining after parsing message type 0x%02X: %d" % [msg_type, remaining_bytes])
-
+	# No trailing-bytes warning here: this parses ONE message from a buffer that, under the
+	# v3 framing, holds several concatenated messages. get_size() is the whole buffer, so
+	# "remaining" is just the next message — process_bytes_and_extract_messages loops and
+	# parses it. Per-message under-reads are caught by the row-list offset checks.
 	return result
