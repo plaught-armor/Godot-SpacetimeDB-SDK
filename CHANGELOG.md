@@ -2,6 +2,65 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [1.7.0] - 2026-06-18
+
+Inbound-parse performance pass. The BSATN deserializer's per-row hot path is
+reworked across four orthogonal layers — no public API change, no codegen change,
+behavior unchanged, full suite green. On a captured Blackholio replay
+(`godot-client/benchmark/profile_deser.gd`):
+
+- **parse-only** 47,496 → 69,618 rows/s (**1.47x**)
+- **parse + apply** 40,738 → 55,197 rows/s (**1.36x**)
+
+### Performance
+- **Inlined fixed-width reads.** A decomposition of generic per-row parse showed the
+  cost is GDScript function-call depth, not read logic (the `read_*_le → _check_read →
+  has_error()` chain was ~32% of parse). Each fixed-width reader (`i8`–`i64`, `u8`–`u64`,
+  `f32`/`f64`) now does its bounds compare inline and calls the native `get_*` directly;
+  the underflow path moves to a shared `_read_underflow_int` helper so the happy path is
+  just compare + read. Standalone: parse-only 1.19x, parse+apply 1.17x. Applies to every
+  primitive field of every row.
+- **if-elif type-code plan executor.** The plan's per-field `step.reader.call(spb)`
+  Callable dispatch (~44% of parse) is replaced by a frequency-ordered if-elif on a
+  per-field `type_code` resolved once at plan-build; the 10 fixed-width primitives read
+  inline (no `Callable.call`, no per-field re-check). A fair dispatch bench
+  (`bench_dispatch_mechanism.gd`) confirmed there is no real jump table in interpreted
+  GDScript and that `match` is *slower* than the Callable it would replace (~0.83x) —
+  if-elif + inline read is the win (1.44x).
+- **Nested-resource plan hoist.** `_read_nested_resource` re-resolved the nested type
+  every row (a `_schema.get_type()` + `_get_or_build_plan()` + `_normalize()` per row).
+  `_PlanStep` now carries a pre-resolved `nested_script` + lazily-built `nested_plan`;
+  the row loop runs it directly. ~1.26x on nested-resource rows, ~1.13x on saturated
+  bulk ingest. Gated to the exact generic path it replaces — `ScheduleAt`, `Identity`,
+  `RustEnum`, and other custom-reader types keep their own paths.
+- **Value-only `match` → if-elif.** A GDScript `match` arm costs ~10 bytecode ops
+  (typeof + value compare + bool materialize + branch) vs ~2 for an if branch, so it's
+  the wrong construct for pure value dispatch. Four hot-path matches (native vector/color
+  field dispatch, primitive reader/writer resolution) plus ~23 cold ones across 8 files
+  are converted. On a native-vector schema (4 `Vector3` fields/row): READ 1.36x,
+  WRITE 1.27x. Computed subjects are hoisted to a typed local once (as `match` did);
+  error semantics, arm order, and bodies unchanged.
+
+### Fixed
+- **WebSocket URL scheme rewrite.** `base_url.replace("http","ws")` could rewrite a
+  stray `"http"` anywhere in the URL (e.g. in a host, path, or query segment), not just
+  the scheme; the trailing `.replace("https","wss")` was also dead (the first replace
+  already consumed it). The rewrite now matches only the leading scheme via
+  `begins_with` (`https://` checked first, as `http` is a prefix), leaving any later
+  `http://` substring untouched.
+
+### Internal
+- Removed dead `_call_writer_callable` (zero callers, superseded by the pre-bound
+  `CONTEXT_WRITERS` plan dispatch).
+- New benches + tests for the above: `bench_dispatch_mechanism`, `bench_native_vector`,
+  `bench_vec_ctx`, `bench_e2e_receive`, `bench_specialized_parser`, plus
+  `test_inline_reader_bounds`, `test_nested_plan_hoist`, and `test_nested_hoist_fuzz`
+  (32/32) — the prior nested tests used a null schema, so the hoist branch never engaged
+  and would have masked corruption.
+
+### Docs
+- Bumped the tested SpacetimeDB range to 2.6.0.
+
 ## [1.6.0] - 2026-06-17
 
 Client-cache and reconnect correctness pass, broader BSATN type coverage, WebSocket
