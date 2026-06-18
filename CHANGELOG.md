@@ -2,6 +2,18 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **The btree (non-unique) index is now a real multimap cache.** Its `filter()`
+  was a linear `find_by` scan of the whole table; it now keeps a per-value bucket
+  cache (`Dictionary[value, Array[Row]]`) maintained live by insert/update/delete
+  listeners, so a `filter()` is a dictionary lookup plus the *k* matching rows
+  instead of an *N*-row scan. The per-field finders for a btree-indexed field now
+  route through it (`find_by_<field>` → `filter()`, `first_by_<field>` →
+  `filter()[0]`); previously they used the linear fallback. Regenerate bindings to
+  pick this up.
+
 ## [2.2.0] - 2026-06-18
 
 ### Changed
