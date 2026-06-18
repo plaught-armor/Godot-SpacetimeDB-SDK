@@ -41,10 +41,14 @@ func first_by(field: StringName, value: Variant) -> BlackholioFood:
 	return super(field, value) as BlackholioFood
 
 func find_by_entity_id(value: int) -> Array[BlackholioFood]:
-	return find_by(&"entity_id", value)
+	var row: BlackholioFood = entity_id.find(value)
+	var result: Array[BlackholioFood] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_entity_id(value: int) -> BlackholioFood:
-	return first_by(&"entity_id", value)
+	return entity_id.find(value)
 
 func _emit_inserted(row: _ModuleTableType) -> void:
 	inserted.emit(row as BlackholioFood)

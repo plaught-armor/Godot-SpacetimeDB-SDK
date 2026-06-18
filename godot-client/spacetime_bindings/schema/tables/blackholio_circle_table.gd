@@ -43,10 +43,14 @@ func first_by(field: StringName, value: Variant) -> BlackholioCircle:
 	return super(field, value) as BlackholioCircle
 
 func find_by_entity_id(value: int) -> Array[BlackholioCircle]:
-	return find_by(&"entity_id", value)
+	var row: BlackholioCircle = entity_id.find(value)
+	var result: Array[BlackholioCircle] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_entity_id(value: int) -> BlackholioCircle:
-	return first_by(&"entity_id", value)
+	return entity_id.find(value)
 
 func find_by_player_id(value: int) -> Array[BlackholioCircle]:
 	return find_by(&"player_id", value)

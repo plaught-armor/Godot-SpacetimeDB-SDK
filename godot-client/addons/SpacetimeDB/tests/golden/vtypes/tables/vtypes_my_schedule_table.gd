@@ -41,10 +41,14 @@ func first_by(field: StringName, value: Variant) -> VtypesMySchedule:
 	return super(field, value) as VtypesMySchedule
 
 func find_by_scheduled_id(value: int) -> Array[VtypesMySchedule]:
-	return find_by(&"scheduled_id", value)
+	var row: VtypesMySchedule = scheduled_id.find(value)
+	var result: Array[VtypesMySchedule] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_scheduled_id(value: int) -> VtypesMySchedule:
-	return first_by(&"scheduled_id", value)
+	return scheduled_id.find(value)
 
 func _emit_inserted(row: _ModuleTableType) -> void:
 	inserted.emit(row as VtypesMySchedule)

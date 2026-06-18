@@ -41,10 +41,14 @@ func first_by(field: StringName, value: Variant) -> VsumResRow:
 	return super(field, value) as VsumResRow
 
 func find_by_id(value: int) -> Array[VsumResRow]:
-	return find_by(&"id", value)
+	var row: VsumResRow = id.find(value)
+	var result: Array[VsumResRow] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_id(value: int) -> VsumResRow:
-	return first_by(&"id", value)
+	return id.find(value)
 
 func _emit_inserted(row: _ModuleTableType) -> void:
 	inserted.emit(row as VsumResRow)

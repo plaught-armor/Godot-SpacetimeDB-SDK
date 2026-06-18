@@ -41,10 +41,14 @@ func first_by(field: StringName, value: Variant) -> Vtypes2SeqRow:
 	return super(field, value) as Vtypes2SeqRow
 
 func find_by_id(value: int) -> Array[Vtypes2SeqRow]:
-	return find_by(&"id", value)
+	var row: Vtypes2SeqRow = id.find(value)
+	var result: Array[Vtypes2SeqRow] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_id(value: int) -> Vtypes2SeqRow:
-	return first_by(&"id", value)
+	return id.find(value)
 
 func find_by_v(value: int) -> Array[Vtypes2SeqRow]:
 	return find_by(&"v", value)
