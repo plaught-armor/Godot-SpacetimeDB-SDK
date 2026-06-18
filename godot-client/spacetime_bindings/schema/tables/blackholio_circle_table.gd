@@ -53,10 +53,11 @@ func first_by_entity_id(value: int) -> BlackholioCircle:
 	return entity_id.find(value)
 
 func find_by_player_id(value: int) -> Array[BlackholioCircle]:
-	return find_by(&"player_id", value)
+	return player_id.filter(value)
 
 func first_by_player_id(value: int) -> BlackholioCircle:
-	return first_by(&"player_id", value)
+	var rows: Array[BlackholioCircle] = player_id.filter(value)
+	return rows[0] if not rows.is_empty() else null
 
 func find_by_speed(value: float) -> Array[BlackholioCircle]:
 	return find_by(&"speed", value)
