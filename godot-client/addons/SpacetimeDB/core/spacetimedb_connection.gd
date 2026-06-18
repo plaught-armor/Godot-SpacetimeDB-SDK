@@ -241,7 +241,9 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		return
 
 	# Construct WebSocket URL base
-	var ws_url_base: String = base_url.replace("http", "ws").replace("https", "wss")
+	# Anchor on the "://" scheme separator so a stray "http" elsewhere in the URL
+	# is left alone. https first — "http" is a prefix of "https".
+	var ws_url_base: String = base_url.replace("https://", "wss://").replace("http://", "ws://")
 	ws_url_base = ws_url_base.path_join("/" + version + "/database").path_join(database_name).path_join("subscribe")
 
 	# --- Add Query Parameters ---
