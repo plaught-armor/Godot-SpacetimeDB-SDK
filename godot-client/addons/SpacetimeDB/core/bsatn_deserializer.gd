@@ -89,50 +89,66 @@ func clear_error() -> void:
 
 #--- Primitive Readers ---
 func read_i8(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 1):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 1 > spb.get_size():
+		return _read_underflow_int(spb, 1)
 	return spb.get_8()
 
 
 func read_i16_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 2):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 2 > spb.get_size():
+		return _read_underflow_int(spb, 2)
 	return spb.get_16()
 
 
 func read_i32_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 4):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 4 > spb.get_size():
+		return _read_underflow_int(spb, 4)
 	return spb.get_32()
 
 
 func read_i64_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 8):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 8 > spb.get_size():
+		return _read_underflow_int(spb, 8)
 	return spb.get_64()
 
 
 func read_u8(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 1):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 1 > spb.get_size():
+		return _read_underflow_int(spb, 1)
 	return spb.get_u8()
 
 
 func read_u16_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 2):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 2 > spb.get_size():
+		return _read_underflow_int(spb, 2)
 	return spb.get_u16()
 
 
 func read_u32_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 4):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 4 > spb.get_size():
+		return _read_underflow_int(spb, 4)
 	return spb.get_u32()
 
 
 func read_u64_le(spb: StreamPeerBuffer) -> int:
-	if not _check_read(spb, 8):
+	if _status != ParseStatus.OK:
 		return 0
+	if spb.get_position() + 8 > spb.get_size():
+		return _read_underflow_int(spb, 8)
 	return spb.get_u64()
 
 
@@ -161,13 +177,19 @@ func read_i256(spb: StreamPeerBuffer) -> PackedByteArray:
 
 
 func read_f32_le(spb: StreamPeerBuffer) -> float:
-	if not _check_read(spb, 4):
+	if _status != ParseStatus.OK:
+		return 0.0
+	if spb.get_position() + 4 > spb.get_size():
+		_read_underflow_int(spb, 4)
 		return 0.0
 	return spb.get_float()
 
 
 func read_f64_le(spb: StreamPeerBuffer) -> float:
-	if not _check_read(spb, 8):
+	if _status != ParseStatus.OK:
+		return 0.0
+	if spb.get_position() + 8 > spb.get_size():
+		_read_underflow_int(spb, 8)
 		return 0.0
 	return spb.get_double()
 
@@ -405,8 +427,19 @@ func _set_error(msg: String, position: int = -1, status: ParseStatus = ParseStat
 	printerr(_last_error)
 
 
+# Slow path for inlined readers: sets the underflow error and returns 0. Kept out of
+# the hot readers so their happy path is just the bounds compare + the native get_*.
+func _read_underflow_int(spb: StreamPeerBuffer, bytes_needed: int) -> int:
+	_set_error(
+		"Attempted to read %d bytes past end of buffer (size: %d)." % [bytes_needed, spb.get_size()],
+		spb.get_position(),
+		ParseStatus.NEEDS_MORE,
+	)
+	return 0
+
+
 func _check_read(spb: StreamPeerBuffer, bytes_needed: int) -> bool:
-	if has_error():
+	if _status != ParseStatus.OK: # inlined has_error()
 		return false
 	if spb.get_position() + bytes_needed > spb.get_size():
 		_set_error(
@@ -623,6 +656,55 @@ func _read_nested_resource(spb: StreamPeerBuffer, prop: Dictionary) -> Object:
 	return nested_instance
 
 
+# Returns the schema GDScript for a property the row loop can parse via a hoisted
+# plan, or null when the bound reader must run as-is.
+#
+# Gate 1 (authoritative): only hoist when _get_reader_callable_for_property actually
+# bound _read_nested_resource. This excludes every schema type with a *custom*
+# reader — ScheduleAt (sum: u8 tag + i64 via read_scheduled_at), Identity, etc. —
+# whose product-of-fields plan would misread the wire. Re-deriving that exclusion
+# by hand is fragile; trust the reader the plan already chose.
+#
+# Gate 2: a RustEnum *field* also binds _read_nested_resource, but _read_nested_resource
+# routes it through _populate_resource_from_bytes' `is RustEnum` tag dispatch — the
+# hoisted path calls _populate_from_plan directly and would skip that. Exclude via the
+# ENUM_OPTIONS constant codegen emits on every concrete RustEnum (own constant, so a
+# hand-rolled RustEnum subclass omitting it is the only escape — codegen is the sole
+# source today).
+func _hoistable_nested_script(prop: Dictionary, reader_callable: Callable) -> GDScript:
+	if reader_callable.get_method() != &"_read_nested_resource":
+		return null
+	if _schema == null or prop.type != TYPE_OBJECT or prop.class_name == &"" or prop.class_name == &"Option":
+		return null
+	var script: GDScript = _schema.get_type(_normalize(prop.class_name))
+	if script == null:
+		return null
+	if script.get_script_constant_map().has(&"ENUM_OPTIONS"):
+		return null
+	return script
+
+
+# Hoisted nested-resource read: instantiate the pre-resolved script + run its plan
+# directly, skipping the per-row schema get_type + plan-cache hashes of
+# _read_nested_resource. The nested plan is built once on first use (lazy avoids any
+# plan-build recursion on self-referential schemas).
+func _read_nested_hoisted(spb: StreamPeerBuffer, step: _PlanStep) -> Object:
+	if not step.nested_plan_ready:
+		step.nested_plan = _get_or_build_plan(step.nested_script)
+		if has_error():
+			return null # leave nested_plan_ready false so a retry rebuilds after clear
+		step.nested_plan_ready = true
+	var nested_instance: Object = step.nested_script.new()
+	if not _populate_from_plan(nested_instance, spb, step.nested_plan):
+		if not has_error():
+			_set_error(
+				"Failed to populate nested resource '%s' of type '%s'" % [step.prop_name, step.nested_script.get_global_name()],
+				spb.get_position(),
+			)
+		return null
+	return nested_instance
+
+
 # --- Generic Deserialization ---
 func _get_primitive_reader_from_bsatn_type(bsatn_type_str: StringName) -> Callable:
 	match bsatn_type_str:
@@ -763,6 +845,16 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 	_set_error("Unsupported BSATN type '%s' for deserialization (context: '%s'). No primitive, vec, or custom schema found." % [bsatn_type_str, context_prop_name], start_pos)
 	return null
 
+## Per-field dispatch code. Fixed-width primitives get a code so the row loop reads
+## them inline (no Callable.call, no reader fn-call); everything else is COMPLEX and
+## runs via [member _PlanStep.reader] / the nested-hoist path. COMPLEX is 0 so an
+## unset step defaults to the safe Callable path. Resolved once at plan-build (cold),
+## so the match in [method _inline_type_code] never runs per row. The row-loop
+## dispatch is an if-elif, NOT a match: in interpreted GDScript a match arm test costs
+## ~10x an if-elif branch test, so a match here is slower than the Callable it replaces
+## (measured), while a frequency-ordered if-elif beats it.
+enum TC { COMPLEX, U32, I32, U64, I64, F32, F64, U8, U16, I8, I16 }
+
 
 ## One field of a deserialization plan. A typed record (not a Dictionary) so the
 ## per-field hot loop reads members directly instead of paying a hash lookup per
@@ -771,6 +863,15 @@ class _PlanStep:
 	var reader: Callable
 	var prop_name: StringName
 	var prop_type: int
+	var type_code: int = 0 # TC.COMPLEX — inline dispatch code, see enum TC
+	# Hoisted nested-resource path. When nested_script is set, the field is a plain
+	# (non-RustEnum, non-Option) nested schema Resource: the row loop instantiates
+	# it + runs nested_plan directly, skipping the per-row schema get_type + plan-cache
+	# hashes _read_nested_resource pays. nested_plan is built lazily on first row (once)
+	# to sidestep any plan-build recursion. nested_script == null → use reader as before.
+	var nested_script: GDScript = null
+	var nested_plan: Array = []
+	var nested_plan_ready: bool = false
 
 
 func _create_deserialization_plan(script: Script) -> Array:
@@ -793,6 +894,8 @@ func _create_deserialization_plan(script: Script) -> Array:
 		step.reader = reader_callable
 		step.prop_name = prop_name
 		step.prop_type = prop.type
+		step.nested_script = _hoistable_nested_script(prop, reader_callable)
+		step.type_code = _inline_type_code(reader_callable)
 		plan.append(step)
 
 	_deserialization_plan_cache[script] = plan
@@ -819,6 +922,36 @@ func _populate_resource_from_bytes(resource: Object, spb: StreamPeerBuffer) -> b
 	return _populate_from_plan(resource, spb, plan)
 
 
+## Maps a resolved primitive reader to its inline dispatch code. Runs once per field
+## at plan-build (cold) — never per row — so the match cost is irrelevant here. Bound
+## or complex readers (arrays, options, nested, bool, strings, wide ints, native
+## vectors) don't match and stay COMPLEX (the Callable / nested-hoist path).
+func _inline_type_code(reader: Callable) -> int:
+	match reader.get_method():
+		&"read_u32_le":
+			return TC.U32
+		&"read_i32_le":
+			return TC.I32
+		&"read_u64_le":
+			return TC.U64
+		&"read_i64_le":
+			return TC.I64
+		&"read_f32_le":
+			return TC.F32
+		&"read_f64_le":
+			return TC.F64
+		&"read_u8":
+			return TC.U8
+		&"read_u16_le":
+			return TC.U16
+		&"read_i8":
+			return TC.I8
+		&"read_i16_le":
+			return TC.I16
+		_:
+			return TC.COMPLEX
+
+
 ## Fetches the cached plan for [param script], building (and caching) it on first
 ## use. A plan can legitimately be empty (a schema with no storage properties), so
 ## the cache miss is distinguished by [method Dictionary.has], not emptiness.
@@ -834,15 +967,79 @@ func _get_or_build_plan(script: Script) -> Array:
 ## (the row-list loop) fetch the plan once instead of re-hashing the plan cache per
 ## row.
 func _populate_from_plan(resource: Object, spb: StreamPeerBuffer, plan: Array) -> bool:
+	# Dispatch is a frequency-ordered if-elif on the field's type_code, NOT a Callable
+	# and NOT a match — both lose to if-elif here (see enum TC). Fixed-width primitives
+	# read inline (no Callable.call, no reader fn-call, no per-field _check_read);
+	# COMPLEX falls to the nested-hoist / Callable path. The loop returns on the first
+	# error, so a reader is never entered with a non-OK status — the inline arms skip
+	# the per-read status guard the standalone readers carry. buf_size is constant for
+	# the parse (get_size = capacity, not remaining), so it is hoisted out of the loop.
+	var buf_size: int = spb.get_size()
 	for step: _PlanStep in plan:
-		var value_start_pos: int = spb.get_position()
-		var value: Variant = step.reader.call(spb)
+		var pos: int = spb.get_position()
+		var value: Variant = null
+		var tc: int = step.type_code
+
+		if tc == TC.U32:
+			if pos + 4 <= buf_size:
+				value = spb.get_u32()
+			else:
+				_read_underflow_int(spb, 4)
+		elif tc == TC.I32:
+			if pos + 4 <= buf_size:
+				value = spb.get_32()
+			else:
+				_read_underflow_int(spb, 4)
+		elif tc == TC.U64:
+			if pos + 8 <= buf_size:
+				value = spb.get_u64()
+			else:
+				_read_underflow_int(spb, 8)
+		elif tc == TC.I64:
+			if pos + 8 <= buf_size:
+				value = spb.get_64()
+			else:
+				_read_underflow_int(spb, 8)
+		elif tc == TC.F32:
+			if pos + 4 <= buf_size:
+				value = spb.get_float()
+			else:
+				_read_underflow_int(spb, 4)
+		elif tc == TC.F64:
+			if pos + 8 <= buf_size:
+				value = spb.get_double()
+			else:
+				_read_underflow_int(spb, 8)
+		elif tc == TC.U8:
+			if pos + 1 <= buf_size:
+				value = spb.get_u8()
+			else:
+				_read_underflow_int(spb, 1)
+		elif tc == TC.U16:
+			if pos + 2 <= buf_size:
+				value = spb.get_u16()
+			else:
+				_read_underflow_int(spb, 2)
+		elif tc == TC.I8:
+			if pos + 1 <= buf_size:
+				value = spb.get_8()
+			else:
+				_read_underflow_int(spb, 1)
+		elif tc == TC.I16:
+			if pos + 2 <= buf_size:
+				value = spb.get_16()
+			else:
+				_read_underflow_int(spb, 2)
+		elif step.nested_script != null:
+			value = _read_nested_hoisted(spb, step)
+		else:
+			value = step.reader.call(spb)
 
 		if _status != ParseStatus.OK:
 			if not _last_error.contains(str(step.prop_name)):
 				var inner_status: ParseStatus = _status
 				var existing_error: String = get_last_error()
-				_set_error("Failed reading property '%s'. Cause: %s" % [step.prop_name, existing_error], value_start_pos, inner_status)
+				_set_error("Failed reading property '%s'. Cause: %s" % [step.prop_name, existing_error], pos, inner_status)
 			return false
 
 		if value != null:
