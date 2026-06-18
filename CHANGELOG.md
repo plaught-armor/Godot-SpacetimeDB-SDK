@@ -43,10 +43,11 @@ behavior unchanged, full suite green. On a captured Blackholio replay
 
 ### Fixed
 - **WebSocket URL scheme rewrite.** `base_url.replace("http","ws")` could rewrite a
-  stray `"http"` anywhere in the URL (e.g. in a host or path segment), not just the
-  scheme; the trailing `.replace("https","wss")` was also dead (the first replace already
-  consumed it). Both replaces are now anchored on the `://` scheme separator, `https`
-  first.
+  stray `"http"` anywhere in the URL (e.g. in a host, path, or query segment), not just
+  the scheme; the trailing `.replace("https","wss")` was also dead (the first replace
+  already consumed it). The rewrite now matches only the leading scheme via
+  `begins_with` (`https://` checked first, as `http` is a prefix), leaving any later
+  `http://` substring untouched.
 
 ### Internal
 - Removed dead `_call_writer_callable` (zero callers, superseded by the pre-bound
