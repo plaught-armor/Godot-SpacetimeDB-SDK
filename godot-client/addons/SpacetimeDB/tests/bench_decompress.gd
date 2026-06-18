@@ -23,7 +23,13 @@ func _initialize() -> void:
 			var us: int = _best(_decompress_chunked.bind(compressed, cs))
 			print("  chunked   chunk=%7d : %6.1f us" % [cs, us])
 		var us_pd: int = _best(_decompress_putdata.bind(compressed, 65536))
-		print("  put_data  (out=65536)   : %6.1f us" % us_pd)
+		# put_data is NOT correct here: feeding all input at once lets the decoder
+		# overrun the stream's output buffer, dropping data when the decompressed
+		# size exceeds it. The apparent speedup is an artifact of an early-bailing,
+		# incomplete decode — always validate output before trusting a time.
+		var pd_out: PackedByteArray = _decompress_putdata(compressed, 65536)
+		var pd_ok: String = "OK" if pd_out.size() == payload_size else "WRONG (got %d/%d — incomplete decode)" % [pd_out.size(), payload_size]
+		print("  put_data  (out=65536)   : %6.1f us  [%s]" % [us_pd, pd_ok])
 	quit(0)
 
 
