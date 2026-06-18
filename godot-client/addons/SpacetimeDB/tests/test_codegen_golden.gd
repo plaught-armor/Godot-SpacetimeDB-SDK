@@ -23,7 +23,10 @@
 extends SceneTree
 
 const FIXTURES: Array[String] = ["vtypes", "vsum", "vtypes2"]
-const FIXTURE_DIR: String = "res://spacetime_bindings/codegen_debug"
+# Committed test inputs. NOT spacetime_bindings/codegen_debug/ — that dir is
+# gitignored (transient codegen dumps), so fixtures there are absent on a clean
+# clone. These live with the test and codegen never writes here.
+const FIXTURE_DIR: String = "res://addons/SpacetimeDB/tests/fixtures"
 const GOLDEN_DIR: String = "res://addons/SpacetimeDB/tests/golden"
 const TMP_ROOT: String = "user://golden_gen"
 
@@ -52,7 +55,7 @@ func _initialize() -> void:
 
 
 func _run_module(module: String, regen: bool) -> void:
-	var fixture_path: String = "%s/unparsed_schema_%s.json" % [FIXTURE_DIR, module]
+	var fixture_path: String = "%s/%s.json" % [FIXTURE_DIR, module]
 	if not FileAccess.file_exists(fixture_path):
 		_fail("%s: fixture missing (%s)" % [module, fixture_path])
 		return
