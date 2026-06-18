@@ -25,6 +25,14 @@ the most representative number — and it shows **deserialize dominates** real t
 <godot> --headless --path . --script res://benchmark/replay_workload.gd
 ```
 
+`profile_deser.gd` replays the same fixture but splits **parse-only** vs
+**parse+apply** so you can see which half dominates (it's parse, ~85%). Use it to
+A/B a deserializer change: run on two branches, compare `PARSE-ONLY`.
+
+```sh
+<godot> --headless --path . --script res://benchmark/profile_deser.gd
+```
+
 `bench_workload.bin` is a committed fixture (a captured stream) so the replay is
 reproducible offline. To re-capture (needs a server with Blackholio + bot load):
 

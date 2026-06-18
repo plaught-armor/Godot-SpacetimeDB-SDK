@@ -97,21 +97,18 @@ func read_i8(spb: StreamPeerBuffer) -> int:
 func read_i16_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 2):
 		return 0
-	spb.big_endian = false
 	return spb.get_16()
 
 
 func read_i32_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 4):
 		return 0
-	spb.big_endian = false
 	return spb.get_32()
 
 
 func read_i64_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 8):
 		return 0
-	spb.big_endian = false
 	return spb.get_64()
 
 
@@ -124,21 +121,18 @@ func read_u8(spb: StreamPeerBuffer) -> int:
 func read_u16_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 2):
 		return 0
-	spb.big_endian = false
 	return spb.get_u16()
 
 
 func read_u32_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 4):
 		return 0
-	spb.big_endian = false
 	return spb.get_u32()
 
 
 func read_u64_le(spb: StreamPeerBuffer) -> int:
 	if not _check_read(spb, 8):
 		return 0
-	spb.big_endian = false
 	return spb.get_u64()
 
 
@@ -169,14 +163,12 @@ func read_i256(spb: StreamPeerBuffer) -> PackedByteArray:
 func read_f32_le(spb: StreamPeerBuffer) -> float:
 	if not _check_read(spb, 4):
 		return 0.0
-	spb.big_endian = false
 	return spb.get_float()
 
 
 func read_f64_le(spb: StreamPeerBuffer) -> float:
 	if not _check_read(spb, 8):
 		return 0.0
-	spb.big_endian = false
 	return spb.get_double()
 
 
@@ -363,6 +355,7 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 	_pending_data.append_array(new_data)
 	var parsed_messages: Array[SpacetimeDBServerMessage] = []
 	var spb: StreamPeerBuffer = StreamPeerBuffer.new()
+	spb.big_endian = false # BSATN is little-endian; set once so per-read setters drop.
 	# Parse against a single snapshot, advancing a cursor, and slice the
 	# consumed prefix off _pending_data exactly once after the loop — instead of
 	# rebuilding the buffer (O(n)) after every message.
@@ -820,12 +813,27 @@ func _populate_resource_from_bytes(resource: Object, spb: StreamPeerBuffer) -> b
 	if resource is RustEnum:
 		return _populate_enum_from_bytes(spb, resource, script)
 
+	var plan: Array = _get_or_build_plan(script)
+	if has_error():
+		return false
+	return _populate_from_plan(resource, spb, plan)
+
+
+## Fetches the cached plan for [param script], building (and caching) it on first
+## use. A plan can legitimately be empty (a schema with no storage properties), so
+## the cache miss is distinguished by [method Dictionary.has], not emptiness.
+func _get_or_build_plan(script: Script) -> Array:
 	var plan: Array = _deserialization_plan_cache.get(script, [])
 	if plan.is_empty() and not _deserialization_plan_cache.has(script):
 		plan = _create_deserialization_plan(script)
-		if has_error():
-			return false
+	return plan
 
+
+## Reads each field of [param plan] from [param spb] into [param resource]. Split
+## from [method _populate_resource_from_bytes] so callers with a constant schema
+## (the row-list loop) fetch the plan once instead of re-hashing the plan cache per
+## row.
+func _populate_from_plan(resource: Object, spb: StreamPeerBuffer, plan: Array) -> bool:
 	for step: _PlanStep in plan:
 		var value_start_pos: int = spb.get_position()
 		var value: Variant = step.reader.call(spb)
@@ -895,6 +903,13 @@ func _read_bsatn_row_list_as_resources(
 	var block_start: int = spb.get_position()
 	var block_end: int = block_start + data_len
 
+	# Plan is constant for every row in the block — fetch once instead of re-hashing
+	# the plan cache per row. Table rows are product types (never a bare RustEnum
+	# sum), so the plan path applies to all of them.
+	var row_plan: Array = _get_or_build_plan(row_schema_script)
+	if has_error():
+		return []
+
 	var result: Array[Resource] = []
 	result.resize(count)
 	for i: int in count:
@@ -902,7 +917,7 @@ func _read_bsatn_row_list_as_resources(
 		if spb.get_position() != row_start:
 			spb.seek(row_start)
 		var row_resource: Variant = row_schema_script.new()
-		if not _populate_resource_from_bytes(row_resource, spb):
+		if not _populate_from_plan(row_resource, spb, row_plan):
 			push_error("Failed to parse row %d for table '%s'" % [i, table_name])
 			spb.seek(block_end)
 			return []
