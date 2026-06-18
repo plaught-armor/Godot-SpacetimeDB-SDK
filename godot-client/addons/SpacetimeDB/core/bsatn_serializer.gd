@@ -622,18 +622,6 @@ func _get_writer_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 	return writer_callable
 
 
-func _call_writer_callable(writer_callable: Callable, value: Variant, bsatn_type: StringName, prop: Dictionary) -> void:
-	var method_name: StringName = writer_callable.get_method()
-	# Check if the method requires the bsatn type
-	# Typically needed for recursive or context-aware writers.
-	match method_name:
-		&"write_array", &"write_option", &"write_native_arraylike", &"write_nested_resource":
-			writer_callable.call(value, bsatn_type, prop) # Pass full context
-		_:
-			# Standard primitive/simple writers usually only need the value.
-			writer_callable.call(value)
-
-
 #Helper to generate a zero struct from a bsatn type
 func _generate_default_type(bsatn_type_name: StringName) -> Variant:
 	match bsatn_type_name:
