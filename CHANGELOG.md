@@ -59,12 +59,29 @@ serialization types and behaviors are verified end-to-end against a live Spaceti
   empty/`null` immediately on disconnect rather than waiting out their timeout.
 - **One-off query cache** is cleared on reconnect (a post-reconnect request id could
   otherwise read a stale cached result).
+- **Spurious "Bytes remaining" warnings removed.** Under v3 WebSocket message batching
+  a single packet carries several concatenated messages; after parsing each one the
+  parser saw the next as "trailing bytes" and logged a warning per message (hundreds of
+  thousands under load). The framing loop already consumes batched frames correctly, so
+  the warning was always bogus.
+
+### Performance
+- **Apply hot path.** `LocalDatabase` insert/update/delete now applies primary-key
+  tables in a single pass (was a delta dictionary plus a second pass), skips
+  update-detection for pure insert/delete batches, and keys per-query subscription
+  membership by row hash. Behavior-unchanged; lower per-row cost under load.
+- **Deserializer.** Dropped redundant per-read endian sets and hoisted the per-row
+  deserialization-plan lookup out of the row loop. (Profiling confirms parse is ~85% of
+  the inbound pipeline; the remaining cost is intrinsic to per-row `Resource`
+  construction — see `godot-client/benchmark/`.)
 
 ### Docs
 - README **Known Limitations & Caveats** section; documented the new types and behaviors.
 - **`integration-tests/`** — live-server verification modules + headless harnesses
   (wide ints / `Uuid` / `ScheduleAt`, the cache trio, enum-with-payload and `Result`
   columns), with run instructions.
+- **`godot-client/benchmark/`** — in-process apply micro-bench, real-workload replay
+  from a captured Blackholio packet stream, and a parse-vs-apply deserializer profiler.
 
 ## [1.5.0] - 2026-06-17
 
