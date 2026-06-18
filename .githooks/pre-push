@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Pre-push gate: run the SpacetimeDB SDK test suite, block the push on failure.
+#
+# Enable (committed hooks aren't active until you point git at them):
+#   git config core.hooksPath .githooks
+# Skip once:
+#   git push --no-verify
+# Custom Godot binary:
+#   GODOT_BIN=/path/to/godot git push
+set -u
+
+root="$(git rev-parse --show-toplevel)"
+runner="$root/godot-client/run_tests.sh"
+
+if [ ! -x "$runner" ]; then
+	echo "[pre-push] $runner missing or not executable — skipping suite" >&2
+	exit 0
+fi
+
+echo "[pre-push] running SDK test suite..."
+"$runner"
+code=$?
+if [ "$code" -ne 0 ]; then
+	echo "[pre-push] tests FAILED — push blocked. Fix, or override with: git push --no-verify" >&2
+	exit 1
+fi
+echo "[pre-push] all tests green — pushing."
