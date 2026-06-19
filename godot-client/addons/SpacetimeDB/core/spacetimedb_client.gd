@@ -197,12 +197,13 @@ func initialize_and_connect() -> void:
 	_local_db = LocalDatabase.new(schema)
 	_init_db(_local_db)
 
-	# Connect to LocalDatabase signals to re-emit them
-	_local_db.row_inserted.connect(func(tn, r) -> void: row_inserted.emit(tn, r))
-	_local_db.row_updated.connect(func(tn, p, r) -> void: row_updated.emit(tn, p, r))
-	_local_db.row_before_delete.connect(func(tn, r) -> void: row_before_delete.emit(tn, r))
-	_local_db.row_deleted.connect(func(tn, r) -> void: row_deleted.emit(tn, r))
-	_local_db.row_transactions_completed.connect(func(tn) -> void: row_transactions_completed.emit(tn))
+	# Re-emit LocalDatabase signals as the client's own (named methods, not lambdas —
+	# the formatter mangles inline-lambda indentation; see project rule S1).
+	_local_db.row_inserted.connect(_forward_row_inserted)
+	_local_db.row_updated.connect(_forward_row_updated)
+	_local_db.row_before_delete.connect(_forward_row_before_delete)
+	_local_db.row_deleted.connect(_forward_row_deleted)
+	_local_db.row_transactions_completed.connect(_forward_row_transactions_completed)
 	_local_db.name = "LocalDatabase"
 	add_child(_local_db) # Add as child if it needs signals
 
@@ -590,6 +591,27 @@ func _wait_for_response(request_id: int, cache: Dictionary, sig: Signal, timeout
 
 func _init_db(local_db: LocalDatabase) -> void:
 	pass
+
+
+# --- LocalDatabase signal forwarders (re-emit as the client's own signals) ---
+func _forward_row_inserted(tn: StringName, r: _ModuleTableType) -> void:
+	row_inserted.emit(tn, r)
+
+
+func _forward_row_updated(tn: StringName, p: _ModuleTableType, r: _ModuleTableType) -> void:
+	row_updated.emit(tn, p, r)
+
+
+func _forward_row_before_delete(tn: StringName, r: _ModuleTableType) -> void:
+	row_before_delete.emit(tn, r)
+
+
+func _forward_row_deleted(tn: StringName, r: _ModuleTableType) -> void:
+	row_deleted.emit(tn, r)
+
+
+func _forward_row_transactions_completed(tn: StringName) -> void:
+	row_transactions_completed.emit(tn)
 
 
 func _load_token_or_request() -> void:

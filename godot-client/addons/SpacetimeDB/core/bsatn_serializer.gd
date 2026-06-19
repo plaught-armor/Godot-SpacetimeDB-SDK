@@ -161,8 +161,6 @@ func write_bytes(v: PackedByteArray) -> void:
 
 
 func write_string_with_u32_len(v: String) -> void:
-	if v == null:
-		v = ""
 	var str_bytes: PackedByteArray = v.to_utf8_buffer()
 	write_u32_le(str_bytes.size())
 	if str_bytes.size() > 0:
@@ -195,8 +193,6 @@ func write_scheduled_at(v: ScheduleAt) -> void:
 
 # Writes a PackedByteArray prefixed with its u32 length (Vec<u8> format)
 func write_vec_u8(v: PackedByteArray) -> void:
-	if v == null:
-		v = []
 	write_u32_le(v.size())
 	if v.size() > 0:
 		write_bytes(v) # Avoid calling put_data with empty array if possible

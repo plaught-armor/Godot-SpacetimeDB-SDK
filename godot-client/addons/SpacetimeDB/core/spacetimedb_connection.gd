@@ -143,8 +143,8 @@ func _physics_process(_delta: float) -> void:
 					_post_stall_polls = 0
 					connection_stalled.emit(code)
 				else:
-					printerr("SpacetimeDBConnection: connection_error ", code, " Abnormal closure with reason:")
-					connection_error.emit(code, "Abnormal closure")
+					printerr("SpacetimeDBConnection: connection_error %d, abnormal closure. Reason: %s" % [code, reason])
+					connection_error.emit(code, "Abnormal closure: %s" % reason)
 			else:
 				_print_log("SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)" % [code, reason])
 				disconnected.emit() # Normal closure signal
