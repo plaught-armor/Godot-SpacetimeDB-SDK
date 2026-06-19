@@ -4,7 +4,7 @@ extends Node2D
 ## translucent nebula blobs, sized to the world. Drawn in world space behind
 ## everything (z_index -1000) so the camera pans over it.
 
-const WORLD_SCALE: float = 5.0 # match main.gd so star coords line up with the arena
+const WORLD_SCALE: float = 1.0 # match main.gd so star coords line up with the arena
 const BG_COLOR: Color = Color(0.006, 0.009, 0.024)
 const STAR_SEED: int = 0xB1AC40E10
 

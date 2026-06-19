@@ -1,7 +1,7 @@
 extends Node2D
 
 const LERP_DURATION: float = 0.1 # 100ms interpolation
-const VISUAL_SCALE: float = 5.0 # Multiplier so circles are visible
+const VISUAL_SCALE: float = 1.0 # Render radius 1:1 with mass (like upstream); camera zoom handles visibility
 const DESPAWN_DURATION: float = 0.2 # consume animation length
 
 var lerp_start_pos: Vector2

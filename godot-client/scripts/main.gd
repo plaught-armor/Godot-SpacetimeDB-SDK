@@ -22,7 +22,9 @@ const FOOD_COLORS: Array[Color] = [
 ]
 
 const INPUT_RATE: float = 0.05 # 20Hz
-const WORLD_SCALE: float = 5.0 # Match VISUAL_SCALE so collision radius aligns with visual
+const WORLD_SCALE: float = 1.0 # Render 1:1 with server world units (like upstream); the
+# camera zoom (50/size) magnifies for visibility. Scaling the world up while using
+# upstream's absolute-pixel draw constants made outlines/fonts render too thin.
 const BASE_VISIBLE_RADIUS: float = 50.0 # upstream camera base; visible world radius at zoom 1
 const CAMERA_FOLLOW_SPEED: float = 8.0 # match upstream camera follow lerp
 
