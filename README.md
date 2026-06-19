@@ -6,7 +6,7 @@
 
 > Requires **SpacetimeDB 2.2.0+** (v3 BSATN protocol, schema v10). Tested with `SpacetimeDB 2.2.0` to `2.6.0`, and `Godot 4.4.1-stable` to `Godot 4.7-stable`. The legacy v2 sub-protocol was dropped in 2.0; for servers below 2.2.0 use an SDK `1.x` release.
 
-A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetimedb.com), enabling real-time data synchronization and server interaction directly from your Godot client. Built on the BSATN binary protocol (negotiates v3 with batched framing on 2.2.0+, falls back to v2) with full codegen support.
+A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetimedb.com), enabling real-time data synchronization and server interaction directly from your Godot client. Built on the BSATN binary protocol (v3 with batched framing, requires server 2.2.0+) with full codegen support.
 
 ## Documentation
 
@@ -14,7 +14,6 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 -   [Quick Start guide](docs/quickstart.md)
 -   [Codegen guide](docs/codegen.md)
 -   [API Reference](docs/api.md)
--   [Migration guide (1.2.x to 1.3.0)](docs/migrations/1.3.md)
 -   [Changelog](CHANGELOG.md)
 
 ## Features

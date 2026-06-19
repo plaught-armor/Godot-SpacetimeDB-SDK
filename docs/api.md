@@ -253,7 +253,7 @@ a failed handle if called before the client's database is initialized.
 
 ### Access the local database
 
-Each table defined by your module has a property, whose name is the table name converted to `snake_case`. The table properties are [`ModuleTable`](#moduletable-class) instances which have methods for accessing rows and registering `on_insert`, `on_update` and `on_delete` listeners.
+Each table defined by your module has a property, whose name is the table name converted to `snake_case`. The table properties are [`ModuleTable`](#access-the-local-database) instances which have methods for accessing rows and registering `on_insert`, `on_update` and `on_delete` listeners.
 
 #### `count` method
 
@@ -1180,4 +1180,3 @@ The SDK handles serialization between Godot types and SpacetimeDB's BSATN format
 -   [Installation](installation.md)
 -   [Generate module bindings](codegen.md)
 -   [Quick Start guide](quickstart.md)
--   [Migration guide (1.2.x to 1.3.0)](migrations/1.3.md)

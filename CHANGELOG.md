@@ -373,7 +373,7 @@ shipped as part of [1.4.0](#140---2026-06-16).
 ## [1.3.0] - 2026-03-24
 
 ### Breaking
-- **Requires SpacetimeDB 2.1.0+** — schema v9 support has been completely removed. The codegen now exclusively uses schema v10 (`?version=10`), which is only available in SpacetimeDB 2.1.0 and later. Users on SpacetimeDB 2.0.x must upgrade. See [migration guide](docs/migrations/1.3.md).
+- **Requires SpacetimeDB 2.1.0+** — schema v9 support has been completely removed. The codegen now exclusively uses schema v10 (`?version=10`), which is only available in SpacetimeDB 2.1.0 and later. Users on SpacetimeDB 2.0.x must upgrade.
 
 ### Changed
 - Schema parser reads v10 section-based format natively instead of normalizing to v9 shape
