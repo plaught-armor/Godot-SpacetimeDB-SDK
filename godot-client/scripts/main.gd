@@ -43,6 +43,7 @@ var _player_name: String = ""
 var _lock_input_active: bool = false
 var _lock_input_pos: Vector2 = Vector2.ZERO
 var _starfield: Node2D = null
+var _status_label: Label = null
 
 @onready var entity_container: Node2D = $EntityContainer
 @onready var camera: Camera2D = $Camera2D
@@ -83,6 +84,12 @@ func _ready() -> void:
 
 	death_screen.visible = false
 	username_screen.visible = false
+
+	# Top-left status readout (Mass / Circles), matching the upstream HUD.
+	_status_label = Label.new()
+	_status_label.position = Vector2(16, 16)
+	_status_label.add_theme_font_size_override("font_size", 16)
+	$UI.add_child(_status_label)
 
 
 func _on_connected(identity: PackedByteArray, _token: String) -> void:
@@ -349,6 +356,7 @@ func _spawn_entity_node(entity: Resource) -> void:
 
 
 func _process(delta: float) -> void:
+	_update_status()
 	if not game_started:
 		return
 
@@ -359,6 +367,19 @@ func _process(delta: float) -> void:
 
 	_update_camera(delta)
 	leaderboard.update_leaderboard(self)
+
+
+func _update_status() -> void:
+	var mass: int = 0
+	var count: int = 0
+	if local_player_id >= 0 and player_circles.has(local_player_id):
+		var circles: Array = player_circles[local_player_id]
+		count = circles.size()
+		for eid: int in circles:
+			var e: Resource = SpacetimeDB.Blackholio.db.entity.entity_id.find(eid)
+			if e:
+				mass += e.mass
+	_status_label.text = "Mass: %d\nCircles: %d" % [mass, count]
 
 
 func _unhandled_input(event: InputEvent) -> void:
