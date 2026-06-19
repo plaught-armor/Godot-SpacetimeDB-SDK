@@ -4,6 +4,23 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-06-19
+
+### Changed
+- Renamed the plugin to **SpacetimeDB Godot SDK** (was "SpacetimeDB Client SDK")
+  in `plugin.cfg`, matching the README heading and the asset listing.
+- Code-quality cleanup, no API or runtime-behavior change: value-only `match`
+  statements converted to `if/elif` (cheaper dispatch in interpreted GDScript),
+  emptiness checks moved to `.is_empty()`, and single-argument `range(n)` loops
+  replaced with direct `for i in n` (no intermediate array allocation). The
+  codegen template emits the same `if/elif` form for the generated
+  `parse_enum_name`; generated output is behavior-identical (goldens updated).
+
+### Added
+- Brand logo lockup and a 1920×1080 Asset Store thumbnail under `docs/images/`.
+  The README now self-hosts a theme-adaptive logo (`<picture>`) instead of an
+  external image attachment.
+
 ## [2.3.1] - 2026-06-19
 
 ### Fixed
