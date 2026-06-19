@@ -17,6 +17,8 @@ var is_food: bool = false
 var player_id: int = -1
 var player_name: String = ""
 var animation_seed: float = 0.0 # desyncs the pulse/wave between entities
+var label_layer: CanvasLayer = null # screen-space layer for the name label (injected)
+var _label: Label = null
 
 var is_despawning: bool = false
 var _despawn_consumer: Node2D = null # eater to fly into; null/freed → shrink in place
@@ -44,8 +46,15 @@ func _process(delta: float) -> void:
 	if not is_equal_approx(current_radius, target_radius):
 		current_radius = lerpf(current_radius, target_radius, delta * 8.0)
 
+	_update_label()
 	# Redraw every frame so the pulse/wave animates (cheap per node).
 	queue_redraw()
+
+
+func _exit_tree() -> void:
+	if is_instance_valid(_label):
+		_label.queue_free()
+	_label = null
 
 
 func _draw() -> void:
@@ -57,27 +66,14 @@ func _draw() -> void:
 	else:
 		_draw_player()
 
-	if not is_food and not player_name.is_empty():
-		var font: Font = ThemeDB.fallback_font
-		var font_size: int = clampi(int(current_radius * 0.5), 8, 48)
-		var text_size: Vector2 = font.get_string_size(player_name, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
-		draw_string(
-			font,
-			Vector2(-text_size.x / 2.0, font_size / 3.0),
-			player_name,
-			HORIZONTAL_ALIGNMENT_CENTER,
-			-1,
-			font_size,
-			Color.WHITE,
-		)
-
 
 # Layered player blob: translucent pulsing halo, dark rim, color disk, specular
 # highlight, and a wavy animated outline. Ports the upstream Circle2D.DrawPlayerCircle.
 func _draw_player() -> void:
 	var t: float = Time.get_ticks_msec() / 1000.0
 	var pulse: float = 0.5 + 0.5 * sin(t * 2.2 + animation_seed)
-	draw_circle(Vector2.ZERO, current_radius * (1.16 + pulse * 0.04), _with_alpha(circle_color, 0.14))
+	# Halo breathes in both size and alpha so the pulse reads clearly.
+	draw_circle(Vector2.ZERO, current_radius * (1.12 + pulse * 0.16), _with_alpha(circle_color, 0.06 + pulse * 0.16))
 	draw_circle(Vector2.ZERO, current_radius, _shade(circle_color, 0.58))
 	draw_circle(Vector2.ZERO, current_radius * 0.82, circle_color)
 	draw_circle(
@@ -139,7 +135,39 @@ func set_circle_info(pid: int, pname: String, color: Color = Color.WHITE) -> voi
 	player_name = pname
 	circle_color = color
 	is_food = false
+	if player_name.is_empty():
+		if is_instance_valid(_label):
+			_label.queue_free()
+		_label = null
+	else:
+		_ensure_label()
 	queue_redraw()
+
+
+# Name labels live on a screen-space CanvasLayer (injected as label_layer) so they
+# render at a constant, crisp font size instead of being magnified by the camera
+# zoom (which made the in-node draw_string label pixelated).
+func _ensure_label() -> void:
+	if label_layer == null or player_name.is_empty():
+		return
+	if not is_instance_valid(_label):
+		_label = Label.new()
+		_label.add_theme_font_size_override("font_size", 14)
+		_label.add_theme_color_override("font_color", Color.WHITE)
+		_label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.85))
+		_label.add_theme_constant_override("outline_size", 4)
+		_label.z_index = 100
+		label_layer.add_child(_label)
+	_label.text = player_name
+
+
+func _update_label() -> void:
+	if not is_instance_valid(_label):
+		return
+	var x: Transform2D = get_global_transform_with_canvas()
+	var screen_scale: float = x.get_scale().y
+	var w: float = ThemeDB.fallback_font.get_string_size(player_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
+	_label.position = x.origin + Vector2(-w * 0.5, current_radius * screen_scale + 4.0)
 
 
 func set_food(color: Color) -> void:
@@ -162,6 +190,8 @@ func despawn_into(consumer: Node2D) -> void:
 	_despawn_from_radius = current_radius
 	_despawn_target = consumer.position if is_instance_valid(consumer) else position
 	z_index += 10 # render over the consumer during the fly-in
+	if is_instance_valid(_label):
+		_label.hide() # no name tag while being eaten
 
 
 func _process_despawn(delta: float) -> void:

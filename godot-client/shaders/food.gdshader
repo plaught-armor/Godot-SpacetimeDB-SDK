@@ -27,12 +27,12 @@ void fragment() {
 	float r = d * HALO_EXTENT; // r == 1.0 at the food radius (the shell edge)
 
 	float pulse = 0.5 + 0.5 * sin(TIME * 5.0 + v_seed);
-	float halo_r = 1.32 + pulse * 0.09;
+	float halo_r = 1.30 + pulse * 0.24;
 	vec3 base = COLOR.rgb;
 	float aa = max(fwidth(r), 0.0001) * 1.2;
 
-	// Translucent halo: strongest at the shell edge, fading out to halo_r.
-	float halo = (1.0 - smoothstep(1.0, halo_r, r)) * 0.10;
+	// Translucent halo breathing in size and alpha so the pulse is visible.
+	float halo = (1.0 - smoothstep(1.0, halo_r, r)) * (0.05 + pulse * 0.16);
 	vec4 col = vec4(base, halo);
 
 	// Shell (r < 1): darker shade.

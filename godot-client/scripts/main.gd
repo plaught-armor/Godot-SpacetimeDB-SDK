@@ -47,6 +47,7 @@ var _lock_input_pos: Vector2 = Vector2.ZERO
 var _starfield: Node2D = null
 var _status_label: Label = null
 var _food_field: MultiMeshInstance2D = null
+var _label_layer: CanvasLayer = null # screen-space layer for crisp circle name labels
 
 @onready var entity_container: Node2D = $EntityContainer
 @onready var camera: Camera2D = $Camera2D
@@ -93,6 +94,10 @@ func _ready() -> void:
 	_status_label.position = Vector2(16, 16)
 	_status_label.add_theme_font_size_override("font_size", 16)
 	$UI.add_child(_status_label)
+
+	# Screen-space layer for circle name labels (crisp at any camera zoom).
+	_label_layer = CanvasLayer.new()
+	add_child(_label_layer)
 
 
 func _on_connected(identity: PackedByteArray, _token: String) -> void:
@@ -372,6 +377,7 @@ func _spawn_entity_node(entity: Resource) -> void:
 	var node: Node2D = preload("res://scripts/entity_node.gd").new()
 	node.position = Vector2(entity.position.x, entity.position.y) * WORLD_SCALE
 	node.animation_seed = float(entity.entity_id) * 0.73 # desync pulse/wave per entity
+	node.label_layer = _label_layer # screen-space name label target
 	node.set_mass(entity.mass)
 	entity_container.add_child(node)
 	entity_nodes[entity.entity_id] = node
