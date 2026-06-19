@@ -75,6 +75,10 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 }
 
 
+static func _sort_by_ty(a: Dictionary, b: Dictionary) -> bool:
+	return a.get("ty", -1) < b.get("ty", -1)
+
+
 static func _find_type_index(type_name: String, parsed_types_list: Array[Dictionary]) -> int:
 	for i: int in parsed_types_list.size():
 		if parsed_types_list[i].name == type_name:
@@ -221,12 +225,12 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				var view_pk_name: String = view_pk_by_view.get(src, "")
 				misc_exports.append({ "View": { "name": name, "return_type": vd.get("return_type", { }), "primary_key_name": view_pk_name } })
 
-	schema_types_raw.sort_custom(func(a, b): return a.get("ty", -1) < b.get("ty", -1))
+	schema_types_raw.sort_custom(_sort_by_ty)
 	var parsed_schema: SpacetimeParsedSchema = SpacetimeParsedSchema.new()
 	parsed_schema.module = module_name.to_pascal_case()
 
 	var parsed_types_list: Array[Dictionary] = []
-	for type_info in schema_types_raw:
+	for type_info: Dictionary in schema_types_raw:
 		var type_name: String = type_info.get("name", { }).get("name", null)
 		if not type_name:
 			SpacetimePlugin.print_err("Invalid schema: Type name not found for type: %s" % type_info)
@@ -268,7 +272,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		elif sum_type_def:
 			var parsed_variants: Array[Dictionary] = []
 			type_data["is_sum_type"] = _is_sum_type(sum_type_def)
-			for v in sum_type_def.get("variants", []):
+			for v: Dictionary in sum_type_def.get("variants", []):
 				var variant_data: Dictionary = { "name": v.get("name", { }).get("some", null) }
 				var type: String = _parse_field_type(v.get("algebraic_type", { }), variant_data, schema_types_raw)
 				if not type.is_empty():
@@ -283,10 +287,10 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				if project_enums.has(pascal_name):
 					var project_enum: Dictionary = project_enums[pascal_name]
 					var schema_variants: Array[String] = []
-					for v in parsed_variants:
+					for v: Dictionary in parsed_variants:
 						schema_variants.append(v.get("name", "").to_snake_case())
 					var project_variants: Array[String] = []
-					for pv in project_enum["variants"]:
+					for pv: String in project_enum["variants"]:
 						project_variants.append(pv.to_snake_case())
 					if schema_variants == project_variants:
 						type_map[type_name] = project_enum["path"]
@@ -317,11 +321,11 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		type_map[synth_name] = synth_class
 		meta_type_map[synth_name] = synth_class
 
-	for parsed_type in parsed_types_list:
+	for parsed_type: Dictionary in parsed_types_list:
 		if not parsed_type.has("struct"):
 			continue
 
-		for field_type in parsed_type.get("struct", []):
+		for field_type: Dictionary in parsed_type.get("struct", []):
 			var type_name = field_type.get("type", null)
 			if not type_name or GDNATIVE_PRIMITIVE_TYPES.has(type_name) or DEFAULT_TYPE_MAP.has(type_name):
 				continue
@@ -332,12 +336,12 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 
 	var parsed_tables_list: Array[Dictionary] = []
 	var scheduled_reducers: Array[String] = []
-	for table_info in schema_tables:
+	for table_info: Dictionary in schema_tables:
 		var table_name_str: String = table_info.get("name", null)
 		var ref_idx_raw = table_info.get("product_type_ref", null)
 		if ref_idx_raw == null or table_name_str == null:
 			continue
-		var ref_idx = int(ref_idx_raw)
+		var ref_idx: int = int(ref_idx_raw)
 
 		var original_type_name_for_table: String = "UNKNOWN_TYPE_FOR_TABLE"
 		if ref_idx < schema_types_raw.size():
@@ -363,7 +367,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		var pk_col_idx: int = -1
 		var primary_key_indices: Array = table_info.get("primary_key", [])
 		if primary_key_indices.size() == 1:
-			var pk_field_idx = int(primary_key_indices[0])
+			var pk_field_idx: int = int(primary_key_indices[0])
 			if pk_field_idx < target_type_def.struct.size():
 				var pk_field_name: String = target_type_def.struct[pk_field_idx].name
 				pk_col_idx = pk_field_idx
@@ -377,13 +381,13 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		var parsed_unique_indexes: Array[Dictionary] = []
 		var unique_col_set: Dictionary[int, bool] = { }
 		var constraints_def = table_info.get("constraints", [])
-		for constraint_def in constraints_def:
+		for constraint_def: Dictionary in constraints_def:
 			var constraint_name_str: String = constraint_def.get("name", { }).get("some", null)
 			var column_indices: Array = constraint_def.get("data", { }).get("Unique", { }).get("columns", [])
 			if column_indices.size() != 1 or constraint_name_str == null:
 				continue
 
-			var unique_field_idx = int(column_indices[0])
+			var unique_field_idx: int = int(column_indices[0])
 			if unique_field_idx < target_type_def.struct.size():
 				var unique_index: Dictionary = target_type_def.struct[unique_field_idx].duplicate()
 				unique_index.constraint_name = constraint_name_str
@@ -412,7 +416,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 
 		table_data.btree_indexes = parsed_btree_indexes
 
-		var is_public = true
+		var is_public: bool = true
 		if not target_type_def.has("is_public"):
 			target_type_def.is_public = []
 		if table_info.get("table_access", { }).has("Private"):
@@ -429,7 +433,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		parsed_tables_list.append(table_data)
 
 	var parsed_reducers_list: Array[Dictionary] = []
-	for reducer_info in schema_reducers:
+	for reducer_info: Dictionary in schema_reducers:
 		var lifecycle = reducer_info.get("lifecycle", { }).get("some", null)
 		if lifecycle:
 			continue
@@ -614,7 +618,10 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				return_type["primary_key_name"] = view_pk_name
 		parsed_types_list[type_index] = return_type
 
-		var tables_of_same_type: Array = parsed_tables_list.filter(func(table: Dictionary): return table.get("type_idx", -1) == type_index)
+		var tables_of_same_type: Array = []
+		for table: Dictionary in parsed_tables_list:
+			if table.get("type_idx", -1) == type_index:
+				tables_of_same_type.append(table)
 		var new_table_dict: Dictionary
 		if tables_of_same_type.is_empty():
 			new_table_dict = {
@@ -691,7 +698,7 @@ static func _validate_gd_native(type_name: String, type_data: Dictionary) -> boo
 			SpacetimePlugin.print_err("Array-like GD native type '%s' expected length of %d but is %d" % [type_name, expected_struct_size, type_data.struct.size()])
 			return false
 
-		for element in type_data.struct:
+		for element: Dictionary in type_data.struct:
 			var primitive_type = GDNATIVE_PRIMITIVE_TYPES.get(element.type, null)
 			if not primitive_type:
 				SpacetimePlugin.print_err("Property '%s' in array-like GD native type '%s' must be a primitive type" % [element.name, type_name])
@@ -706,7 +713,7 @@ static func _validate_gd_native(type_name: String, type_data: Dictionary) -> boo
 			if not type_data.has("struct") or type_data.struct.size() != 4:
 				SpacetimePlugin.print_err("Plane type expects 4 struct elements (normal.x, normal.y, normal.z, d), got %d" % (type_data.get("struct", []).size()))
 				return false
-			for element in type_data.struct:
+			for element: Dictionary in type_data.struct:
 				var primitive_type = GDNATIVE_PRIMITIVE_TYPES.get(element.type, null)
 				if primitive_type != "float":
 					SpacetimePlugin.print_err("Plane element '%s' must be a float type, got '%s'" % [element.name, element.type])
@@ -717,7 +724,7 @@ static func _validate_gd_native(type_name: String, type_data: Dictionary) -> boo
 
 static func _is_sum_type(sum_def: Dictionary) -> bool:
 	var variants = sum_def.get("variants", [])
-	for variant in variants:
+	for variant: Dictionary in variants:
 		var type = variant.get("algebraic_type", { })
 		if not type.has("Product"):
 			return true
