@@ -114,28 +114,28 @@ func copy_selected_logs() -> void:
 
 
 func add_log(text: Variant) -> void:
-	match typeof(text):
-		TYPE_STRING:
-			_logs_label.text += "%s\n" % [text]
-		TYPE_ARRAY:
-			for i in text as Array:
-				_logs_label.text += str(i) + " "
-			_logs_label.text += "\n"
-		_:
-			_logs_label.text += "%s\n" % [str(text)]
+	var text_type: int = typeof(text)
+	if text_type == TYPE_STRING:
+		_logs_label.text += "%s\n" % [text]
+	elif text_type == TYPE_ARRAY:
+		for i in text as Array:
+			_logs_label.text += str(i) + " "
+		_logs_label.text += "\n"
+	else:
+		_logs_label.text += "%s\n" % [str(text)]
 
 
 func add_err(text: Variant) -> void:
-	match typeof(text):
-		TYPE_STRING:
-			_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] %s[/color]\n" % [ERROR_LOG_ICON, text]
-		TYPE_ARRAY:
-			_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] " % [ERROR_LOG_ICON]
-			for i in text as Array:
-				_logs_label.text += str(i) + " "
-			_logs_label.text += "[/color]\n"
-		_:
-			_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] %s[/color]\n" % [ERROR_LOG_ICON, str(text)]
+	var text_type: int = typeof(text)
+	if text_type == TYPE_STRING:
+		_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] %s[/color]\n" % [ERROR_LOG_ICON, text]
+	elif text_type == TYPE_ARRAY:
+		_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] " % [ERROR_LOG_ICON]
+		for i in text as Array:
+			_logs_label.text += str(i) + " "
+		_logs_label.text += "[/color]\n"
+	else:
+		_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] %s[/color]\n" % [ERROR_LOG_ICON, str(text)]
 
 
 func destroy() -> void:

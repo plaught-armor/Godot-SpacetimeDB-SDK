@@ -11,13 +11,15 @@ enum Options {
 const ENUM_OPTIONS: Array[StringName] = [&'u32', &'u32', &'']
 
 static func parse_enum_name(i: int) -> StringName:
-	match i:
-		0: return &'circle'
-		1: return &'square'
-		2: return &'nothing'
-		_:
-			printerr("Enum does not have value for %d. This is out of bounds." % i)
-			return &'Unknown'
+	if i == 0:
+		return &'circle'
+	elif i == 1:
+		return &'square'
+	elif i == 2:
+		return &'nothing'
+	else:
+		printerr("Enum does not have value for %d. This is out of bounds." % i)
+		return &'Unknown'
 
 func get_circle() -> int:
 	return data

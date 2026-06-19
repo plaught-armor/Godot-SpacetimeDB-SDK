@@ -37,22 +37,21 @@ const _MSG_PATH: String = SpacetimePlugin.ADDON_PATH + "/core_types/server_messa
 ## Returns the [code]res://[/code] path to the GDScript file for the given [param msg_type] tag.
 ## Returns an empty string if the tag is unknown.
 static func get_script_path(msg_type: int) -> String:
-	match msg_type:
-		Type.INITIAL_CONNECTION:
-			return _MSG_PATH + "initial_connection.gd"
-		Type.SUBSCRIBE_APPLIED:
-			return _MSG_PATH + "subscribe_applied.gd"
-		Type.UNSUBSCRIBE_APPLIED:
-			return _MSG_PATH + "unsubscribe_applied.gd"
-		Type.SUBSCRIPTION_ERROR:
-			return _MSG_PATH + "subscription_error.gd"
-		Type.TRANSACTION_UPDATE:
-			return _MSG_PATH + "transaction_update.gd"
-		Type.ONE_OFF_QUERY_RESPONSE:
-			return _MSG_PATH + "one_off_query_response.gd"
-		Type.REDUCER_RESULT:
-			return _MSG_PATH + "reducer_result.gd"
-		Type.PROCEDURE_RESULT:
-			return _MSG_PATH + "procedure_result.gd"
-		_:
-			return ""
+	if msg_type == Type.INITIAL_CONNECTION:
+		return _MSG_PATH + "initial_connection.gd"
+	elif msg_type == Type.SUBSCRIBE_APPLIED:
+		return _MSG_PATH + "subscribe_applied.gd"
+	elif msg_type == Type.UNSUBSCRIBE_APPLIED:
+		return _MSG_PATH + "unsubscribe_applied.gd"
+	elif msg_type == Type.SUBSCRIPTION_ERROR:
+		return _MSG_PATH + "subscription_error.gd"
+	elif msg_type == Type.TRANSACTION_UPDATE:
+		return _MSG_PATH + "transaction_update.gd"
+	elif msg_type == Type.ONE_OFF_QUERY_RESPONSE:
+		return _MSG_PATH + "one_off_query_response.gd"
+	elif msg_type == Type.REDUCER_RESULT:
+		return _MSG_PATH + "reducer_result.gd"
+	elif msg_type == Type.PROCEDURE_RESULT:
+		return _MSG_PATH + "procedure_result.gd"
+	else:
+		return ""

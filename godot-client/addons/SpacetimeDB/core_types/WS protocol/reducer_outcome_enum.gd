@@ -32,18 +32,17 @@ const ENUM_OPTIONS: Array[StringName] = [&'ReducerOk', &'', &'vec_u8', &'string'
 
 ## Returns the variant name for discriminant [param i], or [code]&"Unknown"[/code] if out of range.
 static func parse_enum_name(i: int) -> StringName:
-	match i:
-		0:
-			return &'ok'
-		1:
-			return &'okEmpty'
-		2:
-			return &'err'
-		3:
-			return &'internalError'
-		_:
-			printerr("Enum does not have value for %d. This is out of bounds." % i)
-			return &'Unknown'
+	if i == 0:
+		return &'ok'
+	elif i == 1:
+		return &'okEmpty'
+	elif i == 2:
+		return &'err'
+	elif i == 3:
+		return &'internalError'
+	else:
+		printerr("Enum does not have value for %d. This is out of bounds." % i)
+		return &'Unknown'
 
 
 ## Returns the TransactionUpdateMessage from the Ok variant.

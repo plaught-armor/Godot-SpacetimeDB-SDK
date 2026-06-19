@@ -820,7 +820,7 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 	var out: PackedStringArray = [header]
 	if not primary_key_name.is_empty():
 		out.append("const PRIMARY_KEY: StringName = &\"%s\"\n" % primary_key_name)
-	if bsatn_type_entries.size() > 0:
+	if not bsatn_type_entries.is_empty():
 		out.append("const BSATN_TYPES: Dictionary[StringName, StringName] = { %s }\n" % ", ".join(bsatn_type_entries))
 	out.append("\n" + field_lines + "\n" + create_func_documentation_comment)
 	out.append(
@@ -849,15 +849,15 @@ func _generate_enum_gdscript(schema: SpacetimeParsedSchema, type_def: Dictionary
 				"class_name %s extends RustEnum\n\n" % _class_name +
 				"enum Options {\n%s\n}\n\n" % variant_names +
 				"const ENUM_OPTIONS: Array[StringName] = [%s]\n\n" % enum_options_entries +
-				"static func parse_enum_name(i: int) -> StringName:\n" +
-				"\tmatch i:\n"),
+				"static func parse_enum_name(i: int) -> StringName:\n"),
 	]
 	for i in range(variants.size()):
-		out.append("\t\t%d: return &'%s'\n" % [i, variants[i].get("name", "")])
+		var branch_keyword: String = "if" if i == 0 else "elif"
+		out.append("\t%s i == %d:\n\t\treturn &'%s'\n" % [branch_keyword, i, variants[i].get("name", "")])
 	out.append(
-		"\t\t_:\n" +
-		"\t\t\tprinterr(\"Enum does not have value for %d. This is out of bounds.\" % i)\n" +
-		"\t\t\treturn &'Unknown'\n\n",
+		"\telse:\n" +
+		"\t\tprinterr(\"Enum does not have value for %d. This is out of bounds.\" % i)\n" +
+		"\t\treturn &'Unknown'\n\n",
 	)
 	var get_funcs: Array[String] = []
 	var create_funcs: Array[String] = []
