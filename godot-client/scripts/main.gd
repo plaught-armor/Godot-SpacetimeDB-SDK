@@ -1,15 +1,18 @@
 extends Node2D
 
+# Upstream client's exact 10-colour palette (no near-white slot — a white blob
+# both diverged from upstream and hid the white name label).
 const PLAYER_COLORS: Array[Color] = [
-	Color(1.0, 0.9, 0.2), # Yellow
-	Color(0.7, 0.3, 0.9), # Purple
-	Color(0.9, 0.2, 0.2), # Red
-	Color(0.2, 0.6, 1.0), # Blue
-	Color(1.0, 0.5, 0.2), # Orange
-	Color(0.2, 0.9, 0.8), # Cyan
-	Color(1.0, 0.4, 0.7), # Pink
-	Color(0.5, 0.8, 0.2), # Lime
-	Color(0.9, 0.9, 0.9), # White
+	Color(175 / 255.0, 159 / 255.0, 49 / 255.0), # yellow
+	Color(175 / 255.0, 116 / 255.0, 49 / 255.0),
+	Color(112 / 255.0, 47 / 255.0, 252 / 255.0), # purple
+	Color(51 / 255.0, 91 / 255.0, 252 / 255.0),
+	Color(176 / 255.0, 54 / 255.0, 54 / 255.0), # red
+	Color(176 / 255.0, 109 / 255.0, 54 / 255.0),
+	Color(141 / 255.0, 43 / 255.0, 99 / 255.0),
+	Color(2 / 255.0, 188 / 255.0, 250 / 255.0), # blue
+	Color(7 / 255.0, 50 / 255.0, 251 / 255.0),
+	Color(2 / 255.0, 28 / 255.0, 146 / 255.0),
 ]
 
 const FOOD_COLORS: Array[Color] = [

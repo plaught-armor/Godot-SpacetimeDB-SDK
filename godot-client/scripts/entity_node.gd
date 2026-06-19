@@ -167,7 +167,8 @@ func _update_label() -> void:
 	var x: Transform2D = get_global_transform_with_canvas()
 	var screen_scale: float = x.get_scale().y
 	var w: float = ThemeDB.fallback_font.get_string_size(player_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
-	_label.position = x.origin + Vector2(-w * 0.5, current_radius * screen_scale + 4.0)
+	# Sit clear below the circle + its halo (screen radius ~ current_radius * zoom).
+	_label.position = x.origin + Vector2(-w * 0.5, current_radius * screen_scale * 1.3 + 8.0)
 
 
 func set_food(color: Color) -> void:
