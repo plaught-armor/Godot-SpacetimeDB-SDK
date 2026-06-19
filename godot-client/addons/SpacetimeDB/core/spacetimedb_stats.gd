@@ -30,15 +30,15 @@ class Tracker extends RefCounted:
 	var last_usec: int = 0
 	var in_flight: int = 0
 
+
 	func avg_usec() -> int:
 		return total_usec / count if count > 0 else 0
-
 
 # request_id -> send timestamp (usec) and request_id -> Category int. Split into two
 # dicts (rather than one record per request) to avoid a per-call object allocation
 # on the reducer hot path; both are transient, keyed by the same id, popped together.
-var _pending_usec: Dictionary[int, int] = {}
-var _pending_cat: Dictionary[int, int] = {}
+var _pending_usec: Dictionary[int, int] = { }
+var _pending_cat: Dictionary[int, int] = { }
 var _trackers: Array[Tracker] = []
 
 
@@ -96,14 +96,18 @@ func reset() -> void:
 ## One-line-per-category debug summary, latencies in milliseconds.
 func summary() -> String:
 	var lines: PackedStringArray = []
-	for i: int in range(Category.size()):
-		var t: Tracker = _trackers[i]
-		var label: String = String(Category.keys()[i]).to_lower()
+	for name: String in Category:
+		var t: Tracker = _trackers[Category[name]]
 		lines.append(
 			"%s: n=%d avg=%.2fms min=%.2fms max=%.2fms last=%.2fms in_flight=%d" % [
-				label, t.count, t.avg_usec() / 1000.0, t.min_usec / 1000.0,
-				t.max_usec / 1000.0, t.last_usec / 1000.0, t.in_flight,
-			]
+				name.to_lower(),
+				t.count,
+				t.avg_usec() / 1000.0,
+				t.min_usec / 1000.0,
+				t.max_usec / 1000.0,
+				t.last_usec / 1000.0,
+				t.in_flight,
+			],
 		)
 	return "\n".join(lines)
 
@@ -113,7 +117,12 @@ func summary() -> String:
 func _drop_oldest_pending() -> void:
 	if _pending_usec.is_empty():
 		return
-	var oldest: int = _pending_usec.keys()[0]
+	# First key = oldest (dict iteration is insertion-order). Grab it without
+	# allocating the full keys() Array just to read index 0.
+	var oldest: int = -1
+	for k: int in _pending_usec:
+		oldest = k
+		break
 	var category: int = _pending_cat.get(oldest, -1)
 	_pending_usec.erase(oldest)
 	_pending_cat.erase(oldest)

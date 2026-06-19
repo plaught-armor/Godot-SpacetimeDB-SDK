@@ -1170,10 +1170,12 @@ func _start_reconnection(immediate: bool = false) -> void:
 	# pending_subscriptions (not yet applied), so rebuilding from current_subscriptions
 	# alone would lose them.
 	if _saved_subscription_queries.is_empty():
-		for sub: SpacetimeDBSubscription in current_subscriptions.values():
+		for sub_id: int in current_subscriptions:
+			var sub: SpacetimeDBSubscription = current_subscriptions[sub_id]
 			if sub.queries.size() > 0:
 				_saved_subscription_queries.append(sub.queries.duplicate())
-		for sub: SpacetimeDBSubscription in pending_subscriptions.values():
+		for sub_id: int in pending_subscriptions:
+			var sub: SpacetimeDBSubscription = pending_subscriptions[sub_id]
 			if sub.queries.size() > 0:
 				_saved_subscription_queries.append(sub.queries.duplicate())
 	print_log("SpacetimeDBClient: Saved %d subscription query sets for re-subscription." % _saved_subscription_queries.size())
@@ -1258,7 +1260,8 @@ func _prepare_for_reconnect() -> void:
 		_local_db.clear_all_tables()
 
 	_reducer_result_cache.clear()
-	for handle: SpacetimeDBReducerCall in _pending_reducer_calls.values():
+	for call_id: int in _pending_reducer_calls:
+		var handle: SpacetimeDBReducerCall = _pending_reducer_calls[call_id]
 		if handle.outcome == SpacetimeDBReducerCall.Outcome.PENDING:
 			handle.outcome = SpacetimeDBReducerCall.Outcome.DISCONNECTED
 			handle.error_message = "Connection lost during reducer call"
@@ -1269,7 +1272,8 @@ func _prepare_for_reconnect() -> void:
 	_one_off_query_cache.clear()
 
 	_procedure_result_cache.clear()
-	for handle: SpacetimeDBProcedureCall in _pending_procedure_calls.values():
+	for call_id: int in _pending_procedure_calls:
+		var handle: SpacetimeDBProcedureCall = _pending_procedure_calls[call_id]
 		if handle.outcome == SpacetimeDBProcedureCall.Outcome.PENDING:
 			handle.outcome = SpacetimeDBProcedureCall.Outcome.DISCONNECTED
 			handle.error_message = "Connection lost during procedure call"

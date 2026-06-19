@@ -33,6 +33,15 @@ var _pending_request_type: RequestType = RequestType.NONE
 var _debug_mode: bool = false
 
 
+# Name of a [enum RequestType] value for error messages, without allocating the
+# RequestType.keys() Array. Iterates the enum dict (keys = names) to match the value.
+static func _type_name(t: RequestType) -> String:
+	for name: String in RequestType:
+		if RequestType[name] == t:
+			return name
+	return "?"
+
+
 func _init(base_url: String, debug_mode: bool) -> void:
 	self._base_url = base_url
 	self._debug_mode = debug_mode
@@ -54,7 +63,7 @@ func set_token(token: String) -> void:
 func request_new_token() -> void:
 	# Prevent concurrent requests if this handler isn't designed for it
 	if _pending_request_type != RequestType.NONE:
-		printerr("SpacetimeDBRestAPI: Cannot request token while another request is pending (%s)." % RequestType.keys()[_pending_request_type])
+		printerr("SpacetimeDBRestAPI: Cannot request token while another request is pending (%s)." % _type_name(_pending_request_type))
 		# Optionally queue or emit a busy error
 		return
 
@@ -73,7 +82,7 @@ func request_new_token() -> void:
 # --- Reducer Call (REST Example) ---
 func call_reducer(database: String, reducer_name: String, args: Dictionary) -> void:
 	if _pending_request_type != RequestType.NONE:
-		printerr("SpacetimeDBRestAPI: Cannot call reducer while another request is pending (%s)." % RequestType.keys()[_pending_request_type])
+		printerr("SpacetimeDBRestAPI: Cannot call reducer while another request is pending (%s)." % _type_name(_pending_request_type))
 		reducer_call_failed.emit(-1, "Another request pending")
 		return
 

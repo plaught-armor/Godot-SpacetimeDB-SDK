@@ -52,7 +52,8 @@ func update_module_ui() -> void:
 		_modules_container.remove_child(child)
 		child.queue_free()
 	set_uri(_plugin_config.uri)
-	for module_config: SpacetimeDBModuleConfig in _plugin_config.module_configs.values():
+	for module_id: String in _plugin_config.module_configs:
+		var module_config: SpacetimeDBModuleConfig = _plugin_config.module_configs[module_id]
 		var new_module: Control = $"Prefabs/ModulePrefab".duplicate() as Control
 		var name_input: LineEdit = new_module.get_node("VBoxContainer/HBoxContainer/VBoxContainer/ModuleNameInput") as LineEdit
 		var alias_input: LineEdit = new_module.get_node("VBoxContainer/HBoxContainer/VBoxContainer/ModuleAliasInput") as LineEdit

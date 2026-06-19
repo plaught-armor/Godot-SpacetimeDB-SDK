@@ -89,6 +89,15 @@ static func _find_struct_field_index(struct_fields: Array, field_name: String) -
 			return i
 	return -1
 
+
+# First key of [param d] without allocating its keys() Array — dicts iterate in
+# insertion order, so the first yielded key is keys()[0]. For the String-keyed
+# schema dicts parsed here (tagged-union tags, lifecycle specs).
+static func _first_key(d: Dictionary) -> String:
+	for k: String in d:
+		return k
+	return ""
+
 # Synthesized sum types for anonymous inline `Result<T, E>` columns, accumulated by
 # _parse_field_type during a parse and flushed into the type list afterward. Anonymous
 # inline sums (the only ones are Option — handled separately — and Result) have no named
@@ -128,7 +137,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				var fn_name: String = lc.get("function_name", "")
 				var spec: Dictionary = lc.get("lifecycle_spec", { })
 				if not fn_name.is_empty() and not spec.is_empty():
-					lifecycle_map[fn_name] = spec.keys()[0]
+					lifecycle_map[fn_name] = _first_key(spec)
 		elif section.has("Schedules"):
 			for sched: Dictionary in section["Schedules"]:
 				var tbl: String = sched.get("table_name", "")
@@ -841,4 +850,4 @@ static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_t
 		if field_type.is_empty():
 			SpacetimePlugin.print_err("Invalid schema: Empty algebraic_type encountered")
 			return ""
-		return field_type.keys()[0]
+		return _first_key(field_type)
