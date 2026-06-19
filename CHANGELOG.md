@@ -4,6 +4,8 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-06-19
+
 ### Added
 - **Btree range and bound lookups.** A btree (non-unique) index over an
   *orderable* column (`int` / `float` / `String`) now generates `filter_range(from,
@@ -29,9 +31,9 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   cache (`Dictionary[value, Array[Row]]`) maintained live by insert/update/delete
   listeners, so a `filter()` is a dictionary lookup plus the *k* matching rows
   instead of an *N*-row scan. The per-field finders for a btree-indexed field now
-  route through it (`find_by_<field>` → `filter()`, `first_by_<field>` →
-  `filter()[0]`); previously they used the linear fallback. Regenerate bindings to
-  pick this up.
+  route through it (`find_by_<field>` → `filter()`, `first_by_<field>` returns the
+  bucket's first row directly); previously they used the linear fallback.
+  Regenerate bindings to pick this up.
 
 ### Documentation
 - **`docs/design-decisions.md`** records the June 2026 four-SDK parity audit: what
