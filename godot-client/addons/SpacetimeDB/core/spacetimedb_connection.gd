@@ -271,6 +271,9 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		_websocket = WebSocketPeer.new()
 		_websocket.inbound_buffer_size = _options.inbound_buffer_size
 		_websocket.outbound_buffer_size = _options.outbound_buffer_size
+		# Re-apply heartbeat — a fresh peer defaults to 0 (keepalive off), which would
+		# silently disable stall detection on this retried connection.
+		_websocket.heartbeat_interval = _options.heartbeat_interval_seconds
 
 	if _token.is_empty():
 		_print_log("SpacetimeDBConnection: Cannot connect without auth token.")

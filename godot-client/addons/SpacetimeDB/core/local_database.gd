@@ -485,7 +485,18 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			# the delete pass skips it. Fire on_update only when the value differs.
 			deleted_pks.erase(pk_value)
 			var prev_u: _ModuleTableType = table_dict.get(pk_value)
-			if prev_u == null or props.is_empty() or not _rows_equal(prev_u, inserted_row, props):
+			if prev_u == null:
+				# No prior cached row → this is an insert, not an update. Firing the
+				# update path here would hand listeners a null `prev` (the index
+				# listeners dereference it and crash). Refcount stays as the branch
+				# intends (the matching delete pass is skipped via deleted_pks).
+				table_dict[pk_value] = inserted_row
+				had_any_change = true
+				if has_insert_listeners:
+					for listener: Callable in insert_listeners:
+						listener.call(inserted_row)
+				row_inserted.emit(table_name_lower, inserted_row)
+			elif props.is_empty() or not _rows_equal(prev_u, inserted_row, props):
 				table_dict[pk_value] = inserted_row
 				had_any_change = true
 				if has_update_listeners:
@@ -504,7 +515,17 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			# Overlapping re-delivery: bump refcount; on_update only if the value differs.
 			ref_table[pk_value] = old_ref + 1
 			var prev_o: _ModuleTableType = table_dict.get(pk_value)
-			if prev_o == null or props.is_empty() or not _rows_equal(prev_o, inserted_row, props):
+			if prev_o == null:
+				# Refcount bumped above but no cached row (desync / first sight under
+				# an existing ref) → insert semantics, not update. Avoids a null `prev`
+				# reaching listeners (the index listeners would crash on it).
+				table_dict[pk_value] = inserted_row
+				had_any_change = true
+				if has_insert_listeners:
+					for listener: Callable in insert_listeners:
+						listener.call(inserted_row)
+				row_inserted.emit(table_name_lower, inserted_row)
+			elif props.is_empty() or not _rows_equal(prev_o, inserted_row, props):
 				table_dict[pk_value] = inserted_row
 				had_any_change = true
 				if has_update_listeners:

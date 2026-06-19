@@ -119,9 +119,10 @@ func write_u32_le(v: int) -> void:
 
 
 func write_u64_le(v: int) -> void:
-	if v < 0:
-		_set_error("Value %d out of range for u64" % v)
-		v = 0
+	# No range guard: GDScript int is i64, so every bit pattern is a valid u64 on the
+	# wire. A u64 >= 2^63 round-trips through get_u64() as a negative i64; put_u64
+	# writes the same 8 bytes back. Rejecting v < 0 here would make those values
+	# (large hashes / ids / u64 columns) un-serializable.
 	_spb.put_u64(v)
 
 
