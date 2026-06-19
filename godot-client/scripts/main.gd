@@ -65,6 +65,9 @@ func _ready() -> void:
 	options.debug_mode = true
 	options.compression = SpacetimeDBConnection.CompressionPreference.GZIP
 	options.auto_reconnect = true
+	# Persist the auth token so a restart resumes the same identity (and existing
+	# player row) instead of a fresh one — enables the rejoin path below.
+	options.one_time_token = false
 
 	SpacetimeDB.Blackholio.connect_db(
 		"http://127.0.0.1:3000",
@@ -135,11 +138,26 @@ func _on_subscription_applied() -> void:
 		],
 	)
 
-	# Check if we already have a player with circles
-	if local_player_id >= 0 and player_circles.has(local_player_id) and player_circles[local_player_id].size() > 0:
+	# Decide the entry flow. Three cases, matching the upstream client:
+	var has_circles: bool = (
+			local_player_id >= 0
+			and player_circles.has(local_player_id)
+			and not player_circles[local_player_id].is_empty()
+	)
+	var known_name: String = player_names.get(local_player_id, "") if local_player_id >= 0 else ""
+	if has_circles:
+		# Already in-game (e.g. reconnect mid-session).
+		game_started = true
+		username_screen.visible = false
+	elif not known_name.is_empty():
+		# Persisted identity with a name but no circle (rejoin after a prior session
+		# or a death while away) — re-enter silently instead of re-prompting.
+		_player_name = known_name
+		SpacetimeDB.Blackholio.reducers.enter_game(known_name)
 		game_started = true
 		username_screen.visible = false
 	else:
+		# New / unnamed identity — ask for a name.
 		username_screen.visible = true
 
 
