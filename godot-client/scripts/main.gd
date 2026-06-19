@@ -25,6 +25,9 @@ const INPUT_RATE: float = 0.05 # 20Hz
 const WORLD_SCALE: float = 5.0 # Match VISUAL_SCALE so collision radius aligns with visual
 
 var entity_nodes: Dictionary[int, Node2D] = { }
+# Entities currently playing a consume (eaten) animation. The animation owns the
+# node's lifetime, so the matching entity delete must not free it a second time.
+var _pending_consume: Dictionary[int, bool] = { }
 var circle_to_player: Dictionary[int, int] = { }
 var player_circles: Dictionary[int, Array] = { }
 var player_names: Dictionary[int, String] = { }
@@ -51,6 +54,7 @@ const QUERIES: PackedStringArray = [
 	"SELECT * FROM food",
 	"SELECT * FROM player",
 	"SELECT * FROM config",
+	"SELECT * FROM consume_entity_event",
 ]
 
 
@@ -144,6 +148,7 @@ func _setup_table_callbacks() -> void:
 	SpacetimeDB.Blackholio.db.circle.on_insert(_on_circle_insert)
 	SpacetimeDB.Blackholio.db.circle.on_delete(_on_circle_delete)
 	SpacetimeDB.Blackholio.db.food.on_insert(_on_food_insert)
+	SpacetimeDB.Blackholio.db.consume_entity_event.on_insert(_on_consume_event)
 	SpacetimeDB.Blackholio.db.player.on_insert(_on_player_insert)
 	SpacetimeDB.Blackholio.db.player.on_update(_on_player_update)
 	SpacetimeDB.Blackholio.db.player.on_delete(_on_player_delete)
@@ -183,16 +188,21 @@ func _on_entity_update(_old: Resource, new: Resource) -> void:
 
 
 func _on_entity_delete(entity: Resource) -> void:
-	var node: Node2D = entity_nodes.get(entity.entity_id)
+	var eid: int = entity.entity_id
+	var node: Node2D = entity_nodes.get(eid)
 	if node:
-		node.queue_free()
-		entity_nodes.erase(entity.entity_id)
+		# If a consume animation is playing, it owns the node (frees itself at the
+		# end) — drop our handle without a second free. Dictionary.erase returns
+		# true when the key was present.
+		if not _pending_consume.erase(eid):
+			node.queue_free()
+		entity_nodes.erase(eid)
 
 	# Clean up circle tracking
-	if circle_to_player.has(entity.entity_id):
-		var pid: int = circle_to_player[entity.entity_id]
-		circle_to_player.erase(entity.entity_id)
-		_remove_circle_from_player(pid, entity.entity_id)
+	if circle_to_player.has(eid):
+		var pid: int = circle_to_player[eid]
+		circle_to_player.erase(eid)
+		_remove_circle_from_player(pid, eid)
 
 # --- Circle callbacks ---
 
@@ -252,6 +262,23 @@ func _mark_as_food(entity_id: int) -> void:
 	if node and node.has_method("set_food"):
 		var color: Color = FOOD_COLORS[entity_id % FOOD_COLORS.size()]
 		node.set_food(color)
+
+# --- Consume callbacks ---
+
+
+# An entity was eaten: animate it shrinking into its consumer instead of popping.
+# The matching entity delete arrives moments later; _pending_consume tells it the
+# animation already owns the node. The consumer may be unsubscribed/off-screen —
+# fall back to despawning in place.
+func _on_consume_event(ev: Resource) -> void:
+	var consumed_id: int = ev.consumed_entity_id
+	var consumed_node: Node2D = entity_nodes.get(consumed_id)
+	if consumed_node == null:
+		return
+	var consumer_node: Node2D = entity_nodes.get(ev.consumer_entity_id)
+	var target: Vector2 = consumer_node.position if consumer_node != null else consumed_node.position
+	_pending_consume[consumed_id] = true
+	consumed_node.despawn_toward(target)
 
 # --- Player callbacks ---
 
