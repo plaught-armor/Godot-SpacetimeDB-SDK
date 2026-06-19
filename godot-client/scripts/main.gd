@@ -46,6 +46,7 @@ var _lock_input_active: bool = false
 var _lock_input_pos: Vector2 = Vector2.ZERO
 var _starfield: Node2D = null
 var _status_label: Label = null
+var _food_field: MultiMeshInstance2D = null
 
 @onready var entity_container: Node2D = $EntityContainer
 @onready var camera: Camera2D = $Camera2D
@@ -141,6 +142,10 @@ func _on_subscription_applied() -> void:
 		_starfield = preload("res://scripts/starfield.gd").new()
 		_starfield.setup(world_size)
 		add_child(_starfield)
+	# GPU-instanced food field (one draw call for all pellets).
+	if _food_field == null:
+		_food_field = preload("res://scripts/food_field.gd").new()
+		add_child(_food_field)
 
 	# Load existing state
 	_load_existing_data()
@@ -204,7 +209,7 @@ func _load_existing_data() -> void:
 
 	# Load food
 	for food in SpacetimeDB.Blackholio.db.food.iter():
-		_mark_as_food(food.entity_id)
+		_register_food(food.entity_id)
 
 # --- Entity callbacks ---
 
@@ -214,16 +219,22 @@ func _on_entity_insert(entity: Resource) -> void:
 
 
 func _on_entity_update(_old: Resource, new: Resource) -> void:
-	var node: Node2D = entity_nodes.get(new.entity_id)
+	var eid: int = new.entity_id
+	var pos: Vector2 = Vector2(new.position.x, new.position.y) * WORLD_SCALE
+	# Food is rendered by the MultiMesh field; players/circles by their node.
+	if _food_field != null and _food_field.has_food(eid):
+		_food_field.update_food(eid, pos, new.mass)
+		return
+	var node: Node2D = entity_nodes.get(eid)
 	if node and node.has_method("update_target"):
-		node.update_target(
-			Vector2(new.position.x, new.position.y) * WORLD_SCALE,
-			new.mass,
-		)
+		node.update_target(pos, new.mass)
 
 
 func _on_entity_delete(entity: Resource) -> void:
 	var eid: int = entity.entity_id
+	if _food_field != null and _food_field.has_food(eid):
+		_food_field.remove_food(eid)
+		return
 	var node: Node2D = entity_nodes.get(eid)
 	if node:
 		# If a consume animation is playing, it owns the node (frees itself at the
@@ -289,14 +300,25 @@ func _remove_circle_from_player(pid: int, eid: int) -> void:
 
 
 func _on_food_insert(food: Resource) -> void:
-	_mark_as_food(food.entity_id)
+	_register_food(food.entity_id)
 
 
-func _mark_as_food(entity_id: int) -> void:
+# Routes a food entity to the GPU-instanced field: drops the generic node the
+# entity insert spawned (we don't know an entity is food until its food row lands)
+# and hands its position/mass/color to the MultiMesh field.
+func _register_food(entity_id: int) -> void:
+	var e: Resource = SpacetimeDB.Blackholio.db.entity.entity_id.find(entity_id)
+	if e == null:
+		return
 	var node: Node2D = entity_nodes.get(entity_id)
-	if node and node.has_method("set_food"):
-		var color: Color = FOOD_COLORS[entity_id % FOOD_COLORS.size()]
-		node.set_food(color)
+	if node:
+		node.queue_free()
+		entity_nodes.erase(entity_id)
+	if _food_field == null:
+		return
+	var pos: Vector2 = Vector2(e.position.x, e.position.y) * WORLD_SCALE
+	var color: Color = FOOD_COLORS[entity_id % FOOD_COLORS.size()]
+	_food_field.add_food(entity_id, pos, e.mass, color, float(entity_id) * 0.73)
 
 # --- Consume callbacks ---
 
