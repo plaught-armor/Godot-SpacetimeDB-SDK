@@ -6,16 +6,22 @@
 //   COLOR             — instance color (the food's palette color)
 //   INSTANCE_CUSTOM.x — animation seed (desyncs the pulse between pellets)
 // The instance transform scales a 2x2 quad by radius * HALO_EXTENT, so the quad's
-// centered coords [-1,1] reach the halo edge; the shell (food radius) sits at
-// fraction 1/HALO_EXTENT.
+// local coords reach [-1,1]; the shell (food radius) sits at fraction 1/HALO_EXTENT.
+// We read the quad-local position from VERTEX (reliable for a mesh; mesh UV does not
+// interpolate dependably through a 2D MultiMesh).
 shader_type canvas_item;
 render_mode blend_mix;
 
 const float HALO_EXTENT = 1.5;
 
+varying vec2 v_local; // quad-local position, [-1, 1]
+
+void vertex() {
+	v_local = VERTEX; // QuadMesh size (2,2) centered → local verts are ±1
+}
+
 void fragment() {
-	vec2 p = (UV - 0.5) * 2.0; // [-1, 1] across the quad
-	float d = length(p);
+	float d = length(v_local);
 	float r = d * HALO_EXTENT; // r == 1.0 at the food radius (the shell edge)
 
 	float seed = INSTANCE_CUSTOM.x;
