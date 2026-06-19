@@ -313,6 +313,11 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 			_set_error("FixedSize data_len %d not divisible by row_size %d" % [data_len, row_size], start_pos)
 			return { }
 		var num_rows: int = data_len / row_size
+		if num_rows > MAX_VEC_LEN:
+			# Guard the resize below — data_len/row_size is an attacker-influenced u32
+			# ratio; an unchecked huge count would allocate gigabytes before any read.
+			_set_error("FixedSize row count %d exceeds limit %d" % [num_rows, MAX_VEC_LEN], start_pos)
+			return { }
 		offsets.resize(num_rows + 1)
 		for i: int in num_rows + 1:
 			offsets[i] = i * row_size
@@ -320,6 +325,11 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 	elif size_hint_type == ROW_LIST_ROW_OFFSETS:
 		var num_offsets: int = read_u32_le(spb)
 		if has_error():
+			return { }
+		if num_offsets > MAX_VEC_LEN:
+			# Guard the resize below — num_offsets is a raw u32 off the wire; an
+			# unchecked value near u32_max would allocate ~32 GiB before reading.
+			_set_error("RowOffsets count %d exceeds limit %d" % [num_offsets, MAX_VEC_LEN], start_pos)
 			return { }
 		offsets.resize(num_offsets + 1)
 		for i: int in num_offsets:
@@ -1103,6 +1113,17 @@ func _read_bsatn_row_list_as_resources(
 	var data_len: int = header["data_len"]
 	var block_start: int = spb.get_position()
 	var block_end: int = block_start + data_len
+	if block_end > spb.get_size():
+		# Header claims more row data than the buffer holds. Treat as NEEDS_MORE (the
+		# rest may arrive in a later packet) so the framing loop keeps the tail, rather
+		# than seeking past EOF below — which clamps and silently drops every
+		# subsequent message in the stream.
+		_set_error(
+			"Row block needs %d bytes, buffer has %d" % [block_end, spb.get_size()],
+			block_start,
+			ParseStatus.NEEDS_MORE,
+		)
+		return []
 
 	# Plan is constant for every row in the block — fetch once instead of re-hashing
 	# the plan cache per row. Table rows are product types (never a bare RustEnum
