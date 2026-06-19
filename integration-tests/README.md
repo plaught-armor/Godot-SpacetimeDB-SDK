@@ -58,6 +58,15 @@ A second module + harness covering behaviors the SDK changed or deferred:
 
 Run identically (publish `verify_types_module2` as `vtypes2`, codegen, run `verify_live2.gd`).
 
+## Reconnect / identity persistence (`verify_live_reconnect.gd`)
+
+Uses the `blackholio` module (the example's committed bindings already cover it —
+no codegen needed). With `one_time_token = false` + `save_token = true` the SDK
+saves the auth token and reloads it on the next connect, so a client resumes the
+**same identity** — the basis for the example's auto-rejoin. The harness connects
+twice and asserts the identity matches. Copy it into `godot-client/` and run as
+above (publish `blackholio`, then `--script verify_live_reconnect.gd`).
+
 ## Last verified
 
 Against SpacetimeDB **2.6.0** (CLI 2.5.0), schema v10:
