@@ -76,8 +76,11 @@ func update_target(new_pos: Vector2, new_mass: int) -> void:
 
 func set_mass(mass: int) -> void:
 	current_mass = mass
-	current_radius = sqrt(float(mass)) * VISUAL_SCALE
-	target_radius = current_radius
+	target_radius = sqrt(float(mass)) * VISUAL_SCALE
+	# Start at 0 so the circle grows in via the _process radius lerp (matches the
+	# upstream client, which seeds radius 0 on spawn). Spawn-only — live mass changes
+	# go through update_target and keep their smooth resize.
+	current_radius = 0.0
 	queue_redraw()
 
 
