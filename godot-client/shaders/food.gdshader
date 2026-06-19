@@ -15,17 +15,18 @@ render_mode blend_mix;
 const float HALO_EXTENT = 1.5;
 
 varying vec2 v_local; // quad-local position, [-1, 1]
+varying float v_seed; // per-instance animation seed (INSTANCE_CUSTOM is vertex-only)
 
 void vertex() {
 	v_local = VERTEX; // QuadMesh size (2,2) centered → local verts are ±1
+	v_seed = INSTANCE_CUSTOM.x;
 }
 
 void fragment() {
 	float d = length(v_local);
 	float r = d * HALO_EXTENT; // r == 1.0 at the food radius (the shell edge)
 
-	float seed = INSTANCE_CUSTOM.x;
-	float pulse = 0.5 + 0.5 * sin(TIME * 5.0 + seed);
+	float pulse = 0.5 + 0.5 * sin(TIME * 5.0 + v_seed);
 	float halo_r = 1.32 + pulse * 0.09;
 	vec3 base = COLOR.rgb;
 	float aa = max(fwidth(r), 0.0001) * 1.2;

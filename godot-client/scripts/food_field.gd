@@ -25,7 +25,7 @@ class FoodInst:
 	var radius: float = 0.0 # grows in from 0
 	var target_radius: float = 1.0
 	var color: Color = Color.WHITE
-	var seed: float = 0.0
+	var anim_seed: float = 0.0
 
 
 var _food: Dictionary[int, FoodInst] = { } # entity_id -> instance state
@@ -70,7 +70,7 @@ func has_food(entity_id: int) -> bool:
 
 
 ## Registers a new pellet. No-op if the field is full or the id already exists.
-func add_food(entity_id: int, pos: Vector2, mass: int, color: Color, seed: float) -> void:
+func add_food(entity_id: int, pos: Vector2, mass: int, color: Color, anim_seed: float) -> void:
 	if _food.has(entity_id) or _free.is_empty():
 		return
 	var f: FoodInst = FoodInst.new()
@@ -80,7 +80,7 @@ func add_food(entity_id: int, pos: Vector2, mass: int, color: Color, seed: float
 	f.target = pos
 	f.target_radius = sqrt(float(mass))
 	f.color = color
-	f.seed = seed
+	f.anim_seed = anim_seed
 	_food[entity_id] = f
 	_write(f)
 
@@ -110,7 +110,7 @@ func _write(f: FoodInst) -> void:
 	var s: float = f.radius * HALO_EXTENT
 	multimesh.set_instance_transform_2d(f.index, Transform2D(Vector2(s, 0.0), Vector2(0.0, s), f.pos))
 	multimesh.set_instance_color(f.index, f.color)
-	multimesh.set_instance_custom_data(f.index, Color(f.seed, 0.0, 0.0, 0.0))
+	multimesh.set_instance_custom_data(f.index, Color(f.anim_seed, 0.0, 0.0, 0.0))
 
 
 func _hide(index: int) -> void:
