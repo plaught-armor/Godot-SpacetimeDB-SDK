@@ -60,12 +60,12 @@ per-frame drain) against a live Blackholio server:
   the server's `move_all_players` tick produces a high-volume entity-update
   stream. `N` via a trailing arg:
   ```sh
-  godot --headless --path . --script res://bench_load.gd -- 200
+  godot --headless --path . --script res://benchmark/bench_load.gd -- 200
   ```
 - `bench_measure.gd` — one instrumented client; reports rows/sec applied, fps,
   and the unapplied drain backlog over a window:
   ```sh
-  godot --headless --path . --script res://bench_measure.gd -- 200
+  godot --headless --path . --script res://benchmark/bench_measure.gd -- 200
   ```
   The trailing arg is only echoed back as the `bots=` label in the `RESULT`
   line (to tag the run with the load size you started separately); it does not

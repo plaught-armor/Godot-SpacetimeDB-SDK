@@ -1,6 +1,6 @@
 # Integration tests (live server)
 
-The unit tests under `godot-client/addons/SpacetimeDB/tests/` cover BSATN
+The unit tests under `godot-client/tests/` cover BSATN
 serialization in isolation. This directory holds an **end-to-end** check that runs
 the SDK against a real running SpacetimeDB server, to verify the extended scalar
 types (`u128` / `i128` / `u256` / `i256`, `Uuid`, and `ScheduleAt`) survive the full

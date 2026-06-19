@@ -26,9 +26,14 @@ fi
 
 cd "$HERE" || exit 2
 
-# Build the import cache on first run so tests that load() resources resolve.
-if [ ! -d ".godot" ]; then
-	echo "no .godot cache — importing once..."
+# Build/refresh the import cache so tests resolve class_name globals and load()
+# resources. Reimport when .godot is absent OR any .gd is newer than the global
+# class cache — adding a new class_name to an existing checkout otherwise leaves
+# the cache stale, and every script depending on the new type fails to compile.
+class_cache=".godot/global_script_class_cache.cfg"
+if [ ! -f "$class_cache" ] || \
+	[ -n "$(find . -name '*.gd' -newer "$class_cache" -not -path './.godot/*' -print -quit)" ]; then
+	echo "import cache missing or stale — importing..."
 	"$GODOT_BIN" --headless --path . --import >/dev/null 2>&1 || true
 fi
 
