@@ -56,6 +56,28 @@ need shows up — listed with the trigger that would justify reopening.
 | **Fluent connection builder** (`DbConnection.builder().withUri()...`) | `SpacetimeDBConnectionOptions` (a `Resource`) covers the same surface and is the idiomatic Godot shape — editor-inspectable, savable. A fluent builder would be a parallel API for cosmetics. | — (idiomatic choice, unlikely to reopen). |
 | **Typed column query DSL** (`tables.user.where(r => r.online.eq(true))`) | `SpacetimeDBQuery` (`.table().where().to_sql()`) already builds validated SQL. A typed-column DSL fights GDScript's lack of generics for a marginal ergonomic gain. | GDScript gains the type machinery to make it compile-checked, or query typos become a real reported pain. |
 
+## Data-shape choices
+
+Independent of the parity audit — longstanding SDK shape calls that have a
+user-visible effect, so they get explained rather than just done.
+
+- **`Timestamp` / `TimeDuration` stay `int` microseconds, not wrapped Resources.**
+  Both are an `i64` micro count on the wire and come through as a plain `int`
+  (a `Timestamp` is micros since the unix epoch, a `TimeDuration` is an elapsed
+  span). Wrapping either in a distinct `Resource` would allocate one object per
+  value — per row, per reducer result — to encode a *transform* concern (how you
+  format or compare the number), not a *data-shape* one (the bytes are already
+  correct). Net-negative: heap churn on the hot path for zero wire benefit.
+  Convert at the call site if you want a typed view; the SDK keeps the data POD.
+  The one place the variant is real wire data — a `#[scheduled]` table's
+  `Interval` vs `Time` — *is* modeled, by `ScheduleAt`, because there the tag is
+  data, not a label.
+- **Schema-v10 `default_values` and module namespaces are not surfaced (deferred).**
+  Neither has a functional consumer yet: `default_values` is verified harmless
+  (`auto_inc` tables deserialize fine), namespaces are unused. Built when a module
+  needs them — not a permanent skip. Canonical/case naming via `ExplicitNames` and
+  fallible-reducer return values + error messages *are* handled.
+
 ## Where this is enforced
 
 - Wire-blocked items: README "Known Limitations & Caveats" (user-facing).
