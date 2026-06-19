@@ -644,8 +644,7 @@ func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictiona
 			content += ("\nfunc find_by_%s(value: %s) -> Array[%s]:\n" % [f_name, f_type, type_name] +
 					"\treturn %s.filter(value)\n" % f_name)
 			content += ("\nfunc first_by_%s(value: %s) -> %s:\n" % [f_name, f_type, type_name] +
-					"\tvar rows: Array[%s] = %s.filter(value)\n" % [type_name, f_name] +
-					"\treturn rows[0] if not rows.is_empty() else null\n")
+					"\treturn %s._first_row(value) as %s\n" % [f_name, type_name])
 		else:
 			content += ("\nfunc find_by_%s(value: %s) -> Array[%s]:\n" % [f_name, f_type, type_name] +
 					"\treturn find_by(&\"%s\", value)\n" % f_name)

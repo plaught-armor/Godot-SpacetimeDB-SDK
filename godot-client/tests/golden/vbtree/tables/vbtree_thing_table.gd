@@ -58,15 +58,13 @@ func find_by_score(value: int) -> Array[VbtreeThing]:
 	return score.filter(value)
 
 func first_by_score(value: int) -> VbtreeThing:
-	var rows: Array[VbtreeThing] = score.filter(value)
-	return rows[0] if not rows.is_empty() else null
+	return score._first_row(value) as VbtreeThing
 
 func find_by_owner(value: PackedByteArray) -> Array[VbtreeThing]:
 	return owner.filter(value)
 
 func first_by_owner(value: PackedByteArray) -> VbtreeThing:
-	var rows: Array[VbtreeThing] = owner.filter(value)
-	return rows[0] if not rows.is_empty() else null
+	return owner._first_row(value) as VbtreeThing
 
 func _emit_inserted(row: _ModuleTableType) -> void:
 	inserted.emit(row as VbtreeThing)

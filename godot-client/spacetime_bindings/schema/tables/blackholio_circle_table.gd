@@ -56,8 +56,7 @@ func find_by_player_id(value: int) -> Array[BlackholioCircle]:
 	return player_id.filter(value)
 
 func first_by_player_id(value: int) -> BlackholioCircle:
-	var rows: Array[BlackholioCircle] = player_id.filter(value)
-	return rows[0] if not rows.is_empty() else null
+	return player_id._first_row(value) as BlackholioCircle
 
 func find_by_speed(value: float) -> Array[BlackholioCircle]:
 	return find_by(&"speed", value)

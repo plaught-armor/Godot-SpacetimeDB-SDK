@@ -22,7 +22,7 @@ var _sorted_keys: Array = []
 ## Reference to the subclass-owned multimap, captured in [method _connect_cache_to_db]
 ## so base-class range queries can read it (the typed [code]_cache[/code] lives on the
 ## generated subclass).
-var _cache_ref: Dictionary = {}
+var _cache_ref: Dictionary = { }
 
 
 ## Inserts [param k] into [member _sorted_keys] at its sorted position.
@@ -77,56 +77,73 @@ func _lt_rows(v: Variant) -> Array:
 	return _gather(0, _sorted_keys.bsearch(v, true))
 
 
+## First cached row whose key equals [param col_val], or null if the bucket is absent
+## or empty. Backs the generated [code]first_by_<field>[/code] without the typed
+## bucket-copy that [code]filter()[/code] builds — only row 0 is needed.
+func _first_row(col_val: Variant) -> _ModuleTableType:
+	var bucket: Variant = _cache_ref.get(col_val)
+	if bucket == null or bucket.is_empty():
+		return null
+	return bucket[0]
+
+
 ## Wires [param cache] (a [code]Dictionary[value, Array[Row]][/code] multimap) to live
 ## insert/update/delete callbacks on [param db] so each per-value bucket stays current
 ## without manual polling. Mirrors [_ModuleTableUniqueIndex] but keeps a bucket of rows
 ## per key instead of a single row, and keeps [member _sorted_keys] aligned at the
-## bucket create/empty edges.
+## bucket create/empty edges. The callbacks read the multimap via [member _cache_ref]
+## (set here), so they're named methods rather than capturing lambdas.
 func _connect_cache_to_db(cache: Dictionary, db: LocalDatabase) -> void:
 	_cache_ref = cache
-	db.subscribe_to_inserts(
-		_table_name,
-		func(r: _ModuleTableType):
-			var col_val = r[_field_name]
-			if not cache.has(col_val):
-				cache[col_val] = []
-				_key_added(col_val)
-			cache[col_val].append(r)
-	)
-	db.subscribe_to_updates(
-		_table_name,
-		func(p: _ModuleTableType, r: _ModuleTableType):
-			var previous_col_val = p[_field_name]
-			var col_val = r[_field_name]
+	db.subscribe_to_inserts(_table_name, _on_insert)
+	db.subscribe_to_updates(_table_name, _on_update)
+	db.subscribe_to_deletes(_table_name, _on_delete)
 
-			if previous_col_val != col_val:
-				if cache.has(previous_col_val):
-					cache[previous_col_val].erase(p)
-					if cache[previous_col_val].is_empty():
-						cache.erase(previous_col_val)
-						_key_removed(previous_col_val)
-				if not cache.has(col_val):
-					cache[col_val] = []
-					_key_added(col_val)
-				cache[col_val].append(r)
-			elif cache.has(col_val):
-				# Same key — swap the stale instance for the new one in place.
-				var idx: int = cache[col_val].find(p)
-				if idx != -1:
-					cache[col_val][idx] = r
-				else:
-					cache[col_val].append(r)
-			else:
-				cache[col_val] = [r]
-				_key_added(col_val)
-	)
-	db.subscribe_to_deletes(
-		_table_name,
-		func(r: _ModuleTableType):
-			var col_val = r[_field_name]
-			if cache.has(col_val):
-				cache[col_val].erase(r)
-				if cache[col_val].is_empty():
-					cache.erase(col_val)
-					_key_removed(col_val)
-	)
+
+## Insert listener — appends the row to its key's bucket, creating the bucket (and
+## registering the key in [member _sorted_keys]) on first sight of the value.
+func _on_insert(r: _ModuleTableType) -> void:
+	var col_val: Variant = r[_field_name]
+	if not _cache_ref.has(col_val):
+		_cache_ref[col_val] = []
+		_key_added(col_val)
+	_cache_ref[col_val].append(r)
+
+
+## Update listener — moves the row between buckets when its key changed, else swaps
+## the stale instance in place. Empties/creates buckets at the key edges.
+func _on_update(p: _ModuleTableType, r: _ModuleTableType) -> void:
+	var previous_col_val: Variant = p[_field_name]
+	var col_val: Variant = r[_field_name]
+
+	if previous_col_val != col_val:
+		if _cache_ref.has(previous_col_val):
+			_cache_ref[previous_col_val].erase(p)
+			if _cache_ref[previous_col_val].is_empty():
+				_cache_ref.erase(previous_col_val)
+				_key_removed(previous_col_val)
+		if not _cache_ref.has(col_val):
+			_cache_ref[col_val] = []
+			_key_added(col_val)
+		_cache_ref[col_val].append(r)
+	elif _cache_ref.has(col_val):
+		# Same key — swap the stale instance for the new one in place.
+		var idx: int = _cache_ref[col_val].find(p)
+		if idx != -1:
+			_cache_ref[col_val][idx] = r
+		else:
+			_cache_ref[col_val].append(r)
+	else:
+		_cache_ref[col_val] = [r]
+		_key_added(col_val)
+
+
+## Delete listener — drops the row from its bucket, emptying the bucket (and
+## unregistering the key) when it was the last row for that value.
+func _on_delete(r: _ModuleTableType) -> void:
+	var col_val: Variant = r[_field_name]
+	if _cache_ref.has(col_val):
+		_cache_ref[col_val].erase(r)
+		if _cache_ref[col_val].is_empty():
+			_cache_ref.erase(col_val)
+			_key_removed(col_val)
