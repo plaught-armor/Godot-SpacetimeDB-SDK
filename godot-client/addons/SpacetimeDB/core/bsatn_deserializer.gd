@@ -59,7 +59,7 @@ func _init(p_schema: SpacetimeDBSchema, p_debug_mode: bool = false) -> void:
 
 func _normalize(name: StringName) -> StringName:
 	var cached: StringName = _normalized_name_cache.get(name, &"")
-	if cached != &"":
+	if not cached.is_empty():
 		return cached
 	var normalized: StringName = name.to_lower().replace("_", "")
 	_normalized_name_cache[name] = normalized
@@ -231,7 +231,7 @@ func read_string_with_u32_len(spb: StreamPeerBuffer) -> String:
 	var str_result: String = str_bytes.get_string_from_utf8()
 	# Empty result for non-empty bytes that also fail ASCII decode = malformed UTF-8.
 	# (A legitimate embedded NUL is valid UTF-8 and is intentionally allowed.)
-	if str_result == "" and length > 0 and str_bytes.get_string_from_ascii() == "":
+	if str_result.is_empty() and length > 0 and str_bytes.get_string_from_ascii().is_empty():
 		_set_error("Failed to decode UTF-8 string length %d" % length, start_pos)
 		return ""
 	return str_result
@@ -481,7 +481,7 @@ func _read_option(
 		_set_error("Invalid Option tag %d for property '%s' (expected 0=Some, 1=None)" % [tag, prop_name], tag_pos)
 		return null
 
-	if inner_type == &"":
+	if inner_type.is_empty():
 		_set_error("Missing BSATN_TYPES entry for Option property '%s'" % prop_name, tag_pos)
 		return null
 
@@ -555,12 +555,12 @@ func _read_array(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_str: String
 		# Prefixed type — use recursive type-driven deserialization for deep nesting
 		element_reader = _read_value_from_bsatn_type.bind(bsatn_type_str, prop_name)
 	elif element_class_name == &"Option":
-		if bsatn_type_str == &"":
+		if bsatn_type_str.is_empty():
 			_set_error("Array '%s' of Options is missing BSATN_TYPES entry for inner type T" % prop_name, start_pos)
 			return []
 		element_reader = _read_option.bind(element_prop_sim, bsatn_type_str)
 	else:
-		if bsatn_type_str != &"":
+		if not bsatn_type_str.is_empty():
 			element_reader = _get_primitive_reader_from_bsatn_type(bsatn_type_str)
 			if not element_reader.is_valid() and _schema.types.has(bsatn_type_str):
 				element_reader = _read_nested_resource.bind(element_prop_sim)
@@ -595,7 +595,7 @@ func _read_native_arraylike(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_
 	var prop_name: StringName = prop.name
 	var start_pos: int = spb.get_position()
 
-	if bsatn_type_str == &"":
+	if bsatn_type_str.is_empty():
 		_set_error("Missing BSATN_TYPES entry for '%s' (type %s)" % [prop_name, type_string(prop.type)], start_pos)
 		return null
 
@@ -639,7 +639,7 @@ func _read_nested_resource(spb: StreamPeerBuffer, prop: Dictionary) -> Object:
 	var prop_name: StringName = prop.name
 	var nested_class_name: StringName = prop.class_name
 
-	if nested_class_name == &"":
+	if nested_class_name.is_empty():
 		_set_error(
 			"Property '%s' is TYPE_OBJECT but has no class_name hint" % prop_name,
 			spb.get_position(),
@@ -687,7 +687,7 @@ func _read_nested_resource(spb: StreamPeerBuffer, prop: Dictionary) -> Object:
 func _hoistable_nested_script(prop: Dictionary, reader_callable: Callable) -> GDScript:
 	if reader_callable.get_method() != &"_read_nested_resource":
 		return null
-	if _schema == null or prop.type != TYPE_OBJECT or prop.class_name == &"" or prop.class_name == &"Option":
+	if _schema == null or prop.type != TYPE_OBJECT or prop.class_name.is_empty() or prop.class_name == &"Option":
 		return null
 	var script: GDScript = _schema.get_type(_normalize(prop.class_name))
 	if script == null:
@@ -782,7 +782,7 @@ func _get_reader_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 		return _read_native_arraylike.bind(prop, bsatn_type_str)
 	else:
 		var reader: Callable = Callable()
-		if bsatn_type_str != &"":
+		if not bsatn_type_str.is_empty():
 			reader = _get_primitive_reader_from_bsatn_type(bsatn_type_str)
 			if not reader.is_valid() and _schema.types.has(_normalize(bsatn_type_str)):
 				reader = _read_nested_resource.bind(prop)
@@ -828,7 +828,7 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 			)
 			return null
 		var temp_array: Array[Variant] = []
-		for i: int in range(array_length):
+		for i: int in array_length:
 			if has_error():
 				return null
 			var element: Variant = _read_value_from_bsatn_type(spb, element_type, "%s[%d]" % [context_prop_name, i])
@@ -1086,7 +1086,7 @@ func _populate_enum_from_bytes(spb: StreamPeerBuffer, resource: Object, script: 
 		return false
 	resource.value = enum_variant
 	var enum_type: StringName = enum_options[enum_variant]
-	if enum_type != &"":
+	if not enum_type.is_empty():
 		var data: Variant = _read_value_from_bsatn_type(spb, enum_type, &"")
 		if has_error():
 			return false
@@ -1195,7 +1195,7 @@ func _read_table_update_instance(spb: StreamPeerBuffer, resource: TableUpdateDat
 	var all_inserts: Array[Resource] = []
 	var all_deletes: Array[Resource] = []
 
-	for _i: int in range(rows_count):
+	for _i: int in rows_count:
 		if has_error():
 			return false
 		var tag: int = read_u8(spb)
@@ -1259,7 +1259,7 @@ func _read_subscripton_applied_message(spb: StreamPeerBuffer) -> SubscribeApplie
 	if has_error():
 		return null
 
-	for _i: int in range(table_count):
+	for _i: int in table_count:
 		if has_error():
 			return null
 		var table_name: String = read_string_with_u32_len(spb)
@@ -1297,7 +1297,7 @@ func _read_transaction_update_message(spb: StreamPeerBuffer) -> TransactionUpdat
 	if has_error():
 		return null
 
-	for _i: int in range(query_set_count):
+	for _i: int in query_set_count:
 		if has_error():
 			return null
 		var dataset: DatabaseUpdateData = DatabaseUpdateData.new()
@@ -1311,7 +1311,7 @@ func _read_transaction_update_message(spb: StreamPeerBuffer) -> TransactionUpdat
 		if has_error():
 			return null
 
-		for i2: int in range(table_count):
+		for i2: int in table_count:
 			if has_error():
 				return null
 			var table: TableUpdateData = TableUpdateData.new()
@@ -1347,7 +1347,7 @@ func _read_unsubscribe_applied_message(spb: StreamPeerBuffer) -> UnsubscribeAppl
 		var table_count: int = read_u32_le(spb)
 		if has_error():
 			return null
-		for _i: int in range(table_count):
+		for _i: int in table_count:
 			if has_error():
 				return null
 			var table_name: String = read_string_with_u32_len(spb)
@@ -1419,7 +1419,7 @@ func _read_one_off_query_result_message(spb: StreamPeerBuffer) -> OneOffQueryRes
 		var table_count: int = read_u32_le(spb)
 		if has_error():
 			return null
-		for _i: int in range(table_count):
+		for _i: int in table_count:
 			if has_error():
 				return null
 			var table_name: String = read_string_with_u32_len(spb)
@@ -1565,7 +1565,7 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> SpacetimeDBServerMessa
 	var result: SpacetimeDBServerMessage = null
 	var script_path: String = SpacetimeDBServerMessage.get_script_path(msg_type)
 
-	if script_path == "":
+	if script_path.is_empty():
 		_set_error("Unknown server message type: 0x%02X" % msg_type, 1)
 		return null
 

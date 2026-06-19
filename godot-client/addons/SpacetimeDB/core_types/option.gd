@@ -25,7 +25,7 @@ extends Resource
 @export var data: Array = []:
 	set(value):
 		if value is Array:
-			if value.size() > 0:
+			if not value.is_empty():
 				_internal_data = value.slice(0, 1)
 			else:
 				_internal_data = []
@@ -54,7 +54,7 @@ static func none() -> Option:
 
 ## Returns [code]true[/code] if this Option contains a value.
 func is_some() -> bool:
-	return _internal_data.size() > 0
+	return not _internal_data.is_empty()
 
 
 ## Returns [code]true[/code] if this Option is empty.

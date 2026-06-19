@@ -1198,11 +1198,11 @@ func _start_reconnection(immediate: bool = false) -> void:
 	if _saved_subscription_queries.is_empty():
 		for sub_id: int in current_subscriptions:
 			var sub: SpacetimeDBSubscription = current_subscriptions[sub_id]
-			if sub.queries.size() > 0:
+			if not sub.queries.is_empty():
 				_saved_subscription_queries.append(sub.queries.duplicate())
 		for sub_id: int in pending_subscriptions:
 			var sub: SpacetimeDBSubscription = pending_subscriptions[sub_id]
-			if sub.queries.size() > 0:
+			if not sub.queries.is_empty():
 				_saved_subscription_queries.append(sub.queries.duplicate())
 	print_log("SpacetimeDBClient: Saved %d subscription query sets for re-subscription." % _saved_subscription_queries.size())
 

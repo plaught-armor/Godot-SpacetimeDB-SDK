@@ -43,7 +43,7 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 	dir.list_dir_begin()
 	while true:
 		var file_name_raw: String = dir.get_next()
-		if file_name_raw == "":
+		if file_name_raw.is_empty():
 			break
 
 		if dir.current_is_dir():
@@ -64,7 +64,7 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 		if not file_name.ends_with(".gd"):
 			continue
 
-		if prefix != "" and not file_name.begins_with(prefix):
+		if not prefix.is_empty() and not file_name.begins_with(prefix):
 			continue
 
 		var script_path: String = path.path_join(file_name)

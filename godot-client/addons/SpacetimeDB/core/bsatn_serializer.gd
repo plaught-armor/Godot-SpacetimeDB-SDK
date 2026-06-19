@@ -163,7 +163,7 @@ func write_bytes(v: PackedByteArray) -> void:
 func write_string_with_u32_len(v: String) -> void:
 	var str_bytes: PackedByteArray = v.to_utf8_buffer()
 	write_u32_le(str_bytes.size())
-	if str_bytes.size() > 0:
+	if not str_bytes.is_empty():
 		write_bytes(str_bytes)
 
 
@@ -194,7 +194,7 @@ func write_scheduled_at(v: ScheduleAt) -> void:
 # Writes a PackedByteArray prefixed with its u32 length (Vec<u8> format)
 func write_vec_u8(v: PackedByteArray) -> void:
 	write_u32_le(v.size())
-	if v.size() > 0:
+	if not v.is_empty():
 		write_bytes(v) # Avoid calling put_data with empty array if possible
 
 
@@ -266,7 +266,7 @@ func write_array(v: Array[Variant], bsatn_type: StringName, prop: Dictionary) ->
 	write_u32_le(v.size())
 	if has_error():
 		return
-	if v.size() == 0:
+	if v.is_empty():
 		return
 
 	# 2. Determine element prototype info (Variant.Type, class_name)
@@ -401,7 +401,7 @@ func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary
 		)
 		return
 
-	for i: int in range(components.size()):
+	for i: int in components.size():
 		var value: Variant = components[i]
 		var bsatn_component_type: String = bsatn_component_types[i]
 		_write_value_from_bsatn_type(value, bsatn_component_type, prop_name + "[%s]" % i)

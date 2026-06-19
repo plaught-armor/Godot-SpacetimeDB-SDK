@@ -44,7 +44,7 @@ var _trackers: Array[Tracker] = []
 
 func _init() -> void:
 	_trackers.resize(Category.size())
-	for i: int in range(Category.size()):
+	for i: int in Category.size():
 		_trackers[i] = Tracker.new()
 
 
@@ -89,7 +89,7 @@ func get_tracker(category: Category) -> Tracker:
 func reset() -> void:
 	_pending_usec.clear()
 	_pending_cat.clear()
-	for i: int in range(Category.size()):
+	for i: int in Category.size():
 		_trackers[i] = Tracker.new()
 
 

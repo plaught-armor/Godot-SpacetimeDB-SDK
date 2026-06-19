@@ -61,7 +61,7 @@ func on_set(schema: _ModuleTableType) -> void:
 	if schema == null:
 		name = "Receiver [EMPTY]"
 		table_to_receive = schema
-		if selected_table_name != "":
+		if not selected_table_name.is_empty():
 			set_selected_table_name("")
 	else:
 		var script_resource: Script = schema.get_script()
@@ -90,7 +90,7 @@ func on_set(schema: _ModuleTableType) -> void:
 		if not _derived_table_names.is_empty():
 			set_selected_table_name(_derived_table_names[0])
 		else:
-			if selected_table_name != "":
+			if not selected_table_name.is_empty():
 				set_selected_table_name("")
 
 	if Engine.is_editor_hint():
@@ -131,7 +131,7 @@ func _get_db(wait_for_init: bool = false) -> LocalDatabase:
 
 
 func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName) -> void:
-	if Engine.is_editor_hint() or table_name_sn == &"":
+	if Engine.is_editor_hint() or table_name_sn.is_empty():
 		return
 
 	_print_log("Subscribing to table: %s" % table_name_sn)
@@ -146,7 +146,7 @@ func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName) -> void:
 	var existing_data: Array[_ModuleTableType] = await get_table_data()
 	if not is_instance_valid(self) or not is_inside_tree():
 		return
-	if existing_data.size() > 0:
+	if not existing_data.is_empty():
 		for row: _ModuleTableType in existing_data:
 			_on_insert(row)
 		_on_transactions_completed()
@@ -160,7 +160,7 @@ func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName) -> void:
 
 
 func _unsubscribe_from_table(table_name_sn: StringName) -> void:
-	if Engine.is_editor_hint() or table_name_sn == &"":
+	if Engine.is_editor_hint() or table_name_sn.is_empty():
 		return
 
 	_print_log("Unsubscribing from table: %s" % table_name_sn)

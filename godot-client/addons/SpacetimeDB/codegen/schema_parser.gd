@@ -729,7 +729,7 @@ static func _is_sum_type(sum_def: Dictionary) -> bool:
 		if not type.has("Product"):
 			return true
 		var elements = type.Product.get("elements", [])
-		if elements.size() > 0:
+		if not elements.is_empty():
 			return true
 	return false
 
@@ -743,7 +743,7 @@ static func _is_sum_option(sum_def: Dictionary) -> bool:
 	var found_none: bool = false
 	var none_is_unit: bool = false
 
-	for v_idx: int in range(variants.size()):
+	for v_idx: int in variants.size():
 		var v_name = variants[v_idx].get("name", { }).get("some", "")
 		if v_name == "some":
 			found_some = true

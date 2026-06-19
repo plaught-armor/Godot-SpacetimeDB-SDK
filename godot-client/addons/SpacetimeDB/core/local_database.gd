@@ -275,7 +275,7 @@ func prune_query(query_id: int) -> void:
 		var membership: Dictionary = tables[table_name_lower]
 		var drop: TableUpdateData = TableUpdateData.new()
 		drop.table_name = table_name_lower
-		if _get_primary_key_field(table_name_lower) == &"":
+		if _get_primary_key_field(table_name_lower).is_empty():
 			# PK-less membership { hash -> [[row, count]] }: emit `count` deletes per value.
 			for h: int in membership:
 				for entry: Array in membership[h]:
@@ -359,7 +359,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 	var table_dict: Dictionary = _tables[table_name_lower]
 	var had_any_change: bool = false
 
-	if pk_field == &"":
+	if pk_field.is_empty():
 		# PK-less table: refcounted by row value (rows have no key). A distinct value held
 		# by N overlapping subscriptions has count N; on_insert fires only on 0->1 and
 		# on_delete only on 1->0, so a shared row survives one subscription's unsubscribe.
@@ -433,7 +433,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			if not evicted.is_empty():
 				# Single pass compact — the stored row is the same instance appended on 0->1.
 				var write_idx: int = 0
-				for read_idx: int in range(rows_array.size()):
+				for read_idx: int in rows_array.size():
 					var row: _ModuleTableType = rows_array[read_idx]
 					if evicted.has(row.get_instance_id()):
 						continue
