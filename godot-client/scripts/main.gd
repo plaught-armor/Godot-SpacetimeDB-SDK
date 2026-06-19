@@ -42,6 +42,7 @@ var game_started: bool = false
 var _player_name: String = ""
 var _lock_input_active: bool = false
 var _lock_input_pos: Vector2 = Vector2.ZERO
+var _starfield: Node2D = null
 
 @onready var entity_container: Node2D = $EntityContainer
 @onready var camera: Camera2D = $Camera2D
@@ -126,6 +127,11 @@ func _on_subscription_applied() -> void:
 		world_size = configs[0].world_size
 		print("World size: %d" % world_size)
 	_draw_world_border()
+	# Build the starfield once (subscription-applied can fire again on resubscribe).
+	if _starfield == null:
+		_starfield = preload("res://scripts/starfield.gd").new()
+		_starfield.setup(world_size)
+		add_child(_starfield)
 
 	# Load existing state
 	_load_existing_data()
@@ -334,6 +340,7 @@ func _spawn_entity_node(entity: Resource) -> void:
 		return
 	var node: Node2D = preload("res://scripts/entity_node.gd").new()
 	node.position = Vector2(entity.position.x, entity.position.y) * WORLD_SCALE
+	node.animation_seed = float(entity.entity_id) * 0.73 # desync pulse/wave per entity
 	node.set_mass(entity.mass)
 	entity_container.add_child(node)
 	entity_nodes[entity.entity_id] = node

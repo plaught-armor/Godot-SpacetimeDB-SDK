@@ -16,6 +16,7 @@ var circle_color: Color = Color.WHITE
 var is_food: bool = false
 var player_id: int = -1
 var player_name: String = ""
+var animation_seed: float = 0.0 # desyncs the pulse/wave between entities
 
 var is_despawning: bool = false
 var _despawn_consumer: Node2D = null # eater to fly into; null/freed → shrink in place
@@ -42,11 +43,19 @@ func _process(delta: float) -> void:
 	# Radius interpolation
 	if not is_equal_approx(current_radius, target_radius):
 		current_radius = lerpf(current_radius, target_radius, delta * 8.0)
-		queue_redraw()
+
+	# Redraw every frame so the pulse/wave animates (cheap per node).
+	queue_redraw()
 
 
 func _draw() -> void:
-	draw_circle(Vector2.ZERO, current_radius, circle_color)
+	if current_radius <= 0.01:
+		return
+
+	if is_food:
+		_draw_food()
+	else:
+		_draw_player()
 
 	if not is_food and not player_name.is_empty():
 		var font: Font = ThemeDB.fallback_font
@@ -61,6 +70,47 @@ func _draw() -> void:
 			font_size,
 			Color.WHITE,
 		)
+
+
+# Layered player blob: translucent pulsing halo, dark rim, color disk, specular
+# highlight, and a wavy animated outline. Ports the upstream Circle2D.DrawPlayerCircle.
+func _draw_player() -> void:
+	var t: float = Time.get_ticks_msec() / 1000.0
+	var pulse: float = 0.5 + 0.5 * sin(t * 2.2 + animation_seed)
+	draw_circle(Vector2.ZERO, current_radius * (1.16 + pulse * 0.04), _with_alpha(circle_color, 0.14))
+	draw_circle(Vector2.ZERO, current_radius, _shade(circle_color, 0.58))
+	draw_circle(Vector2.ZERO, current_radius * 0.82, circle_color)
+	draw_circle(
+		Vector2(-current_radius * 0.22, -current_radius * 0.24),
+		current_radius * 0.34,
+		_with_alpha(_shade(circle_color, 1.42), 0.72),
+	)
+
+	var outline: PackedVector2Array = PackedVector2Array()
+	outline.resize(73)
+	for i: int in 73:
+		var angle: float = TAU * i / 72.0
+		var wave: float = sin(angle * 7.0 + t * 3.0 + animation_seed) * 0.035
+		outline[i] = Vector2.from_angle(angle) * current_radius * (1.015 + wave)
+	draw_polyline(outline, _with_alpha(_shade(circle_color, 1.55), 0.88), clampf(current_radius * 0.085, 1.5, 5.0), true)
+
+
+# Smaller, faster-pulsing food pellet. Ports the upstream Circle2D.DrawFood.
+func _draw_food() -> void:
+	var t: float = Time.get_ticks_msec() / 1000.0
+	var pulse: float = 0.5 + 0.5 * sin(t * 5.0 + animation_seed)
+	draw_circle(Vector2.ZERO, current_radius * (1.32 + pulse * 0.09), _with_alpha(circle_color, 0.1))
+	draw_circle(Vector2.ZERO, current_radius, _shade(circle_color, 0.72))
+	draw_circle(Vector2.ZERO, current_radius * 0.64, circle_color)
+	draw_circle(Vector2.ZERO, current_radius * 0.24, _with_alpha(_shade(circle_color, 1.55), 0.86))
+
+
+func _shade(c: Color, m: float) -> Color:
+	return Color(clampf(c.r * m, 0.0, 1.0), clampf(c.g * m, 0.0, 1.0), clampf(c.b * m, 0.0, 1.0), c.a)
+
+
+func _with_alpha(c: Color, a: float) -> Color:
+	return Color(c.r, c.g, c.b, a)
 
 
 func update_target(new_pos: Vector2, new_mass: int) -> void:
