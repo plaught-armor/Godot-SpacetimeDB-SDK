@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/41dd6587-9f3c-45cd-b6b4-e144dc4338ac" alt="godot-spacetimedb_128" width="128">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-lockup-dark.png">
+    <img alt="SpacetimeDB Godot SDK" src="docs/images/logo-lockup-light.png" width="420">
+  </picture>
 </p>
 
 ## SpacetimeDB Godot SDK
