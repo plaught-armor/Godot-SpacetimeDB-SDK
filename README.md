@@ -14,6 +14,7 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 -   [Quick Start guide](docs/quickstart.md)
 -   [Codegen guide](docs/codegen.md)
 -   [API Reference](docs/api.md)
+-   [Design Decisions](docs/design-decisions.md) — what's built, what's blocked by the wire, what's deliberately out of scope (and why)
 -   [Changelog](CHANGELOG.md)
 
 ## Features

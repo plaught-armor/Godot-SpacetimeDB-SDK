@@ -6,3 +6,4 @@
 -   [Generate module bindings](codegen.md)
 -   [Quick Start](quickstart.md)
 -   [API Reference](api.md)
+-   [Design Decisions](design-decisions.md)
