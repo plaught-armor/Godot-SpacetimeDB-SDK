@@ -1,0 +1,68 @@
+{
+	"sections": [
+		{
+			"Typespace": {
+				"types": [
+					{
+						"Product": {
+							"elements": [
+								{
+									"name": { "some": "id" },
+									"algebraic_type": { "U32": [] }
+								},
+								{
+									"name": { "some": "score" },
+									"algebraic_type": { "U32": [] }
+								},
+								{
+									"name": { "some": "owner" },
+									"algebraic_type": { "U256": [] }
+								}
+							]
+						}
+					}
+				]
+			}
+		},
+		{
+			"Types": [
+				{
+					"source_name": { "scope": [], "source_name": "Thing" },
+					"ty": 0
+				}
+			]
+		},
+		{
+			"Tables": [
+				{
+					"source_name": "thing",
+					"product_type_ref": 0,
+					"primary_key": [0],
+					"indexes": [
+						{
+							"source_name": { "some": "thing_id_idx_btree" },
+							"accessor_name": { "some": "id" },
+							"algorithm": { "BTree": [0] }
+						},
+						{
+							"source_name": { "some": "thing_score_idx_btree" },
+							"accessor_name": { "some": "score" },
+							"algorithm": { "BTree": [1] }
+						},
+						{
+							"source_name": { "some": "thing_owner_idx_btree" },
+							"accessor_name": { "some": "owner" },
+							"algorithm": { "BTree": [2] }
+						}
+					],
+					"constraints": [
+						{
+							"source_name": { "some": "thing_id_key" },
+							"data": { "Unique": { "columns": [0] } }
+						}
+					]
+				}
+			]
+		}
+	]
+}

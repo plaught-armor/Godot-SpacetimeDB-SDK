@@ -22,7 +22,7 @@
 #       --script tests/test_codegen_golden.gd
 extends SceneTree
 
-const FIXTURES: Array[String] = ["vtypes", "vsum", "vtypes2"]
+const FIXTURES: Array[String] = ["vtypes", "vsum", "vtypes2", "vbtree"]
 # Committed test inputs. NOT spacetime_bindings/codegen_debug/ — that dir is
 # gitignored (transient codegen dumps), so fixtures there are absent on a clean
 # clone. These live with the test and codegen never writes here.
