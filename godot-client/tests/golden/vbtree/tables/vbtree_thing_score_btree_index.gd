@@ -18,3 +18,23 @@ func filter_range(from_val: int, to_val: int) -> Array[VbtreeThing]:
 	var typed_array: Array[VbtreeThing] = []
 	typed_array.assign(_range_rows(from_val, to_val))
 	return typed_array
+
+func filter_gte(col_val: int) -> Array[VbtreeThing]:
+	var typed_array: Array[VbtreeThing] = []
+	typed_array.assign(_gte_rows(col_val))
+	return typed_array
+
+func filter_gt(col_val: int) -> Array[VbtreeThing]:
+	var typed_array: Array[VbtreeThing] = []
+	typed_array.assign(_gt_rows(col_val))
+	return typed_array
+
+func filter_lte(col_val: int) -> Array[VbtreeThing]:
+	var typed_array: Array[VbtreeThing] = []
+	typed_array.assign(_lte_rows(col_val))
+	return typed_array
+
+func filter_lt(col_val: int) -> Array[VbtreeThing]:
+	var typed_array: Array[VbtreeThing] = []
+	typed_array.assign(_lt_rows(col_val))
+	return typed_array

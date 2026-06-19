@@ -73,6 +73,18 @@ func _run() -> int:
 	f += _check_ids("range [0,5] below all", _idx._range_rows(0, 5), [])
 	f += _check_ids("range [50,99] above all", _idx._range_rows(50, 99), [])
 
+	# One-sided bounds against the same {10:[2], 20:[4,5], 30:[1], 40:[3]} set.
+	f += _check_ids("gte 20 (>= 20)", _idx._gte_rows(20), [1, 3, 4, 5])
+	f += _check_ids("gt 20 (> 20)", _idx._gt_rows(20), [1, 3])
+	f += _check_ids("lte 20 (<= 20)", _idx._lte_rows(20), [2, 4, 5])
+	f += _check_ids("lt 20 (< 20)", _idx._lt_rows(20), [2])
+	f += _check_ids("gte 10 catches lowest key", _idx._gte_rows(10), [1, 2, 3, 4, 5])
+	f += _check_ids("gt 40 above all", _idx._gt_rows(40), [])
+	f += _check_ids("lt 10 below all", _idx._lt_rows(10), [])
+	# Bound value falling between keys (no exact match) still splits correctly.
+	f += _check_ids("gte 25 between keys", _idx._gte_rows(25), [1, 3])
+	f += _check_ids("lt 25 between keys", _idx._lt_rows(25), [2, 4, 5])
+
 	# Move id1 from group 30 → 25. Key 30 empties (dropped), 25 appears.
 	_apply_update(_Row.make(1, 30), _Row.make(1, 25))
 	f += _check_keys("sorted_keys after move", [10, 20, 25, 40])

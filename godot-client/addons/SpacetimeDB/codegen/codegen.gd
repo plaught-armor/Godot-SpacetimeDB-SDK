@@ -536,6 +536,15 @@ func _generate_table_btree_index_gdscript(schema: SpacetimeParsedSchema, btree_i
 				"\tvar typed_array: Array[%s] = []\n" % type_name +
 				"\ttyped_array.assign(_range_rows(from_val, to_val))\n" +
 				"\treturn typed_array\n")
+		# One-sided bounds — (method suffix, backing helper) pairs. Each emits the
+		# same single-arg shape, so loop instead of repeating four near-identical blocks.
+		var bound_helpers: Array = [["gte", "_gte_rows"], ["gt", "_gt_rows"], ["lte", "_lte_rows"], ["lt", "_lt_rows"]]
+		for pair: Array in bound_helpers:
+			content += (
+					"\nfunc filter_%s(col_val: %s) -> Array[%s]:\n" % [pair[0], field_type, type_name] +
+					"\tvar typed_array: Array[%s] = []\n" % type_name +
+					"\ttyped_array.assign(%s(col_val))\n" % pair[1] +
+					"\treturn typed_array\n")
 
 	return content
 

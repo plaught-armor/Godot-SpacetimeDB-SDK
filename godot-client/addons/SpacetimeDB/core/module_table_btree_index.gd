@@ -38,17 +38,43 @@ func _key_removed(k: Variant) -> void:
 		_sorted_keys.remove_at(i)
 
 
-## Every cached row whose key lies in [code][from_val, to_val][/code] inclusive.
-## Returns an untyped [Array]; the codegen'd subclass assigns it into a typed
-## [code]Array[Row][/code]. O(log d) to locate the window over d distinct keys,
-## plus O(k) to gather the k matching rows.
-func _range_rows(from_val: Variant, to_val: Variant) -> Array:
-	var lo: int = _sorted_keys.bsearch(from_val, true)  # first key >= from_val
-	var hi: int = _sorted_keys.bsearch(to_val, false)  # first key  > to_val
+## Gathers every cached row in the sorted-key window [code][lo, hi)[/code] (indices
+## into [member _sorted_keys]). Shared by all of the range/bound queries below.
+func _gather(lo: int, hi: int) -> Array:
 	var out: Array = []
 	for i: int in range(lo, hi):
 		out.append_array(_cache_ref[_sorted_keys[i]])
 	return out
+
+
+## Every cached row whose key lies in [code][from_val, to_val][/code] inclusive.
+## Returns an untyped [Array]; the codegen'd subclass assigns it into a typed
+## [code]Array[Row][/code]. O(log d) to locate the window over d distinct keys,
+## plus O(k) to gather the k matching rows. The one-sided variants below share the
+## same cost profile.
+func _range_rows(from_val: Variant, to_val: Variant) -> Array:
+	# [first key >= from_val, first key > to_val)
+	return _gather(_sorted_keys.bsearch(from_val, true), _sorted_keys.bsearch(to_val, false))
+
+
+## Rows whose key is [code]>= v[/code].
+func _gte_rows(v: Variant) -> Array:
+	return _gather(_sorted_keys.bsearch(v, true), _sorted_keys.size())
+
+
+## Rows whose key is [code]> v[/code].
+func _gt_rows(v: Variant) -> Array:
+	return _gather(_sorted_keys.bsearch(v, false), _sorted_keys.size())
+
+
+## Rows whose key is [code]<= v[/code].
+func _lte_rows(v: Variant) -> Array:
+	return _gather(0, _sorted_keys.bsearch(v, false))
+
+
+## Rows whose key is [code]< v[/code].
+func _lt_rows(v: Variant) -> Array:
+	return _gather(0, _sorted_keys.bsearch(v, true))
 
 
 ## Wires [param cache] (a [code]Dictionary[value, Array[Row]][/code] multimap) to live
