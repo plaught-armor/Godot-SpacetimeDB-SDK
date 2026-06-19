@@ -79,7 +79,7 @@ Code of Conduct: Adhere to the Godot [Code of Conduct](https://godotengine.org/c
 
 If this SDK saves you time, you can support its development on Ko-fi:
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/B6U521Q211)
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/plaughtarmor)
 
 ## License
 
