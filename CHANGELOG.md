@@ -4,6 +4,43 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-06-19
+
+### Fixed
+- **Index-listener crash on an update for an uncached row.** A delete+insert of
+  the same primary key (the server's "update" encoding) for a pk not currently in
+  the local cache fired `row_updated` with a null `prev`; the unique/btree index
+  cache listeners dereference `prev` and crashed. Such updates now take the insert
+  path (null `prev` = no prior row), so listeners never receive a null.
+- **Stall detection silently off after a retry-while-connecting.** Reconnecting
+  while a previous attempt was still in progress recreated the `WebSocketPeer` but
+  re-applied only the buffer sizes, not `heartbeat_interval` — the retried socket
+  ran with keepalive disabled. Heartbeat is now re-applied on the recreate.
+- **`u64` values ≥ 2^63 could not be serialized.** `write_u64_le` rejected a
+  negative i64, but a u64 with the high bit set arrives as a negative i64 — large
+  ids / hashes / `u64` columns were un-encodable. The guard is removed (`put_u64`
+  writes the correct 8 bytes for the full u64 range).
+
+### Security / robustness
+- **Bounded the row-list deserializer against malformed input.** Row counts
+  (`num_rows` / `num_offsets`) are capped before the backing `PackedInt64Array`
+  resize (an unchecked u32 could force a multi-GiB allocation), and the row-data
+  block is validated against the buffer — a `data_len` past the buffer now yields
+  NEEDS_MORE (the framer keeps the tail) instead of seeking past EOF and silently
+  dropping every subsequent message.
+- **Bounded gzip/Brotli decompression.** The gzip decode loop had no output
+  ceiling (a decompression bomb never terminated); added a 128 MiB cap (well above
+  any real frame) and applied it to the Brotli buffer. The serializer no longer
+  emits zero-filled bytes on a fixed-size mismatch, and `_wait_for_response` guards
+  `is_instance_valid(self)` after its `await`.
+
+### Changed
+- Internal code-quality cleanup, no API or generated-output change: codegen builds
+  each file with a `PackedStringArray` accumulator instead of repeated string
+  concatenation; the schema parser and the index/listener code gain consistent
+  typing and drop inline lambdas. The codegen golden suite confirms byte-identical
+  output.
+
 ## [2.3.0] - 2026-06-19
 
 ### Added
