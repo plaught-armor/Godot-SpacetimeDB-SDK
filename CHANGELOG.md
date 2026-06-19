@@ -4,6 +4,25 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
+### Added
+- **Btree range and bound lookups.** A btree (non-unique) index over an
+  *orderable* column (`int` / `float` / `String`) now generates `filter_range(from,
+  to)` (inclusive `[from, to]`) plus the one-sided `filter_gte` / `filter_gt` /
+  `filter_lte` / `filter_lt`, alongside the existing exact-match `filter(value)`.
+  All ride a sorted-key mirror maintained at the index's bucket create/empty edges,
+  so a range binary-searches the window (O(log d + k) over d distinct keys) instead
+  of scanning. Bytes-backed keys (`Identity`, `u128` / `u256`) keep exact-match
+  `filter()` only — `Array.bsearch` has no defined ordering for them. Regenerate
+  bindings to pick this up.
+- **Per-request latency stats.** `SpacetimeDBClient.get_stats()` returns a
+  `SpacetimeDBStats` tracking round-trip time bucketed by request category (reducer
+  / procedure / one-off / subscribe): count, min / max / avg / last latency, and an
+  in-flight gauge. `get_stats().summary()` dumps all four categories; `.get_tracker(
+  SpacetimeDBStats.Category.REDUCER)` reads one. Always-on (one
+  `Time.get_ticks_usec` plus two dictionary ops per request), main-thread, with a
+  bounded pending set so a never-answered request can't leak. No codegen or wire
+  change — works with existing bindings.
+
 ### Changed
 - **The btree (non-unique) index is now a real multimap cache.** Its `filter()`
   was a linear `find_by` scan of the whole table; it now keeps a per-value bucket
@@ -13,6 +32,17 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   route through it (`find_by_<field>` → `filter()`, `first_by_<field>` →
   `filter()[0]`); previously they used the linear fallback. Regenerate bindings to
   pick this up.
+
+### Documentation
+- **`docs/design-decisions.md`** records the June 2026 four-SDK parity audit: what
+  this SDK builds, what's blocked by the v2/v3 wire (caller identity, energy,
+  out-of-energy, reducer flags — removed from the wire at the v1 → v2 cut, so no
+  client SDK can surface them), and what's deliberately out of scope with the
+  trigger that would justify reopening each. Linked from both doc indexes.
+- **README "Known Limitations & Caveats"** gains the wire-blocked entries above and
+  is split by kind: genuine user-facing limitations stay in the README; design
+  choices (`Timestamp` / `TimeDuration` as `int` micros; deferred schema-v10
+  `default_values` / namespaces) move to `docs/design-decisions.md`.
 
 ## [2.2.0] - 2026-06-18
 
