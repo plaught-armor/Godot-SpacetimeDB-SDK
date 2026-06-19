@@ -23,6 +23,8 @@ const FOOD_COLORS: Array[Color] = [
 
 const INPUT_RATE: float = 0.05 # 20Hz
 const WORLD_SCALE: float = 5.0 # Match VISUAL_SCALE so collision radius aligns with visual
+const BASE_VISIBLE_RADIUS: float = 50.0 # upstream camera base; visible world radius at zoom 1
+const CAMERA_FOLLOW_SPEED: float = 8.0 # match upstream camera follow lerp
 
 var entity_nodes: Dictionary[int, Node2D] = { }
 # Entities currently playing a consume (eaten) animation. The animation owns the
@@ -275,10 +277,10 @@ func _on_consume_event(ev: Resource) -> void:
 	var consumed_node: Node2D = entity_nodes.get(consumed_id)
 	if consumed_node == null:
 		return
+	# Pass the consumer node (may be null) so the animation chases it live.
 	var consumer_node: Node2D = entity_nodes.get(ev.consumer_entity_id)
-	var target: Vector2 = consumer_node.position if consumer_node != null else consumed_node.position
 	_pending_consume[consumed_id] = true
-	consumed_node.despawn_toward(target)
+	consumed_node.despawn_into(consumer_node)
 
 # --- Player callbacks ---
 
@@ -387,14 +389,16 @@ func _update_camera(delta: float) -> void:
 
 	if total_mass > 0:
 		var center: Vector2 = weighted_pos / total_mass
-		camera.position = camera.position.lerp(center, delta * 5.0)
+		camera.position = camera.position.lerp(center, delta * CAMERA_FOLLOW_SPEED)
 
-	# Zoom based on mass + split bonus
-	var base_zoom: float = 1.0
-	var mass_bonus: float = clampf(total_mass / 50.0, 0.0, 10.0) * 0.05
-	var split_bonus: float = 0.3 if circle_count >= 2 else 0.0
-	var target_zoom: float = base_zoom - mass_bonus - split_bonus
-	target_zoom = clampf(target_zoom, 0.2, 1.0)
+	# Zoom: mirror the upstream camera so on-screen speed matches. Upstream uses
+	# raw world units with zoom = BASE_VISIBLE_RADIUS / size; our world is rendered
+	# at WORLD_SCALE, so divide it out → target_zoom = (BASE_VISIBLE_RADIUS /
+	# WORLD_SCALE) / size. `size` grows with mass (capped) plus a split step, so the
+	# view zooms out as you grow — without this our view stayed too tight and motion
+	# read far too fast at high mass.
+	var size: float = 10.0 + minf(10.0, total_mass / 5.0) + (30.0 if circle_count >= 2 else 0.0)
+	var target_zoom: float = (BASE_VISIBLE_RADIUS / WORLD_SCALE) / maxf(size, 1.0)
 	var z: float = lerpf(camera.zoom.x, target_zoom, delta * 2.0)
 	camera.zoom = Vector2(z, z)
 

@@ -2,6 +2,7 @@ extends Node2D
 
 const LERP_DURATION: float = 0.1 # 100ms interpolation
 const VISUAL_SCALE: float = 5.0 # Multiplier so circles are visible
+const DESPAWN_DURATION: float = 0.2 # consume animation length
 
 var lerp_start_pos: Vector2
 var lerp_target_pos: Vector2
@@ -15,7 +16,13 @@ var circle_color: Color = Color.WHITE
 var is_food: bool = false
 var player_id: int = -1
 var player_name: String = ""
+
 var is_despawning: bool = false
+var _despawn_consumer: Node2D = null # eater to fly into; null/freed → shrink in place
+var _despawn_time: float = 0.0
+var _despawn_from: Vector2 = Vector2.ZERO
+var _despawn_from_radius: float = 0.0
+var _despawn_target: Vector2 = Vector2.ZERO # last-known consumer pos (survives its free)
 
 
 func _ready() -> void:
@@ -25,6 +32,7 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	if is_despawning:
+		_process_despawn(delta)
 		return
 
 	# Position interpolation
@@ -51,7 +59,7 @@ func _draw() -> void:
 			HORIZONTAL_ALIGNMENT_CENTER,
 			-1,
 			font_size,
-			Color.WHITE
+			Color.WHITE,
 		)
 
 
@@ -87,12 +95,33 @@ func set_food(color: Color) -> void:
 	queue_redraw()
 
 
-func despawn_toward(target_pos: Vector2) -> void:
+## Starts the consume animation: fly into [param consumer] while shrinking to
+## nothing, then free. [param consumer] may be null (consumer not spawned locally)
+## — then it shrinks in place. Driven per-frame in [method _process_despawn] so it
+## chases a moving consumer rather than aiming at a stale position.
+func despawn_into(consumer: Node2D) -> void:
 	if is_despawning:
 		return
 	is_despawning = true
-	var tween: Tween = create_tween()
-	tween.set_parallel(true)
-	tween.tween_property(self, "position", target_pos, 0.2)
-	tween.tween_property(self, "scale", Vector2.ZERO, 0.2)
-	tween.chain().tween_callback(queue_free)
+	_despawn_consumer = consumer
+	_despawn_time = 0.0
+	_despawn_from = position
+	_despawn_from_radius = current_radius
+	_despawn_target = consumer.position if is_instance_valid(consumer) else position
+	z_index += 10 # render over the consumer during the fly-in
+
+
+func _process_despawn(delta: float) -> void:
+	_despawn_time = minf(_despawn_time + delta, DESPAWN_DURATION)
+	var t: float = _despawn_time / DESPAWN_DURATION
+
+	# Re-read the consumer each frame so we chase it if it's still moving; cache the
+	# last-known position so a consumer freed mid-animation doesn't strand us.
+	if is_instance_valid(_despawn_consumer):
+		_despawn_target = _despawn_consumer.position
+	position = _despawn_from.lerp(_despawn_target, t)
+	current_radius = lerpf(_despawn_from_radius, 0.0, t)
+	queue_redraw()
+
+	if _despawn_time >= DESPAWN_DURATION:
+		queue_free()
