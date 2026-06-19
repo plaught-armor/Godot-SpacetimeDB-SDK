@@ -115,6 +115,8 @@ var _reducer_result_cache: Dictionary[int, TransactionUpdateMessage] = { } # req
 var _pending_reducer_calls: Dictionary[int, SpacetimeDBReducerCall] = { }
 var _pending_procedure_calls: Dictionary[int, SpacetimeDBProcedureCall] = { }
 var _procedure_result_cache: Dictionary[int, PackedByteArray] = { }
+# Per-request round-trip latency, keyed by category. Always-on diagnostics.
+var _stats: SpacetimeDBStats = SpacetimeDBStats.new()
 var _one_off_query_cache: Dictionary[int, Array] = { }
 # --- Components ---
 var _connection: SpacetimeDBConnection
@@ -309,6 +311,13 @@ func get_token() -> String:
 	return _token
 
 
+## Returns the per-request latency [SpacetimeDBStats] (reducer / procedure / one-off /
+## subscribe round-trip times). Read-only diagnostics; call [code]get_stats().summary()[/code]
+## for a quick dump or [code]get_stats().get_tracker(cat)[/code] for a category's numbers.
+func get_stats() -> SpacetimeDBStats:
+	return _stats
+
+
 ## Subscribes to one or more SQL [param queries]. Returns a [SpacetimeDBSubscription] handle.
 func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 	if not is_connected_db():
@@ -346,6 +355,7 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 		else:
 			print_log("SpacetimeDBClient: Subscribe request sent successfully (BSATN), Query ID: %d" % query_id)
 			pending_subscriptions.set(query_id, subscription)
+			_stats.record_send(request_id, SpacetimeDBStats.Category.SUBSCRIBE)
 
 		return subscription
 
@@ -433,6 +443,7 @@ func call_reducer(reducer_name: String, args: Array = [], types: Array = [], ret
 
 		var handle: SpacetimeDBReducerCall = SpacetimeDBReducerCall.create(self, request_id, ret_bsatn_type)
 		_pending_reducer_calls[request_id] = handle
+		_stats.record_send(request_id, SpacetimeDBStats.Category.REDUCER)
 		return handle
 
 	printerr("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
@@ -473,6 +484,7 @@ func call_procedure(procedure_name: String, args: Array = [], types: Array = [],
 
 		var handle: SpacetimeDBProcedureCall = SpacetimeDBProcedureCall.create(self, request_id, return_bsatn_type)
 		_pending_procedure_calls[request_id] = handle
+		_stats.record_send(request_id, SpacetimeDBStats.Category.PROCEDURE)
 		return handle
 
 	printerr("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
@@ -510,6 +522,7 @@ func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdat
 		return []
 
 	print_log("SpacetimeDBClient: OneOffQuery sent (request_id=%d): %s" % [request_id, query])
+	_stats.record_send(request_id, SpacetimeDBStats.Category.ONE_OFF)
 
 	# Wait for response
 	var result: Variant = await _wait_for_response(request_id, _one_off_query_cache, one_off_query_received, timeout_seconds)
@@ -921,6 +934,7 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				_resubscribe_saved_queries()
 
 	elif message is SubscribeAppliedMessage:
+		_stats.record_response(message.request_id)
 		print_log("SpacetimeDBClient: SubscribeApplied — tables: %d, query_set_id: %d" % [message.tables.size(), message.query_set_id.id])
 		for t: TableUpdateData in message.tables:
 			print_log("  Table: '%s' inserts=%d deletes=%d" % [t.table_name, t.inserts.size(), t.deletes.size()])
@@ -1009,12 +1023,14 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				handle.outcome = SpacetimeDBReducerCall.Outcome.INTERNAL_ERROR
 				handle.error_message = "unknown reducer outcome tag %d" % outcome.value
 		_pending_reducer_calls.erase(rid)
+		_stats.record_response(rid)
 		_reducer_result_cache[rid] = tx_update
 		_evict_oldest(_reducer_result_cache)
 		reducer_result_received.emit(rid, tx_update)
 
 	elif message is OneOffQueryResponseMessage:
 		var rid: int = message.request_id
+		_stats.record_response(rid)
 		if message.is_error:
 			printerr("SpacetimeDBClient: OneOffQuery error (request_id=%d): %s" % [rid, message.error_message])
 			_one_off_query_cache[rid] = [] as Array[TableUpdateData]
@@ -1050,6 +1066,7 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				handle.error_message = "unknown procedure status_tag %d" % message.status_tag
 
 		_pending_procedure_calls.erase(rid)
+		_stats.record_response(rid)
 		_procedure_result_cache[rid] = ret_bytes
 		_evict_oldest(_procedure_result_cache)
 		procedure_result_received.emit(rid, ret_bytes)
