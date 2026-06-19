@@ -11,6 +11,12 @@ extends RefCounted
 ## 1 MiB payloads, flat beyond this. The transient 64 KiB buffers are negligible.
 const _CHUNK_SIZE: int = 65536
 
+## Hard ceiling on decompressed output. Bounds the otherwise-unbounded decode loop
+## (a valid stream can keep emitting output forever — a decompression bomb) and the
+## Brotli grow buffer. Set far above any legitimate WS frame; hitting it means a
+## malformed or hostile payload, not normal traffic.
+const _MAX_DECOMPRESSED_SIZE: int = 128 * 1024 * 1024 # 128 MiB
+
 
 ## Decompresses a Gzip-encoded [param compressed_bytes] payload.[br]
 ## Returns an empty [PackedByteArray] on failure.
@@ -27,7 +33,7 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 	var decompressed_data: PackedByteArray = PackedByteArray()
 
 	while true:
-		var input_result = gzip_stream.put_partial_data(compressed_bytes.slice(last_slice_position, last_slice_position + _CHUNK_SIZE))
+		var input_result: Array = gzip_stream.put_partial_data(compressed_bytes.slice(last_slice_position, last_slice_position + _CHUNK_SIZE))
 		if input_result[0] != OK:
 			printerr("DataDecompressor Error: Failed to input partial data: " + error_string(input_result[0]))
 			break
@@ -39,11 +45,19 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 			if chunk.is_empty():
 				break
 			decompressed_data.append_array(chunk)
+			if decompressed_data.size() > _MAX_DECOMPRESSED_SIZE:
+				printerr("DataDecompressor Error: Decompressed output exceeds %d bytes — aborting (malformed or hostile stream)." % _MAX_DECOMPRESSED_SIZE)
+				return PackedByteArray()
 		elif status == ERR_UNAVAILABLE:
 			break
 		else:
 			printerr("DataDecompressor Error: Failed while getting partial data.")
 			return PackedByteArray()
+
+	if last_slice_position < compressed_bytes.size():
+		push_warning(
+			"DataDecompressor: %d compressed bytes left unconsumed — stream may be truncated." % (compressed_bytes.size() - last_slice_position),
+		)
 	return decompressed_data
 
 
@@ -53,9 +67,9 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 static func decompress_brotli(compressed_bytes: PackedByteArray) -> PackedByteArray:
 	if compressed_bytes.is_empty():
 		return PackedByteArray()
-	# decompress_dynamic grows the output buffer as needed (-1 = no preset cap),
-	# so the decoded size doesn't need to be known up front.
-	var out: PackedByteArray = compressed_bytes.decompress_dynamic(-1, FileAccess.COMPRESSION_BROTLI)
+	# decompress_dynamic grows the output buffer as needed; cap it at the sanity
+	# ceiling so a bomb can't exhaust memory (decode stops once the cap is reached).
+	var out: PackedByteArray = compressed_bytes.decompress_dynamic(_MAX_DECOMPRESSED_SIZE, FileAccess.COMPRESSION_BROTLI)
 	if out.is_empty():
 		printerr("DataDecompressor Error: Brotli decompression failed or produced no output.")
 	return out

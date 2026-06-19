@@ -475,7 +475,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 	for inserted_row: _ModuleTableType in table_update.inserts:
 		var pk_value: Variant = inserted_row.get(pk_field)
 		if pk_value == null:
-			push_error("LocalDatabase: Inserted row for table '", table_name_lower, "' has null PK '", pk_field, "'. Skipping.")
+			push_error("LocalDatabase: Inserted row for table '%s' has null PK '%s'. Skipping." % [table_name_lower, pk_field])
 			continue
 		if track_query:
 			qmem[pk_value] = inserted_row
@@ -539,7 +539,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 		for deleted_row2: _ModuleTableType in table_update.deletes:
 			var pk_value: Variant = deleted_row2.get(pk_field)
 			if pk_value == null:
-				push_warning("LocalDatabase: Deleted row for table '", table_name_lower, "' has null PK '", pk_field, "'. Skipping.")
+				push_warning("LocalDatabase: Deleted row for table '%s' has null PK '%s'. Skipping." % [table_name_lower, pk_field])
 				continue
 			if detect_updates and not deleted_pks.has(pk_value):
 				continue # consumed as an update above

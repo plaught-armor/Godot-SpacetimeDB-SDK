@@ -574,6 +574,10 @@ func _wait_for_response(request_id: int, cache: Dictionary, sig: Signal, timeout
 	sig.connect(connection)
 	_response_wait_aborted.connect(abort)
 	await timer.timeout
+	# The client may have been freed during the wait (disconnect + queue_free).
+	# Touching self's signals/dicts after that crashes (engine bug #72629).
+	if not is_instance_valid(self):
+		return null
 	sig.disconnect(connection)
 	_response_wait_aborted.disconnect(abort)
 	if result_container[0] == null:

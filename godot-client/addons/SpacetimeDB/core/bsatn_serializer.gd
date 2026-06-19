@@ -463,10 +463,10 @@ func serialize_client_message(variant_tag: int, payload_resource: SpacetimeDBCli
 
 func _write_fixed_bytes_le(v: PackedByteArray, expected_size: int, type_label: String) -> void:
 	if v == null or v.size() != expected_size:
+		# Error set → the whole serialization is abandoned (callers bail on has_error).
+		# Don't emit zero-filled bytes: that left a corrupt partial packet past the
+		# error point for any caller that ignored the flag.
 		_set_error("Invalid %s value (null or size != %d)" % [type_label, expected_size])
-		var default_bytes: PackedByteArray = PackedByteArray()
-		default_bytes.resize(expected_size)
-		write_bytes(default_bytes)
 		return
 	var v_copy: PackedByteArray = v.duplicate()
 	v_copy.reverse()
