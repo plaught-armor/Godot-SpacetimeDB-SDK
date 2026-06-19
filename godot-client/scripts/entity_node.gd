@@ -13,7 +13,6 @@ var target_radius: float = 1.0
 var current_mass: int = 1
 
 var circle_color: Color = Color.WHITE
-var is_food: bool = false
 var player_id: int = -1
 var player_name: String = ""
 var animation_seed: float = 0.0 # desyncs the pulse/wave between entities
@@ -60,11 +59,8 @@ func _exit_tree() -> void:
 func _draw() -> void:
 	if current_radius <= 0.01:
 		return
-
-	if is_food:
-		_draw_food()
-	else:
-		_draw_player()
+	# Players/circles only — food now renders via the MultiMesh food field.
+	_draw_player()
 
 
 # Layered player blob: translucent pulsing halo, dark rim, color disk, specular
@@ -89,16 +85,6 @@ func _draw_player() -> void:
 		var wave: float = sin(angle * 7.0 + t * 3.0 + animation_seed) * 0.035
 		outline[i] = Vector2.from_angle(angle) * current_radius * (1.015 + wave)
 	draw_polyline(outline, _with_alpha(_shade(circle_color, 1.55), 0.88), clampf(current_radius * 0.085, 1.5, 5.0), true)
-
-
-# Smaller, faster-pulsing food pellet. Ports the upstream Circle2D.DrawFood.
-func _draw_food() -> void:
-	var t: float = Time.get_ticks_msec() / 1000.0
-	var pulse: float = 0.5 + 0.5 * sin(t * 5.0 + animation_seed)
-	draw_circle(Vector2.ZERO, current_radius * (1.32 + pulse * 0.09), _with_alpha(circle_color, 0.1))
-	draw_circle(Vector2.ZERO, current_radius, _shade(circle_color, 0.72))
-	draw_circle(Vector2.ZERO, current_radius * 0.64, circle_color)
-	draw_circle(Vector2.ZERO, current_radius * 0.24, _with_alpha(_shade(circle_color, 1.55), 0.86))
 
 
 func _shade(c: Color, m: float) -> Color:
@@ -134,7 +120,6 @@ func set_circle_info(pid: int, pname: String, color: Color = Color.WHITE) -> voi
 	player_id = pid
 	player_name = pname
 	circle_color = color
-	is_food = false
 	if player_name.is_empty():
 		if is_instance_valid(_label):
 			_label.queue_free()
@@ -169,12 +154,6 @@ func _update_label() -> void:
 	var w: float = ThemeDB.fallback_font.get_string_size(player_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
 	# Sit clear below the circle + its halo (screen radius ~ current_radius * zoom).
 	_label.position = x.origin + Vector2(-w * 0.5, current_radius * screen_scale * 1.3 + 8.0)
-
-
-func set_food(color: Color) -> void:
-	circle_color = color
-	is_food = true
-	queue_redraw()
 
 
 ## Starts the consume animation: fly into [param consumer] while shrinking to
