@@ -17,6 +17,10 @@ var _update_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Cal
 var _before_delete_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
 var _delete_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
 var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
+## Shared read-only sentinel returned by [method _listener_snapshot] when a table
+## has no listeners — avoids allocating an empty Array per snapshot on the common
+## no-listener path. Read-only so a stray mutation fails loud (C2a).
+static var _EMPTY_LISTENERS: Array = []
 var _pk_less_tables: Dictionary[StringName, Array] = { } ## Array[_ModuleTableType]
 var _row_property_cache: Dictionary[StringName, Array] = { } ## Array[StringName] — storage props per table
 ## Per-table refcount of cached PK rows: table -> { pk -> int }. A row shared by N
@@ -46,11 +50,25 @@ signal row_deleted(table_name: StringName, row: _ModuleTableType)
 signal row_transactions_completed(table_name: StringName)
 
 
+static func _static_init() -> void:
+	if not _EMPTY_LISTENERS.is_read_only():
+		_EMPTY_LISTENERS.make_read_only()
+
+
 func _init(p_schema: SpacetimeDBSchema) -> void:
 	_schema = p_schema
 	for raw_name: StringName in p_schema.raw_table_names:
 		_tables[raw_name.to_lower()] = { }
 	p_schema.raw_table_names.clear() # consumed — free the memory
+
+
+## Snapshot a table's listener list for safe iteration during dispatch. A listener
+## may unsubscribe inside its own callback, so the list it mutates must not be the
+## one being iterated — hence duplicate. Duplicate only when non-empty; the common
+## no-listener case returns the shared read-only empty (zero alloc).
+func _listener_snapshot(by_table: Dictionary, key: StringName) -> Array:
+	var live: Array = by_table.get(key, _EMPTY_LISTENERS)
+	return live.duplicate() if not live.is_empty() else _EMPTY_LISTENERS
 
 
 # --- Normalization helper (#2) ---
@@ -325,14 +343,14 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 
 	var pk_field: StringName = _get_primary_key_field(table_name_lower)
 
-	# Hoist listener array lookups once per table_update, not per row.
-	# Duplicate so a listener that unsubscribes mid-dispatch can't mutate
-	# the array we're iterating.
-	var insert_listeners: Array = _insert_listeners_by_table.get(table_name_lower, []).duplicate()
-	var update_listeners: Array = _update_listeners_by_table.get(table_name_lower, []).duplicate()
-	var before_delete_listeners: Array = _before_delete_listeners_by_table.get(table_name_lower, []).duplicate()
-	var delete_listeners: Array = _delete_listeners_by_table.get(table_name_lower, []).duplicate()
-	var tx_listeners: Array = _transactions_completed_listeners_by_table.get(table_name_lower, []).duplicate()
+	# Hoist listener array lookups once per table_update, not per row. Snapshot
+	# guards against a listener unsubscribing mid-dispatch; the no-listener case
+	# allocs nothing (shared read-only empty).
+	var insert_listeners: Array = _listener_snapshot(_insert_listeners_by_table, table_name_lower)
+	var update_listeners: Array = _listener_snapshot(_update_listeners_by_table, table_name_lower)
+	var before_delete_listeners: Array = _listener_snapshot(_before_delete_listeners_by_table, table_name_lower)
+	var delete_listeners: Array = _listener_snapshot(_delete_listeners_by_table, table_name_lower)
+	var tx_listeners: Array = _listener_snapshot(_transactions_completed_listeners_by_table, table_name_lower)
 	var has_insert_listeners: bool = not insert_listeners.is_empty()
 	var has_update_listeners: bool = not update_listeners.is_empty()
 	var has_before_delete_listeners: bool = not before_delete_listeners.is_empty()
@@ -590,9 +608,9 @@ func clear_local_db() -> void:
 func _emit_clear_for_table(table_name_lower: StringName, rows: Array) -> void:
 	if rows.is_empty():
 		return
-	var before_delete_listeners: Array = _before_delete_listeners_by_table.get(table_name_lower, []).duplicate()
-	var delete_listeners: Array = _delete_listeners_by_table.get(table_name_lower, []).duplicate()
-	var tx_listeners: Array = _transactions_completed_listeners_by_table.get(table_name_lower, []).duplicate()
+	var before_delete_listeners: Array = _listener_snapshot(_before_delete_listeners_by_table, table_name_lower)
+	var delete_listeners: Array = _listener_snapshot(_delete_listeners_by_table, table_name_lower)
+	var tx_listeners: Array = _listener_snapshot(_transactions_completed_listeners_by_table, table_name_lower)
 	for row: _ModuleTableType in rows:
 		for listener: Callable in before_delete_listeners:
 			listener.call(row)
