@@ -939,76 +939,12 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		printerr("SpacetimeDBClient: Parser returned null message.")
 		return
 
-	# Handle known message types
+	# Handle known message types. Arms ordered hottest-first: TransactionUpdate +
+	# ReducerResult are the steady-state firehose, so they win the `is`-chain
+	# without walking past one-shot setup arms (IdentityToken fires once per
+	# session). Arms are type-disjoint — order is behavior-neutral, perf-only.
 
-	if message is IdentityTokenMessage:
-		print_log("SpacetimeDBClient: Received Identity Token.")
-		_identity = message.identity
-		if not _token and message.token:
-			_token = message.token
-		_connection_id = message.connection_id
-		self.connected.emit(_identity, _token)
-
-		# Handle reconnection completion
-		if _reconnect_state == _ReconnectState.RECONNECTING:
-			print_log("SpacetimeDBClient: Reconnected. Re-subscribing to %d query sets." % _saved_subscription_queries.size())
-			_reconnect_state = _ReconnectState.IDLE
-			_reconnect_attempt = 0
-			if _saved_subscription_queries.is_empty():
-				reconnected.emit()
-			else:
-				_resubscribe_saved_queries()
-
-	elif message is SubscribeAppliedMessage:
-		_stats.record_response(message.request_id)
-		print_log("SpacetimeDBClient: SubscribeApplied — tables: %d, query_set_id: %d" % [message.tables.size(), message.query_set_id.id])
-		for t: TableUpdateData in message.tables:
-			print_log("  Table: '%s' inserts=%d deletes=%d" % [t.table_name, t.inserts.size(), t.deletes.size()])
-		_local_db.apply_database_subscription_applied(message)
-		if not _received_initial_subscription:
-			_received_initial_subscription = true
-			self.database_initialized.emit()
-		var qid: int = message.query_set_id.id
-		if pending_subscriptions.has(qid):
-			var sub: SpacetimeDBSubscription = pending_subscriptions[qid]
-			pending_subscriptions.erase(qid)
-			current_subscriptions[qid] = sub
-			sub.applied.emit()
-
-	elif message is UnsubscribeAppliedMessage:
-		var qid: int = message.query_id.id
-		if not message.tables.is_empty():
-			for table_update: TableUpdateData in message.tables:
-				_local_db.apply_table_update(table_update, qid)
-		_local_db.forget_query(qid)
-		if current_subscriptions.has(qid):
-			var sub: SpacetimeDBSubscription = current_subscriptions[qid]
-			current_subscriptions.erase(qid)
-			sub.end.emit()
-		print_log("SpacetimeDBClient: Unsubscribe applied for query_id %d." % qid)
-
-	elif message is SubscriptionErrorMessage:
-		printerr("SpacetimeDBClient: Subscription error: %s" % message.error_message)
-		if message.has_query_id():
-			var qid: int = message.query_id.id
-			if pending_subscriptions.has(qid):
-				var sub: SpacetimeDBSubscription = pending_subscriptions[qid]
-				pending_subscriptions.erase(qid)
-				sub.error_message = message.error_message
-				sub.end.emit()
-			elif current_subscriptions.has(qid):
-				var sub: SpacetimeDBSubscription = current_subscriptions[qid]
-				current_subscriptions.erase(qid)
-				sub.error_message = message.error_message
-				sub.end.emit()
-				# Already-applied subscription: prune exactly its rows. The server sends no
-				# dropped rows on an error, so LocalDatabase reconstructs them from per-query
-				# membership and decrements their refcounts — rows still held by another
-				# subscription survive. No disconnect/rebuild needed, regardless of auto_reconnect.
-				_local_db.prune_query(qid)
-				print_log("SpacetimeDBClient: SubscriptionError on applied query_id %d; pruned its rows." % qid)
-
-	elif message is TransactionUpdateMessage:
+	if message is TransactionUpdateMessage:
 		_handle_transaction_update(message)
 
 	elif message is ReducerResultMessage:
@@ -1096,6 +1032,75 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		_procedure_result_cache[rid] = ret_bytes
 		_evict_oldest(_procedure_result_cache)
 		procedure_result_received.emit(rid, ret_bytes)
+
+	# --- Cold arms: setup / one-shot / rare. Kept after the hot path above. ---
+
+	elif message is SubscribeAppliedMessage:
+		_stats.record_response(message.request_id)
+		print_log("SpacetimeDBClient: SubscribeApplied — tables: %d, query_set_id: %d" % [message.tables.size(), message.query_set_id.id])
+		for t: TableUpdateData in message.tables:
+			print_log("  Table: '%s' inserts=%d deletes=%d" % [t.table_name, t.inserts.size(), t.deletes.size()])
+		_local_db.apply_database_subscription_applied(message)
+		if not _received_initial_subscription:
+			_received_initial_subscription = true
+			self.database_initialized.emit()
+		var qid: int = message.query_set_id.id
+		if pending_subscriptions.has(qid):
+			var sub: SpacetimeDBSubscription = pending_subscriptions[qid]
+			pending_subscriptions.erase(qid)
+			current_subscriptions[qid] = sub
+			sub.applied.emit()
+
+	elif message is SubscriptionErrorMessage:
+		printerr("SpacetimeDBClient: Subscription error: %s" % message.error_message)
+		if message.has_query_id():
+			var qid: int = message.query_id.id
+			if pending_subscriptions.has(qid):
+				var sub: SpacetimeDBSubscription = pending_subscriptions[qid]
+				pending_subscriptions.erase(qid)
+				sub.error_message = message.error_message
+				sub.end.emit()
+			elif current_subscriptions.has(qid):
+				var sub: SpacetimeDBSubscription = current_subscriptions[qid]
+				current_subscriptions.erase(qid)
+				sub.error_message = message.error_message
+				sub.end.emit()
+				# Already-applied subscription: prune exactly its rows. The server sends no
+				# dropped rows on an error, so LocalDatabase reconstructs them from per-query
+				# membership and decrements their refcounts — rows still held by another
+				# subscription survive. No disconnect/rebuild needed, regardless of auto_reconnect.
+				_local_db.prune_query(qid)
+				print_log("SpacetimeDBClient: SubscriptionError on applied query_id %d; pruned its rows." % qid)
+
+	elif message is UnsubscribeAppliedMessage:
+		var qid: int = message.query_id.id
+		if not message.tables.is_empty():
+			for table_update: TableUpdateData in message.tables:
+				_local_db.apply_table_update(table_update, qid)
+		_local_db.forget_query(qid)
+		if current_subscriptions.has(qid):
+			var sub: SpacetimeDBSubscription = current_subscriptions[qid]
+			current_subscriptions.erase(qid)
+			sub.end.emit()
+		print_log("SpacetimeDBClient: Unsubscribe applied for query_id %d." % qid)
+
+	elif message is IdentityTokenMessage:
+		print_log("SpacetimeDBClient: Received Identity Token.")
+		_identity = message.identity
+		if not _token and message.token:
+			_token = message.token
+		_connection_id = message.connection_id
+		self.connected.emit(_identity, _token)
+
+		# Handle reconnection completion
+		if _reconnect_state == _ReconnectState.RECONNECTING:
+			print_log("SpacetimeDBClient: Reconnected. Re-subscribing to %d query sets." % _saved_subscription_queries.size())
+			_reconnect_state = _ReconnectState.IDLE
+			_reconnect_attempt = 0
+			if _saved_subscription_queries.is_empty():
+				reconnected.emit()
+			else:
+				_resubscribe_saved_queries()
 
 	else:
 		print_log("SpacetimeDBClient: Unhandled message type: " + message.get_class())
