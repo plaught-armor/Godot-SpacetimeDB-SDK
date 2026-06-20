@@ -113,6 +113,7 @@ func _physics_process(_delta: float) -> void:
 			connected.emit()
 
 		# Process incoming packets
+		var rx_before: int = _total_messages_received
 		while _websocket.get_available_packet_count() > 0:
 			var packet_bytes: PackedByteArray = _websocket.get_packet()
 			if packet_bytes.is_empty():
@@ -124,6 +125,11 @@ func _physics_process(_delta: float) -> void:
 			_second_messages_received += 1
 
 			message_received.emit(packet_bytes)
+
+		# Stat signals carry cumulative counters — last value per frame is all a
+		# display consumer needs. Emit once after draining, not per packet, so a
+		# burst of N packets costs one stat emit pair instead of N.
+		if _total_messages_received != rx_before:
 			total_messages.emit(_total_messages_sent, _total_messages_received)
 			total_bytes.emit(_total_bytes_sent, _total_bytes_received)
 	elif state == WebSocketPeer.STATE_CONNECTING:
