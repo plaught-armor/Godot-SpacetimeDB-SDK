@@ -21,22 +21,20 @@ You need a local SpacetimeDB running the Blackholio module named `blackholio`.
    spacetime start --data-dir ~/.local/share/spacetime-blackholio
    ```
 
-3. **Get the Blackholio server module** and publish it as `blackholio`:
+3. **Publish the bundled Blackholio server module** as `blackholio`. This repo
+   ships a vendored copy at [`blackholio-server/`](../blackholio-server/),
+   pinned to `spacetimedb = "2.5.0"` so it builds cleanly against the tested CLI:
    ```sh
-   git clone https://github.com/clockworklabs/Blackholio.git
-   cd Blackholio/server-rust
-   spacetime publish blackholio --server local
+   cd ../blackholio-server
+   ./publish.sh          # spacetime publish -s local blackholio --delete-data -y
    ```
+   Tail its logs with `./logs.sh`.
 
-   > **Version note:** Blackholio's `master` server targets SpacetimeDB `master`.
-   > To build it against the **2.5.0** CLI, two small macro-syntax tweaks in
-   > `src/lib.rs` are needed (the table macro and the sender accessor changed
-   > between releases):
-   > - table attribute `name = <ident>` → `accessor = <ident>`
-   > - `ctx.sender` → `ctx.sender()`
-   >
-   > Building with a CLI that matches Blackholio's pinned SpacetimeDB version
-   > avoids these tweaks entirely.
+   > **Why bundled?** Blackholio's upstream `master` server targets SpacetimeDB
+   > `master` and uses newer macro syntax (`name =` table attribute, bare
+   > `ctx.sender`). Force-porting it to a released CLI compiles but breaks
+   > gameplay (`enter_game` rolls back, no circles spawn). The vendored copy is
+   > already pinned + patched for the **2.5.0** crate, so no tweaks are needed.
 
 4. **Regenerate bindings** (only if your server's schema differs from the
    committed ones) — either via the editor SpacetimeDB dock, or headless:
