@@ -22,13 +22,14 @@ func _ready():
     SpacetimeDB.MyModule.disconnected.connect(_on_spacetimedb_disconnected)
     SpacetimeDB.MyModule.connection_error.connect(_on_spacetimedb_connection_error)
 
-    var options = SpacetimeDBConnectionOptions.new()
+    var options: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
 
     options.compression = SpacetimeDBConnection.CompressionPreference.NONE # Default
     # OR
     # options.compression = SpacetimeDBConnection.CompressionPreference.GZIP
 
-    options.one_time_token = true # <--- anonymous-like. set to false to persist
+    options.one_time_token = true # default; fresh anonymous-like token each connect.
+    # To resume the same identity across runs: one_time_token = false + save_token = true
     options.debug_mode = false # Default, set to true for verbose logging
     # Increase buffer size. In general, you don't need this.
     # options.set_all_buffer_size(1024 * 1024 * 2) # Defaults to 2MB
@@ -48,8 +49,8 @@ func _ready():
 func _on_spacetimedb_connected(identity: PackedByteArray, token: String):
     print("Game: Connected to SpacetimeDB!")
     # Good place to subscribe to initial data
-    var queries = ["SELECT * FROM PlayerData", "SELECT * FROM GameState"]
-    var subscription = SpacetimeDB.MyModule.subscribe(queries)
+    var queries: PackedStringArray = ["SELECT * FROM PlayerData", "SELECT * FROM GameState"]
+    var subscription: SpacetimeDBSubscription = SpacetimeDB.MyModule.subscribe(queries)
     if subscription.error:
         printerr("Subscription failed!")
         return
@@ -59,10 +60,10 @@ func _on_spacetimedb_connected(identity: PackedByteArray, token: String):
 func _on_subscription_applied():
     print("Game: Initial subscription applied.")
     # Safe to query the local DB for initially subscribed data
-    var initial_players = SpacetimeDB.MyModule.db.player_data.iter()
+    var initial_players: Array[PlayerData] = SpacetimeDB.MyModule.db.player_data.iter()
     print("Initial players found: %d" % initial_players.size())
-    var identity = SpacetimeDB.MyModule.get_local_identity()
-    var current_player = SpacetimeDB.MyModule.db.player_data.identity.find(identity)
+    var identity: PackedByteArray = SpacetimeDB.MyModule.get_local_identity()
+    var current_player: PlayerData = SpacetimeDB.MyModule.db.player_data.identity.find(identity)
     # ... setup initial game state ...
 
 func _on_spacetimedb_disconnected():
@@ -186,8 +187,8 @@ func move_player(direction: Vector2):
     SpacetimeDB.MyModule.reducers.move_user(direction, global_position)
 
     # Or await the result using the SpacetimeDBReducerCall handle
-    var call := SpacetimeDB.MyModule.reducers.move_user(direction, global_position)
-    var result = await call.wait_for_response()
+    var call: SpacetimeDBReducerCall = SpacetimeDB.MyModule.reducers.move_user(direction, global_position)
+    await call.wait_for_response()  # returns the same handle; inspect `call` below
     if call.is_ok():
         print("Reducer succeeded")
     elif call.is_error():
@@ -204,7 +205,7 @@ Access the cached data synchronously at any time.
 func get_player_health(identity: PackedByteArray) -> int:
     if SpacetimeDB.MyModule.db:
         # Get a row via any unique index in a table
-        var player := SpacetimeDB.MyModule.db.player_data.identity.find(identity)
+        var player: PlayerData = SpacetimeDB.MyModule.db.player_data.identity.find(identity)
         if player:
             return player.health
     return -1 # Indicate not found or error

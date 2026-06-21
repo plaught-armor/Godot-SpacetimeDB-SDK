@@ -45,6 +45,15 @@ class SpacetimeDBClient:
 
 Returns `true` if the client is currently connected to a SpacetimeDB database.
 
+#### `get_stats()` method
+
+```gdscript
+class SpacetimeDBClient:
+    func get_stats() -> SpacetimeDBStats
+```
+
+Returns the [`SpacetimeDBStats`](#spacetimedbstats-class) tracking per-request round-trip latency (reducer / procedure / one-off / subscribe). Read-only diagnostics; always-on.
+
 ### Query the local database cache
 
 #### `get_local_database()` method
@@ -111,7 +120,7 @@ class SpacetimeDBClient:
 | reducer_name   | The name of the reducer to call.                                 |
 | args           | The arguments to pass to the reducer.                            |
 | types          | The BSATN types of the arguments to pass to the reducer.         |
-| ret_bsatn_type | Optional BSATN type for decoding the reducer's ok return value via [`decode()`](#decode-method-1). Empty for reducers that return nothing. |
+| ret_bsatn_type | Optional BSATN type for decoding the reducer's ok return value via [`decode()`](#decode-method). Empty for reducers that return nothing. |
 
 Call a reducer with `call_reducer(reducer_name, args, types)` a [`SpacetimeDBReducerCall`](#spacetimedbreducercall-class) instance is returned which contains the request id or an error.
 
@@ -121,12 +130,12 @@ It is recommended you use the auto-generated reducer methods rather than calling
 
 ```gdscript
 class SpacetimeDBClient:
-    async func wait_for_reducer_response(request_id: int, timeout_seconds: float = 10.0) -> TransactionUpdateMessage
+    async func wait_for_reducer_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> TransactionUpdateMessage
 ```
 
 | Name            | Description                                                       |
 | --------------- | ----------------------------------------------------------------- |
-| request_id      | The id of the reducer call request to wait for.                   |
+| request_id_to_match | The id of the reducer call request to wait for.               |
 | timeout_seconds | The number of seconds to wait for the response before timing out. |
 
 Waits for the reducer call response and returns the received `TransactionUpdateMessage`, or returns `null` if there is an error or it times out.
@@ -148,7 +157,7 @@ class SpacetimeDBClient:
 Executes a single SQL query without creating a subscription. Returns an array of `TableUpdateData` with the result rows (inserts only), or an empty array on error or timeout.
 
 ```gdscript
-var results = await SpacetimeDB.MyModule.query_sql("SELECT * FROM player WHERE level > 10")
+var results: Array[TableUpdateData] = await SpacetimeDB.MyModule.query_sql("SELECT * FROM player WHERE level > 10")
 for table in results:
     print("Table: %s, rows: %d" % [table.table_name, table.inserts.size()])
 ```
@@ -175,12 +184,12 @@ Call a procedure with `call_procedure()`, which returns a [`SpacetimeDBProcedure
 
 ```gdscript
 class SpacetimeDBClient:
-    async func wait_for_procedure_response(request_id: int, timeout_seconds: float = 10.0) -> PackedByteArray
+    async func wait_for_procedure_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> PackedByteArray
 ```
 
 | Name            | Description                                                       |
 | --------------- | ----------------------------------------------------------------- |
-| request_id      | The id of the procedure call request to wait for.                 |
+| request_id_to_match | The id of the procedure call request to wait for.             |
 | timeout_seconds | The number of seconds to wait for the response before timing out. |
 
 Waits for the procedure call response and returns the raw BSATN-encoded return bytes, or returns an empty `PackedByteArray` if there is an error or it times out.
@@ -195,6 +204,7 @@ Waits for the procedure call response and returns the raw BSATN-encoded return b
 | `database_initialized` | Emitted once when the local DB receives its first server data (the first `SubscribeApplied`, or the first transaction update if one arrives first). |
 | `row_inserted(table_name: StringName, row: Resource)` | Emitted when a row is inserted. |
 | `row_updated(table_name: StringName, old_row: Resource, new_row: Resource)` | Emitted when a row is updated. |
+| `row_before_delete(table_name: StringName, row: Resource)` | Emitted just before a row is removed — the row is still queryable in the cache. |
 | `row_deleted(table_name: StringName, row: Resource)` | Emitted when a row is deleted. |
 | `row_transactions_completed(table_name: StringName)` | Emitted when all row changes for a table update are applied. |
 | `transaction_update_received(update: TransactionUpdateMessage)` | Emitted when a transaction update is received. |
@@ -366,6 +376,37 @@ class ModuleTable:
 | `first_by` | Returns the first row where `field` equals `value`, or `null`. |
 | `count_where` | Returns the count of rows matching the predicate. |
 
+#### Typed per-field finders
+
+For every value-typed scalar field (`int` / `float` / `String` / `bool` /
+`StringName` / `PackedByteArray`), the table wrapper also generates a typed
+`find_by_<field>(value)` / `first_by_<field>(value)` pair — a compile-checked field
+name, value type, and return type, instead of the stringly-typed `find_by(&"field",
+value)`. Nested / Resource fields and the `scheduled_at` column are skipped.
+
+```gdscript
+class ModuleTable:
+    func find_by_<field>(value: Col) -> Array[Row]
+    func first_by_<field>(value: Col) -> Row
+```
+
+The lookup routes through the field's index when one exists: a **unique** index gives
+an O(1) `find()`; a **btree** index gives an O(1)+O(k) `filter()`. Non-indexed fields
+fall back to the linear `find_by` scan.
+
+#### Typed change signals
+
+Each table wrapper exposes change signals typed to the concrete `Row` class — a
+table-scoped, editor-discoverable parallel to the `on_insert` / `on_update` /
+`on_delete` callbacks.
+
+```gdscript
+class ModuleTable:
+    signal inserted(row: Row)
+    signal updated(old_row: Row, new_row: Row)
+    signal deleted(row: Row)
+```
+
 #### Unique index access
 
 For each unique constraint on a table, its table class has a property whose name is the unique column name. This property is a `ModuleTableUniqueIndex` which has a `find` method.
@@ -390,12 +431,31 @@ class ModuleTableBTreeIndex:
 
 Where `Col` is the column data type and `Row` is the table row type. Columns
 already covered by the primary key or a unique constraint expose
-[`find`](#unique-index-access) instead. The lookup is a linear scan over the local
-cache (matching the official C#/TS SDKs).
+[`find`](#unique-index-access) instead. `filter` is a per-value bucket cache
+(`Dictionary[value, Array[Row]]`) maintained live by insert/update/delete listeners,
+so a lookup is a dictionary get plus the *k* matching rows — not an *N*-row scan.
+
+For an index over an **orderable** column (`int` / `float` / `String`), the wrapper
+also generates range and one-sided bound accessors backed by a sorted-key mirror, so
+they binary-search the window (O(log d + k) over *d* distinct keys):
+
+```gdscript
+class ModuleTableBTreeIndex:
+    func filter_range(from_val: Col, to_val: Col) -> Array[Row]  # inclusive [from, to]
+    func filter_gte(col_val: Col) -> Array[Row]
+    func filter_gt(col_val: Col) -> Array[Row]
+    func filter_lte(col_val: Col) -> Array[Row]
+    func filter_lt(col_val: Col) -> Array[Row]
+```
+
+Non-orderable keys keep exact-match `filter()` only: `PackedByteArray`-backed columns
+(`Identity`, `u128` / `u256`) and `bool` — `Array.bsearch` has no ordering to
+binary-search on them. The range/bound accessors are generated only for `int` /
+`float` / `String` columns.
 
 ### Calling reducers
 
-Each public reducer defined by your module has a method on the `.reducers` property. The method name is the reducer name converted to `snake_case`. Each reducer method takes the arguments defined by the reducer and returns a [`SpacetimeDBReducerCall`](#spacetimedbreducercall-class) handle.
+Each public reducer defined by your module has a method on the `.reducers` property. The method name is the reducer name as defined in your module (already `snake_case` in the schema). Each reducer method takes the arguments defined by the reducer and returns a [`SpacetimeDBReducerCall`](#spacetimedbreducercall-class) handle.
 
 ```gdscript
 func example_reducer(arg1: String, arg2: int) -> SpacetimeDBReducerCall
@@ -403,7 +463,7 @@ func example_reducer(arg1: String, arg2: int) -> SpacetimeDBReducerCall
 
 ### Calling procedures
 
-Each public procedure defined by your module has a method on the `.procedures` property. The method name is the procedure name converted to `snake_case`. Each procedure method takes the arguments defined by the procedure and returns a [`SpacetimeDBProcedureCall`](#spacetimedbprocedurecall-class) handle.
+Each public procedure defined by your module has a method on the `.procedures` property. The method name is the procedure name as defined in your module (already `snake_case` in the schema). Each procedure method takes the arguments defined by the procedure and returns a [`SpacetimeDBProcedureCall`](#spacetimedbprocedurecall-class) handle.
 
 ```gdscript
 func example_procedure(arg1: String) -> SpacetimeDBProcedureCall
@@ -416,7 +476,7 @@ func example_procedure(arg1: String) -> SpacetimeDBProcedureCall
 A fluent query builder for constructing SQL subscription queries with input validation.
 
 ```gdscript
-var query := SpacetimeDBQuery.table("players").where("online", true).to_sql()
+var query: String = SpacetimeDBQuery.table("players").where("online", true).to_sql()
 # => "SELECT * FROM players WHERE online = true"
 ```
 
@@ -467,6 +527,17 @@ SpacetimeDBQuery.identity(bytes: PackedByteArray) -> String
 **Inherits:** Node
 
 Holds and listens to the websocket connection to the SpacetimeDB server.
+
+#### Signals
+
+| Signal | Description |
+| --- | --- |
+| `connected` | Emitted when the websocket opens. |
+| `disconnected` | Emitted when the websocket closes. |
+| `connection_error(code: int, reason: String)` | Emitted on a connection error. |
+| `connection_stalled(code: int)` | Emitted instead of `connection_error` when an abnormal close is classified as caused by a local main-thread stall (poll gap ≥ `heartbeat_interval`) rather than a network drop — the client reconnects immediately with no backoff ramp. |
+
+The connection also emits `message_received`, `total_messages`, and `total_bytes` — internal transport/monitor plumbing; prefer the `SpacetimeDBClient` signals for application code.
 
 #### `CompressionPreference` enum
 
@@ -533,7 +604,16 @@ class SpacetimeDBConnectionOptions:
     var one_time_token: bool = true
 ```
 
-Whether to use a one-time token for the connection.
+When `true` (the default), the connection requests a fresh anonymous-style token each time instead of reusing a persisted one. Set to `false` (paired with `save_token`) to resume the same identity across runs.
+
+#### `save_token` property
+
+```gdscript
+class SpacetimeDBConnectionOptions:
+    var save_token: bool = true
+```
+
+Whether the connection's auth token is written to disk so the next connect can reload it (resuming the same identity). Typically paired with `one_time_token = false`.
 
 #### `token` property
 
@@ -542,7 +622,7 @@ class SpacetimeDBConnectionOptions:
     var token: String = ""
 ```
 
-The token to use for the connection, `one_time_token` determines whether this token is saved to disk.
+An explicit auth token to use for the connection. `save_token` controls whether it is persisted to disk.
 
 #### `debug_mode` property
 
@@ -552,6 +632,15 @@ class SpacetimeDBConnectionOptions:
 ```
 
 Enables verbose logging.
+
+#### `heartbeat_interval_seconds` property
+
+```gdscript
+class SpacetimeDBConnectionOptions:
+    var heartbeat_interval_seconds: float = 15.0
+```
+
+Interval at which the client sends WebSocket pings to keep the socket alive and surface a dead/half-open connection. A main-thread stall longer than this makes Godot's `WebSocketPeer` miss a pong and close the socket — detected and surfaced as [`connection_stalled`](#signals-1). Set to `0.0` to disable keepalive.
 
 #### `inbound_buffer_size` property
 
@@ -857,16 +946,14 @@ class SpacetimeDBReducerCall:
 
 ```gdscript
 class SpacetimeDBReducerCall:
-    async func wait_for_response(timeout_sec: float = 10) -> TransactionUpdateMessage
+    async func wait_for_response(timeout_sec: float = 10) -> SpacetimeDBReducerCall
 ```
 
 | Name        | Description                                                       |
 | ----------- | ----------------------------------------------------------------- |
 | timeout_sec | The number of seconds to wait for the response before timing out. |
 
-Waits for the reducer call response, or until it times out.
-
-Returns the received `TransactionUpdateMessage`, or `null` if there was an error or it timed out. Check `outcome` and `error_message` after awaiting.
+Waits for the reducer call response, or until it times out, then returns this handle (`self`) so the result is available in one step. Inspect [`outcome`](#outcome-property), [`transaction_update`](#transaction_update-property), [`error_message`](#error_message-property-1), and [`decode()`](#decode-method) on the returned handle. On timeout `outcome` is set to `TIMEOUT`.
 
 ## `SpacetimeDBProcedureCall` class
 
@@ -939,14 +1026,14 @@ The raw BSATN-encoded return value from the procedure. Use `decode()` to get the
 
 ```gdscript
 class SpacetimeDBProcedureCall:
-    async func wait_for_response(timeout_sec: float = 10) -> PackedByteArray
+    async func wait_for_response(timeout_sec: float = 10) -> SpacetimeDBProcedureCall
 ```
 
 | Name        | Description                                                       |
 | ----------- | ----------------------------------------------------------------- |
 | timeout_sec | The number of seconds to wait for the response before timing out. |
 
-Waits for the procedure response, or until it times out. Returns the raw return bytes.
+Waits for the procedure response, or until it times out, then returns this handle (`self`). Inspect `outcome`, `return_bytes`, `error_message`, and [`decode()`](#decode-method-1) on the returned handle. On timeout `outcome` is set to `TIMEOUT`.
 
 #### `decode()` method
 
@@ -964,6 +1051,47 @@ class SpacetimeDBProcedureCall:
     func is_ok() -> bool          # outcome == RETURNED
     func is_error() -> bool       # outcome is ERROR, INTERNAL_ERROR, or DISCONNECTED
     func is_completed() -> bool   # outcome != PENDING
+```
+
+## `SpacetimeDBStats` class
+
+**Inherits:** RefCounted
+
+Per-request round-trip latency tracker, read via [`SpacetimeDBClient.get_stats()`](#get_stats-method). Records the microsecond gap between sending a request and receiving its response, bucketed by category. Main-thread only, always-on (one `Time.get_ticks_usec` plus two dict ops per request), with a bounded pending set so a never-answered request can't leak.
+
+#### `Category` enum
+
+```gdscript
+class SpacetimeDBStats:
+    enum Category { REDUCER, PROCEDURE, ONE_OFF, SUBSCRIBE }
+```
+
+#### Methods
+
+```gdscript
+class SpacetimeDBStats:
+    func get_tracker(category: Category) -> Tracker   # live stats for one category (read-only)
+    func summary() -> String                          # one line per category, latencies in ms
+    func reset() -> void                              # clear all counters and pending sends
+```
+
+#### `Tracker` (per-category stats)
+
+```gdscript
+class Tracker:
+    var count: int
+    var min_usec: int
+    var max_usec: int
+    var total_usec: int
+    var last_usec: int
+    var in_flight: int       # outstanding (unanswered) requests
+    func avg_usec() -> int
+```
+
+```gdscript
+var stats: SpacetimeDBStats = SpacetimeDB.MyModule.get_stats()
+print(stats.summary())
+var reducer_avg: int = stats.get_tracker(SpacetimeDBStats.Category.REDUCER).avg_usec()
 ```
 
 ## `LocalDatabase` class
@@ -997,6 +1125,17 @@ class LocalDatabase:
 The `callable` runs whenever an existing row in the table with the given `table_name` receives an update.
 
 You can call `unsubscribe_from_updates` with a `callable` that was previously registered.
+
+### Subscribe to before-deletes
+
+```gdscript
+class LocalDatabase:
+    func subscribe_to_before_deletes(table_name: StringName, callable: Callable) -> void
+
+    func unsubscribe_from_before_deletes(table_name: StringName, callable: Callable) -> void
+```
+
+The `callable` runs just before a row is removed from the table — the row is still queryable in the cache when it fires (see [`on_before_delete`](#on_before_delete-listener)).
 
 ### Subscribe to deletes
 
@@ -1105,11 +1244,11 @@ This will codegen the following for `CharacterClass`: ![image](https://github.co
 There are static functions to create specific enum variants in godot as well as getters to return the variant as the specific type. The following is how to create and match through and enum:
 
 ```gdscript
-var cc = SpacetimeDB.MyModule.Types.CharacterClass.create_warrior([1,2,3,4,5])
+var cc: MyModuleCharacterClass = SpacetimeDB.MyModule.Types.CharacterClass.create_warrior([1, 2, 3, 4, 5])
 match cc.value:
 	cc.Warrior:
-		var warrior: = cc.get_warrior()
-		var first: = warrior[0]
+		var warrior: Array[int] = cc.get_warrior()
+		var first: int = warrior[0]
 		print_debug("Warrior:", first)
 ```
 

@@ -43,7 +43,7 @@ The generated bindings are placed in `res://spacetime_bindings/` and are structu
 -   `schema/` contains all of the generated bindings for your SpacetimeDB module.
     -   `schema/spacetime_autoload.gd` is the autoload singleton that instantiates all module clients. Registered as the `SpacetimeDB` autoload.
     -   `schema/types/` and `schema/module_*_types.gd` contains all of your SpacetimeDB types, table structs and enums, used by the BSATN deserializer.
-    -   `schema/tables/` and `schema/module_*_db.gd` contains a representation of your module's tables allowing you to easily query the local database. This includes unique index files (`*_unique_index.gd`) for typed lookups on unique columns.
+    -   `schema/tables/` and `schema/module_*_db.gd` contains a representation of your module's tables allowing you to easily query the local database. This includes unique index files (`*_unique_index.gd`) for typed lookups on unique columns and btree index files (`*_btree_index.gd`) for `filter` / range lookups on non-unique indexed columns.
     -   `schema/module_*_reducers.gd` contains all of the reducer functions for your module.
     -   `schema/module_*_procedures.gd` contains all of the procedure functions for your module, each returning a [`SpacetimeDBProcedureCall`](api.md#spacetimedbprocedurecall-class) handle.
     -   `schema/module_*_client.gd` is the SpacetimeDB client for your module which handles the SpacetimeDB connection and exposes the database, reducers, and procedures.

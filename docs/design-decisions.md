@@ -35,8 +35,8 @@ no data to carry beyond what the reducer handle already gives you.
 - **Btree range queries** — `filter_range(from, to)` (inclusive) plus the one-sided
   `filter_gte` / `filter_gt` / `filter_lte` / `filter_lt` on orderable index columns
   (`int` / `float` / `String`), backed by a sorted-key mirror (O(log d + k)).
-  Bytes-backed keys (`Identity`, `u128`/`u256`) keep exact-match `filter()` only —
-  no defined ordering for `bsearch`.
+  Non-orderable keys — `PackedByteArray`-backed columns (`Identity`, `u128`/`u256`)
+  and `bool` — keep exact-match `filter()` only; no defined ordering for `bsearch`.
 - **Per-request latency stats** — `client.get_stats()` returns a `SpacetimeDBStats`
   with round-trip latency bucketed by category (reducer / procedure / one-off /
   subscribe). Closes the last diagnostics gap vs the C# SDK's `Stats` object.
