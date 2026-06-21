@@ -4,6 +4,19 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-06-21
+
+### Added
+- MIT `LICENSE` inside `addons/SpacetimeDB/` so the packaged addon ships its own
+  license file, as required by the Godot Asset Store. Same MIT terms as the
+  repo-root license (flametime + plaught-armor); no license change.
+
+### Changed
+- Inbound apply-path performance (no API or runtime-behavior change): skip
+  duplicating an empty listener array when applying a row, coalesce per-packet
+  statistics signals into one emission per frame, and order incoming-message
+  dispatch hottest-case first.
+
 ## [2.3.2] - 2026-06-19
 
 ### Changed
