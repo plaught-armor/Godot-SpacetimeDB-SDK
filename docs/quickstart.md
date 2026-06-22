@@ -216,6 +216,19 @@ func get_all_cached_players() -> Array[PlayerData]:
     return []
 ```
 
+## Next Steps
+
+This guide covers the core path. The SDK also provides:
+
+-   **Subscribe to everything** — `SpacetimeDB.MyModule.subscribe_all_tables()` instead of listing queries.
+-   **Fluent SQL builder** — `SpacetimeDBQuery.table("user").where("online", true).to_sql()` for subscription/query strings.
+-   **One-off SQL queries** — `SpacetimeDB.MyModule.query_sql(sql)` plus the `one_off_query_received` signal, for ad-hoc reads without a standing subscription.
+-   **Procedures** — `SpacetimeDB.MyModule.procedures.<name>(...)` returns a `SpacetimeDBProcedureCall` handle (same await pattern as reducers).
+-   **Auto-reconnect signals** — when `options.auto_reconnect = true`, listen to `reconnecting(attempt, max_attempts)`, `reconnected`, and `reconnect_failed`.
+-   **Typed per-table signals** — each generated table exposes `inserted` / `updated` / `deleted` signals as a typed alternative to the global `row_inserted` / `row_updated` / `row_deleted`.
+-   **Typed finders & indexes** — generated `find_by_<field>(value)` helpers, plus btree index `filter()` / `filter_range()` / `filter_gte()` / `filter_lte()` for range scans.
+-   **Compression** — `CompressionPreference.BROTLI` is supported alongside `NONE` and `GZIP`.
+
 ---
 
 ### Continue reading
