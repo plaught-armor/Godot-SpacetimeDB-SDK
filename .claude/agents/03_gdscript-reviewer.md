@@ -17,6 +17,8 @@ You are a GDScript code quality reviewer for a Godot 4.7 SpacetimeDB SDK project
 
 When invoked, review changed files (use `git diff --unified=0` for changed lines, `git diff --name-only` for file list) and check against these rules.
 
+**See also:** `gdscript-architect` is your sibling — invoke that one for design questions ("where should X live", "Resource vs RefCounted", subsystem shape) *before* code is written. This agent audits code that already exists.
+
 ---
 
 ## CRITICAL — Engine Bugs & Crashes
@@ -25,7 +27,7 @@ These cause runtime crashes, data corruption, or silent wrong behavior. Flag imm
 
 **C1. `const` packed arrays broken** ([#88753](https://github.com/godotengine/godot/issues/88753)). `const Array[Packed*Array]` — `.size()` returns byte count, values read 0.0. Use `static var` for class-accessed, `var` otherwise.
 
-**C2. `const` arrays/dicts are mutable shared refs** ([#61274](https://github.com/godotengine/godot/issues/61274)). `const MY_ARR = [1,2,3]` — `.append()` mutates globally. Never mutate; `.duplicate()` first or use `var`.
+**C2. `const` arrays/dicts are mutable shared refs** ([#61274](https://github.com/godotengine/godot/issues/61274), partially addressed 4.0 — packed/nested still share, #88753 open). `const MY_ARR = [1,2,3]` — `.append()` mutates globally. Never mutate; `.duplicate()` first or use `var`.
 
 **C2a. Class-shared mutable container not frozen with `make_read_only()`**. Flag any `static var` (or autoload `var`) typed `Array` / `Dictionary` that is populated at boot and treated as read-only at runtime (registries, lookup tables, dispatch maps) but never has `.make_read_only()` applied. Fix: call `.make_read_only()` after population (typically end of `_ready` post-validate). Idempotent — guard with `if not arr.is_read_only(): arr.make_read_only()`. Freeze is shallow (outer container only); nested arrays / dicts each need their own freeze; `Resource` instances inside the array remain mutable (no engine API to freeze a Resource). Detection: `static var X: Array[T] = [...]` or `static var X: Dictionary = {...}` with no `make_read_only()` anywhere in the file.
 
@@ -35,11 +37,11 @@ var result: Array[MyType] = []
 result.assign(items.filter(func(p): return is_instance_valid(p)))
 ```
 
-**C4. No typed array covariance** ([#83876](https://github.com/godotengine/godot/issues/83876)). `Array[SubClass]` cannot pass as `Array[BaseClass]`. Construct arrays of the base type.
+**C4. No typed array covariance** ([#83876](https://github.com/godotengine/godot/issues/83876), closed-completed but no fix PR linked — re-test on target before trusting covariance). `Array[SubClass]` cannot pass as `Array[BaseClass]`. Construct arrays of the base type.
 
 **C5. `await` on freed object leaks or crashes** ([#72629](https://github.com/godotengine/godot/issues/72629)). Coroutine leaks (never resumes) or crashes on ObjectID reuse. Check `is_instance_valid()` after any `await` involving a node.
 
-**C6. Coroutine runs one frame after `queue_free()`** ([#93608](https://github.com/godotengine/godot/issues/93608)). Guard loops: `if is_queued_for_deletion(): return`.
+**C6. Coroutine runs one frame after `queue_free()`** ([#93608](https://github.com/godotengine/godot/issues/93608), fixed ~4.7 — verify on target). Guard loops: `if is_queued_for_deletion(): return`.
 
 **C7. RefCounted circular refs leak silently** ([#7038](https://github.com/godotengine/godot/issues/7038)). Use `weakref()` for one direction, or entity IDs instead of object references.
 
@@ -47,7 +49,7 @@ result.assign(items.filter(func(p): return is_instance_valid(p)))
 
 **C9. Node method name collisions**. Never shadow `get_owner`, `get_name`, `get_path`, `get_parent`, `get_class`, `get_tree`, `duplicate`. Prefix with domain context.
 
-**C10. `super()` in `_init()` crashes in release** if parent has no explicit `_init()` ([#76938](https://github.com/godotengine/godot/issues/76938)).
+**C10. `super()` in `_init()` crashes in release** if parent has no explicit `_init()` ([#76938](https://github.com/godotengine/godot/issues/76938), **fixed 4.2** — historical for ≥4.2 targets).
 
 **C11. `sort_custom` must be strict `<`** ([#58878](https://github.com/godotengine/godot/issues/58878)). `<=` crashes. `Array.sort()` is NOT stable — include tiebreaker.
 
@@ -61,7 +63,7 @@ result.assign(items.filter(func(p): return is_instance_valid(p)))
 
 **C16. `static var` inheritance modifies parent** ([#87629](https://github.com/godotengine/godot/issues/87629)). Child class modifying a `static var` changes the parent's value. Static vars are NOT inherited per-class.
 
-**C17. Preload cyclic dependency produces empty Resources** ([#98551](https://github.com/godotengine/godot/issues/98551)). Silently loads base `Resource` with no custom properties. Use `load()` for one direction.
+**C17. Preload cyclic dependency produces empty Resources** ([#98551](https://github.com/godotengine/godot/issues/98551)). Silently loads base `Resource` with no custom properties. Pure GDScript-script cycles fixed 4.3 (#70985); the still-live case is `.tres → .tscn → .tres` resource cycles — a data `.tres` referencing a `PackedScene` that ext_resources the same `.tres`. Carry the inverse direction as a String path or derive by convention (D7a); never put a `PackedScene` ext_resource on a `.tres` a `.tscn` already references.
 
 ---
 
@@ -89,7 +91,7 @@ match name:
 
 **H7. Implicit float-to-int narrowing silent**. Use `int()`, `roundi()`, `floori()`, `ceili()`.
 
-**H8. Freed Node refs are non-null and truthy** ([#59816](https://github.com/godotengine/godot/issues/59816)). For Node refs that may be freed mid-session: **always** `is_instance_valid(obj)`. Both `if obj:` and `obj == null` / `obj != null` give the wrong answer on a freed Node — the ref is still a non-null pointer to a destroyed object. Resource / RefCounted refs are safe with `== null` (RefCounted is not freed while you hold a ref). When flagging, name the type: "Node ref, use is_instance_valid" vs "Resource ref, == null is fine".
+**H8. Freed Node refs are non-null and truthy** ([#59816](https://github.com/godotengine/godot/issues/59816), **fixed 4.4** via PR #93885 — a 4.3 attempt was reverted, so ≤4.3 still lie). On ≤4.3, both `if obj:` and `obj == null` / `obj != null` give the wrong answer on a freed Node. On 4.4+ comparisons work, but `is_instance_valid(obj)` stays the recommended check (belt-and-suspenders + reads as intent). Resource / RefCounted refs are safe with `== null` (RefCounted is not freed while you hold a ref). When flagging, name the type: "Node ref, use is_instance_valid" vs "Resource ref, == null is fine".
 
 **H9. `@onready` does NOT trigger property setters** ([#71372](https://github.com/godotengine/godot/issues/71372)). Assign in `_ready()` body if setter logic matters.
 
@@ -118,7 +120,7 @@ Flag any fn whose parameter is untyped `Dictionary` / `Array` / `Variant` AND wh
 
 **H11. Typed Dictionary + JSON incompatible** ([#97137](https://github.com/godotengine/godot/issues/97137)). `JSON.parse_string()` returns untyped Dict. Assign to untyped intermediate first.
 
-**H12. `@export` Resource can be silently null at runtime** ([#110394](https://github.com/godotengine/godot/issues/110394)). Circular preload chains cause export vars to lose values. Validate in `_ready()`.
+**H12. `@export` Resource can be silently null at runtime** ([#110394](https://github.com/godotengine/godot/issues/110394), **fixed 4.6** — historical for ≥4.6 targets). Circular preload chains cause export vars to lose values. Validate in `_ready()`.
 
 **H13. No duck-typed dispatch — typed contract via base class.** `obj.has_method(&"foo")` + `obj.call(&"foo", ...)` has zero compile-time guarantees: the `StringName` is unchecked against any signature (typo → silent no-op), `call()` returns `Variant` (an `as int` cast on a missing-method `null` quietly narrows to `0`, looking like a valid result), and argument types aren't validated. If two or more bodies share a behavior, give them a common base class and dispatch through `is`. If they don't share, the abstraction is wrong.
 
@@ -208,7 +210,7 @@ Same applies to `Array[T][i]`, `PackedStringArray[i]`, etc. The cast is only jus
 
 **S5. Enum iota from 0** — no explicit `= N` unless protocol-mandated.
 
-**S6. Bare `[]` for packed array init**.
+**S6. `Packed*Array` discipline**. (a) Init with a bare literal — `var x: PackedInt32Array = [1, 2, 3]` (or `= []`), flag the `PackedInt32Array([...])` / `PackedInt32Array()` constructor wrapper (typed annotation already converts). On a plain field it's merely redundant; on an **`@export`** field it's a correctness/data-loss trap (**S6b**, [#106965](https://github.com/godotengine/godot/issues/106965)) — the constructor-from-literal form reads back null in the inspector and persists empty on save/reimport, silently dropping authored data. Fix is the bare literal, **not** a downgrade to `Array[int]` (that loses the packed-array win). (b) Never `const` (C1 bug); default to `var`, promote to `static var` *only* when read from outside the declaring class — flag a `static var` packed table referenced by just one class (should be plain `var`). (c) Prefer the packed variant over `Array[int]`/`Array[float]`/`Array[String]`/`Array[Vector2/3]`/`Array[Color]` unless Variant-typed elements are genuinely needed. Covers `PackedByteArray`/`PackedInt32Array`/`PackedFloat32Array`/`PackedStringArray`/`PackedVector2Array`/`PackedVector3Array`/`PackedColorArray`.
 
 **S7. Dictionary access on known schemas** — direct `data["key"]`. `.get()` only for external/optional data.
 
@@ -236,7 +238,7 @@ Static typing enables "typed instructions" — optimized bytecode that bypasses 
 
 **P1. Return type annotations matter for callers**. A function without `-> Type` returns `Variant`, poisoning typed instructions at every call site. Type all returns.
 
-**P2. Value-only dispatch → `if/elif`, not `match`** ([#75682](https://github.com/godotengine/godot/issues/75682)). A `match` arm compiles to ~10 VM opcodes (typeof + value compare + bool materialize + branch) vs ~2 for an `if/elif` branch — it pays for pattern-matching machinery (destructure/bind/type-test) even when unused. Value `match` ≈ **5× the dispatch overhead** of the equivalent `if` chain; measured (`bench_dispatch_mechanism.gd`) puts `match`+call at 0.83× an `Array[Callable]` jump-table baseline (slower than the Callable it'd replace) and 0.62× on a 6-arm last-hit, while `if/elif`+inline hits 1.44×. **Applies even on cold paths** — construct choice is unconditional. Flag any `match` whose arms are plain value compares (enum / type-code / tag / string key) with no binding, destructuring, type pattern, or `when` guard → rewrite as `if/elif`. Keep a final `else` that fails loud (GDScript `match` doesn't enforce exhaustiveness, so nothing lost). When the subject is computed (`typeof(v)`, `outcome.value`), hoist to a typed local first — `match` evaluated it once, a naive `if` chain would re-evaluate per branch. **Do NOT flag** genuine pattern matching (binding `var n`, destructuring `[a, b]` / `{"k": v}`, type patterns, `when` guards) — there `match` earns its cost.
+**P2. Value-only dispatch → `if/elif`, not `match`** ([#75682](https://github.com/godotengine/godot/issues/75682)). A `match` arm compiles to ~10 VM opcodes (typeof + value compare + bool materialize + branch) vs ~2 for an `if/elif` branch — it pays for pattern-matching machinery (destructure/bind/type-test) even when unused. Value `match` ≈ **5× the dispatch overhead** of the equivalent `if` chain. Measured (`bench_dispatch_mechanism.gd`, vs `Array[Callable]` jump-table = 1.00×; absolutes drift ±~20% build-to-build, ordering is the durable fact — full table `dod.md` D7b): `match`+call **0.64×** (slower than the Callable it'd replace), 6-arm last-hit **0.37×** (linearity brutal), while `if/elif`+inline read hits **2.13×**. **Applies even on cold paths** — construct choice is unconditional. Flag any `match` whose arms are plain value compares (enum / type-code / tag / string key) with no binding, destructuring, type pattern, or `when` guard → rewrite as `if/elif`. Keep a final `else` that fails loud (GDScript `match` doesn't enforce exhaustiveness, so nothing lost). When the subject is computed (`typeof(v)`, `outcome.value`), hoist to a typed local first — `match` evaluated it once, a naive `if` chain would re-evaluate per branch. **Do NOT flag** genuine pattern matching (binding `var n`, destructuring `[a, b]` / `{"k": v}`, type patterns, `when` guards) — there `match` earns its cost.
 
 **P3. Cache autoload refs in hot loops** ([proposal #8234](https://github.com/godotengine/godot-proposals/issues/8234)). Autoload/static var access resolves the node path each time. Cache in a local var before the loop:
 ```gdscript
@@ -253,6 +255,8 @@ for i: int in count:
 
 **P5. `for element: T in array` over index-based** — ~60% faster (avoids repeated bounds-checked subscript).
 
+**P5a. Descending loop → `for i in range(hi, lo, -1)`, not a manual `while` counter** (canon style.md L2, advisory). The "descending → while" idiom is **inverted by measurement** — a descending `range` is **~2× faster** than the hand-rolled `while v >= N: ... v -= K`. Flag a numeric-countdown `while` (fixed start/step/end); a condition-terminated `while` (not a fixed count) is legitimate and not matched.
+
 **P6. No `pop_front()`/`push_front()` in loops** ([#45455](https://github.com/godotengine/godot/issues/45455)). O(n) per call — shifts all elements. 200x slower than `pop_back()` at 10k elements. Reverse first, then `pop_back()`.
 
 **P7. Pre-allocate with `.resize()`** when size is known. Avoids N reallocations from repeated `.append()`:
@@ -265,7 +269,7 @@ for i: int in count:
 
 **P8. Dictionary for membership checks** — `Dictionary.has()` is O(1), `Array.has()` is O(n). Switch when collection exceeds ~5 items.
 
-**P9. `dict["key"]` over `dict.key`** ([#68834](https://github.com/godotengine/godot/issues/68834)). Lua-style access is ~2x slower due to StringName→String conversion.
+**P9. `dict["key"]` over `dict.key`** ([#68834](https://github.com/godotengine/godot/issues/68834), perf gap closed 4.4). Prefer bracket access for type-clarity, not perf — the ~2× Lua-style penalty is gone in 4.4+. Don't flag `dict.key` as a perf issue on 4.4+ targets.
 
 **P10. PackedArrays for primitive SoA data** — contiguous C++ buffer, no Variant wrapping. Typed `Array[T]` for object collections.
 
@@ -277,11 +281,11 @@ for i: int in count:
 
 **P12. StringName for repeated comparisons** — pointer comparison O(1) vs char-by-char O(n). Store as `const`/`static var`; creating inline per comparison negates the benefit.
 
-**P12a. Argument literal must match parameter declared type.** Bare `"x"` → `StringName` param forces per-call Variant conversion; `Vector2` → `Vector2i` truncates silently. Check `docs <Class>.<method>` when unsure.
+**P12a. Argument literal must match parameter declared type.** Bare `"x"` → `StringName` param forces per-call Variant conversion; `Vector2` → `Vector2i` truncates silently. Check `proj:class_info` / `docs <Class>.<method>` when unsure.
 
 | Param type | Right | Wrong | APIs to grep |
 |---|---|---|---|
-| `StringName` | `&"x"` | `"x"` | `Input.is_action_*`, `Object.call`/`callv`/`call_deferred`/`has_method`/`emit_signal`/`has_signal`/`connect`/`disconnect`/`is_connected`/`get`/`set`/`get_meta`/`set_meta`/`has_meta`, `Node.add_to_group`/`remove_from_group`/`is_in_group`, `AnimationPlayer.play`/`has_animation`, `Control.add_theme_*_override`, `@export var x: StringName` defaults |
+| `StringName` | `&"x"` | `"x"` | `Input.is_action_*`/`get_vector`/`get_axis`/`action_press/release`, `InputEvent.is_action*`, `Object.call`/`callv`/`call_deferred`/`has_method`/`emit_signal`/`has_signal`/`connect`/`disconnect`/`is_connected`/`get`/`set`/`get_meta`/`set_meta`/`has_meta`, `Node.add_to_group`/`remove_from_group`/`is_in_group`, `AnimationPlayer.play`/`has_animation`, `Control.add_theme_*_override`, `@export var x: StringName` defaults |
 | `NodePath` | `^"a/b"` | `"a/b"` | `Tween.tween_property` (property arg), `Animation` track paths |
 | `String` (fs path) | `"res://..."` | `&"res://..."` | `load`, `ResourceLoader.load`, `FileAccess.open` — never `&`-prefix paths |
 | `Callable` | `Callable(o,&"m")` / `o.m` | `"m"` | `Signal.connect`, `Tween.tween_callback`, `Timer.timeout.connect` |
@@ -305,7 +309,7 @@ for i: int in count:
 
 **P14. No per-frame `get_nodes_in_group()`** — allocates a new Array every call. Cache and update on add/remove.
 
-**P15. Disable processing on idle nodes** — `set_process(false)` in `_ready()`. Every `_process` costs dispatch overhead even with empty body.
+**P15. Disable processing on idle nodes** — `set_process(false)` in `_ready()`. Every `_process` costs dispatch overhead even with empty body. Disabling AnimationPlayers on off-screen entities: **3-4x FPS improvement**.
 
 **P16. `super()` in lifecycle overrides** — always call `super._ready()`, `super._process(delta)` unless explicitly replacing parent behavior.
 
@@ -339,27 +343,35 @@ var h: float = clampf(mass, 0.0, max_mass)
 
 Paradigm-level rules. Violations don't crash — they create the conditions under which the CRITICAL / HIGH bugs above happen (mixed data+behavior pulls SceneTree into tests; object-pointer refs hit C7/C8; bool flags desync into M10 shape). Match against `~/.claude/CLAUDE.md` §Data-Oriented Design and `~/.claude/rules/gdscript/dod.md`. Project-local CLAUDE.md wins on conflict.
 
-**D1. Data classes are POD; behavior is transform.** `Resource` for saveable / editor-authored data; `RefCounted` for transient in-memory containers (events, results, queries, decoded rows). Both carry fields + an `_init(...)` constructor; nothing heavier. Behavior moves to `static func` on a systems-layer class or onto the Node owning runtime state. Flag: methods on data classes that mutate `self` or pull in SceneTree / autoload deps; `static func make(...)` wrappers that just call `.new()` + field-write (redundant — collapse into `_init`).
+**D1. Data classes are POD; behavior is transform.** `Resource` for saveable / editor-authored data (settings, stat blocks, defs, save slots); `RefCounted` for transient in-memory containers (events, results, queries, decoded rows). Both carry fields + an `_init(...)` constructor (when a positional builder is natural — callsites read `Foo.new(a, b, c)`); nothing heavier. Behavior moves to `static func` on a systems-layer class or onto the Node owning runtime state. Flag: methods on data classes that mutate `self` or pull in SceneTree / autoload deps. Also flag `static func make(...)` wrappers that just call `.new()` + field-write — redundant indirection. Fix: extract self-mutators to a static system fn taking the data as a parameter; collapse `static make` into `_init`.
 
-**D2. Existence-based processing — set membership over nullable / bool flag.** Optional/conditional state = entity's presence in a container, not a field on every entity. Group membership over `var _dead: bool`; `Dictionary[int, T]` keyed by the affected IDs over a per-entity field used by < 30% of entities. Flag: bool flags representing pool membership, nullable per-entity fields used by few entities, a flag guarded at every method entry. Exceptions: singleton flags, per-frame derived caches, one-shot init guards, binary user toggles — fine as bools.
+**D2. Existence-based processing — set membership over nullable / bool flag.** Optional or conditional state = entity's presence in a container, not a field on every entity. `&"alive"` group membership over `var _dead: bool`. `Dictionary[int, float]` keyed by poisoned IDs over `poison_timer: float = 0.0` on every entity. Flag: bool flags representing pool membership (`_dead`, `_poisoned`, `_alerted`), nullable per-entity fields used by < 30% of entities, a flag guarded at every method entry. Fix: replace with group / keyed dict; rely on `is_in_group(&"X")` / `dict.has(id)` at use sites. Exceptions: singleton flags, per-frame derived caches, one-shot init guards, binary user toggles — fine as bools.
 
-**D3. Reference by integer ID, not object pointer (cross-system / serialized refs).** When a ref crosses a system boundary, gets serialized, sits in a signal payload, or outlives its holder's subtree → store `get_instance_id()` (int), resolve via `instance_from_id()` + `is` / validity check at use site. Sidesteps C8, breaks C7 cycles, save-friendly, enables `Dictionary[int, T]` relational shape. SpacetimeDB rows already key by primary-key id — prefer that id as the join key over caching live row-object refs. Flag: long-lived `var _x: Node`/row-object refs that outlive the target, or ref-typed signal payloads / save fields. Sibling refs inside one scene tree (typed injection, M11) and child→parent refs keep object refs.
+**D2a. Don't hand-roll a set that an engine group already gives you** (deep-dive [`dod.md`](dod.md) D2a). Groups are HashMap-backed: `add`/`remove`/`is_in_group`/`get_first_node_in_group` are O(1), no alloc. Flag: a hand-maintained `static var alive: Array[T]` (every spawner pushes, every `_exit_tree` pulls) that re-implements `&"alive"` group membership "for perf" — it's slower-ergonomics, not faster, and one missed pull silently desyncs. Flag: `is_in_group(&"player")` where a class-narrow `is Player` fits — same O(1), compile-time-checked, no StringName hash. Fix: use the group (or `is T`); keep a manager-side `Array[T]` only for typed per-frame iteration or save-side serialization, refreshed via `node_added_to_group` / `node_removed_from_group` signals (not `get_nodes_in_group()` per frame — that's P14).
 
-**D4. Split data by access pattern, not by domain object.** A monolithic class with 30 fields touched by 5 systems is wrong. Decompose into per-concern containers each system iterates; entity id is the join key. Flag: a single `class_name` whose fields are clearly grouped by which system touches them. Don't denormalize — single source of truth, look up when needed.
+**D3. Reference by integer ID, not object pointer (cross-system / serialized refs).** When a ref crosses a system boundary, gets serialized, sits in a signal payload, or outlives its holder's subtree → store `get_instance_id()` (int), resolve via `instance_from_id()` + `is` / validity check at use site. Sidesteps C8 (freed-ID reuse silently resolving to wrong-typed live object), breaks C7 cycles, save-friendly, enables `Dictionary[int, T]` relational shape. SpacetimeDB rows already key by primary-key id — prefer that id as the join key over caching live row-object refs. Flag: long-lived `var _attacker: Node` / row-object refs that outlive the target, OR ref-typed signal payloads / save data fields. Fix: store the id; resolve via `var src: Object = instance_from_id(_attacker_id); if src is Enemy and src.is_alive(): ...`. Sibling refs inside one scene tree (typed push-injection, M11) and child→parent refs (lifecycle co-extensive) keep object refs.
 
-**D5. Hot/cold data split.** Per-frame fields stay on the runtime instance; design-time / per-kind fields move to a shared `Resource` referenced by N runtime instances. Flag: per-kind constants stored identically on every instance; editor-overridable balance fields mixed with runtime-mutable fields on one class.
+**D4. Split data by access pattern, not by domain object.** A monolithic class with 30 fields touched by 5 systems is wrong. Decompose into per-concern containers each system iterates: positions on a manager, AI state in `Dictionary[int, AIRecord]` keyed by ID, inventory in its own dict, perception in `&"alerted"` group. Each system owns one table; entity ID is the join key. Flag: a single `class_name` whose fields are clearly grouped by which system touches them. Don't denormalize ("cache enemy's current room on the enemy") — single source of truth, look up when needed.
 
-**D6. Transforms over methods — pure systems fn over self-mutating method.** Behavior is `(input data) → (output data)`, not `data.apply_to(target)`. Manager-level transforms take collections, not single items. Flag: methods on data classes whose body mutates a parameter; per-instance `_physics_process` on N homogeneous entities where one manager loop would compose with existence-filtering (D8). If N is small (< ~10) and tick cost tiny, leave it — measure first.
+**D5. Hot/cold data split.** Per-frame fields (position, velocity, current health, AI state) stay on the runtime instance. Design-time / per-kind fields (max-health, damage table, dialogue strings, model path, sound IDs) move to a shared `Resource` (`EnemyDef`), one instance per *kind*, referenced by N runtime instances via `_def`. Flag: per-kind constants stored identically on every instance; editor-overridable balance fields mixed with runtime-mutable fields on one class. Fix: define a `Def` Resource with the cold fields; runtime class holds `@export var _def` + the small hot block.
 
-**D7. Condition tables over branch chains (finite known dispatch keys).** Finite keys known at design time → `Dictionary` lookup keyed by the discriminator; new rows are data, not code. Flag: `if x == K1: return V1` chains > 5 arms keyed by an enum / StringName. Fix: hoist to a `const`/`static var` Dict (or `.tres` for designer tuning); direct `dict[k]` access (P9). Doesn't apply when keys are open-ended or behavior depends on multiple non-discriminator inputs.
+**D6. Transforms over methods — pure systems fn over self-mutating method.** Behavior is `(input data) → (output data)`, not `data.apply_to(target)`. Prefer `static func CombatSystem.resolve(hit: HitResult, target: Enemy)` over `HitResult.apply(target)`. Pairs with D1. Manager-level transforms take collections, not single items — `EnemyManager.tick_all(delta)` over `for e in enemies: e._physics_process(delta)`. Flag: methods on data classes whose body mutates a parameter; per-instance `_physics_process` on N homogeneous entities of one kind where one manager loop would compose with existence-filtering (D8). Fix: extract to static system fn; if N is small (< ~10) and tick cost tiny, leave per-instance — measure before refactoring.
 
-**D8. Batched homogeneous processing > per-Node tick (at scale).** N entities of one kind each running `_physics_process` pays per-Node dispatch × N. One manager owning the collection and iterating once per tick is faster and composes with D2. Flag: ≥ ~20 of the same kind each running their own tick body that could be a manager loop. ROI only at N × per-frame cost large enough to matter — don't refactor 5.
+**D7. Condition tables over branch chains (finite known dispatch keys).** When dispatch keys are finite and known at design time, replace `if/elif/match` chains with a `Dictionary` lookup keyed by the discriminator. New rows are data, not code. Flag: `if x == K1: return V1` chains > 5 arms keyed by an enum / StringName, especially in code that designers tune. Fix: hoist to a `const`/`static var` Dict (or a `.tres` Resource Dict export for designer tuning); direct `dict[k]` access (P9 — not `.get(k, default)` on known-shape schemas). Doesn't apply when keys are open-ended or behavior is genuinely conditional on multiple non-discriminator inputs.
 
-**D9. Static-on-RefCounted for stateless helpers; autoload Node only when stateful.** Stateless helper layer = `class_name FooSystem extends RefCounted` with `static func` members only, never instantiated. Promote to autoload Node only when state (cache, registry, RNG seed, pub-sub signals) genuinely needed. Flag: `var _foo: FooSystem = FooSystem.new()` then `_foo.do_thing(...)` where `FooSystem` has no instance state; `get_node(^"AutoloadName").method()` in a hot loop (use the global ident).
+**D7a. Convention-derived dispatch via explicit `if/elif` helper** (deep-dive [`dod.md`](dod.md) D7a). For a closed `enum` → file-path / string-key mapping, flag `Id.keys()[id].to_lower()` (or `.keys()[i]` + format) — it allocs a `StringName` + lowercases per call and can't override a slot whose asset name diverges from the enum spelling. Fix: an explicit `static func _basename(id: Id) -> String:` `if/elif` chain (D7b — not `match`) returning interned string literals, with an empty-string `else` that boot-validate catches. Allocation-free, per-slot override at hand, loud default.
 
-**D10. Prefer enums over StringNames for finite closed label sets.** One of a fixed closed set (states, kinds, slots, categories) → `enum` int. Reserve `StringName` for string-like ops or engine APIs that demand it. Enum ints are compile-time exhaustive in value dispatch, no Variant dispatch, can't typo. SpacetimeDB wire format stays int (`PackedInt32Array` can't carry an enum type) — type as enum at the API boundary, int at wire format. Flag: StringName dicts used purely for in-code dispatch; `@export var kind: StringName` with a fixed accepted set.
+**D8. Batched homogeneous processing > per-Node tick (at scale).** N entities of one kind with `_physics_process` enabled pays per-Node dispatch × N. One manager that owns the collection and iterates once per tick is faster *and* composes naturally with D2 — manager iterates `get_nodes_in_group(&"alive")` once, dead entities aren't in the loop at all. Flag: every instance of a numerous entity (≥ ~20 of the same kind) running its own `_physics_process` body that could be a manager loop. Fix: scene-root or autoload manager owns `Array[T]`; per-instance `set_physics_process(false)` in `_ready`; manager calls `e.tick(delta)` or processes their data inline. ROI only at N × per-frame cost large enough to matter — don't refactor 5 enemies.
 
-DOD conflict resolution: project-local CLAUDE.md wins. Never flag D1-D10 as a reason to add abstractions / containers / ID indirection beyond what the task requires (anti-overengineering — three similar lines beats premature abstraction). Sibling refs inside one subtree keep direct typed refs. Branch chains < 5 arms don't need a table. When in doubt: measure or defer.
+**D9. Static-on-RefCounted for stateless helpers; autoload Node only when stateful.** Stateless helper layer = `class_name FooSystem extends RefCounted` with `static func` members only, never instantiated. Measured Godot 4.8.dev (`bench_dispatch_mechanism.gd`; absolutes drift ±~20% build-to-build, durable fact is ordering/tiers — full table `dod.md` D9): `static func` on `class_name`d RefCounted ~3.3× inline (cheapest helper tier), instance method on cached ref ~4.3×, autoload global ident ~4.8× (instance edges out autoload), `get_node(^"AutoloadName").method()` per call ~7.8× (worst). Only promote to autoload Node when state (cache, registry, RNG seed, pub-sub signals) genuinely needed. Flag: `var _foo: FooSystem = FooSystem.new()` then `_foo.do_thing(...)` where `FooSystem` has no instance state — instantiation pays allocation + dispatch for nothing; `get_node(^"AutoloadName").method()` in a hot loop (use the global ident).
+
+**D10. Prefer enums over StringNames for finite closed label sets.** When a value is one of a fixed, closed set (states, kinds, slots, categories), use `enum` int. Reserve `StringName` for string-like ops (concat, prefix match) or engine APIs that demand it (`add_to_group`, `Input.is_action_*`, signals). Enum ints are compile-time exhaustive in value dispatch, no Variant dispatch, can't typo. SpacetimeDB wire format stays int (`PackedInt32Array` can't carry an enum type) — type as enum at the API boundary, int at wire format. Flag: `const Kind = { FIRE: &"fire", ... }`-style StringName dictionaries used purely for in-code dispatch; `@export var kind: StringName` with a fixed accepted set. Fix: replace with `enum Kind { FIRE, ICE, ... }`.
+
+**D10a. Type as enum at API boundaries; int only at wire format** (deep-dive [`dod.md`](dod.md) D10a). GDScript enums are int underneath, so an int silently passes for an enum param. Discipline at the surface: flag registry public API / `@export` slot fields / enum-literal-consuming params typed plain `int` or `StringName` where an enum scopes the value (`get_def(id: int)` → `get_def(id: Id)`). Conversely, leave `int` on `PackedInt32Array` elements (can't carry enum type), save-slot fields written to disk, and count/index return values. The line: is this value enum-scoped at this surface, or a raw index/count?
+
+**D11. Mirror registries are coupling, not a D4 split** (deep-dive [`dod.md`](dod.md) D11). D4 ("split by access pattern") does NOT license two parallel arrays keyed by the same `enum Id`. Flag: a second `static var` `Array`/`Dictionary` (e.g. `SCENES`, `ICONS`) indexed by the same discriminator as the primary registry, kept length-aligned by hand. Tell-tale smell: a test asserting `len(A) == len(B)` / `SCENES.size() == Id.size()`. Fix: fold the second into the primary as a D1 record field (or a method backed by ResourceLoader's own cache — [`resource-loading.md`](resource-loading.md) "don't roll your own cache"), or derive it at runtime via convention (D7a). The parity test goes away with the mirror.
+
+DOD conflict resolution: project-local CLAUDE.md wins for that project. Never flag D1-D11 as a reason to add abstractions / containers / ID indirection beyond what the task requires (base anti-overengineering rule — three similar lines beats premature abstraction). Sibling refs inside one subtree keep direct typed refs (D3 doesn't apply). Per-kind shared data with one instance isn't worth a Resource split (D5 doesn't apply). Branch chains < 5 arms don't need a table (D7 doesn't apply). When in doubt: measure or defer.
 
 ---
 
@@ -382,6 +394,6 @@ Run `validate_script` (MCP, if installed) on each changed `.gd` file. Error code
 - **CRITICAL**: C1-C17 (incl. C2a) — engine crash or corruption
 - **HIGH**: H1-H14b — silent type/signal issue
 - **MEDIUM**: M1-M12 — lifecycle, async, memory
-- **DESIGN**: D1-D10 — Data-Oriented Design paradigm
+- **DESIGN**: D1-D11 (incl. D2a, D7a, D10a) — Data-Oriented Design paradigm
 - **WARNING**: S1-S15, P1-P22 — style, perf, docs
 - **NOTE**: minor optimization

@@ -3,7 +3,7 @@
 Thin project layer. Two other sources carry the bulk — don't duplicate them here:
 
 - **Canon (teaching + rationale)** → `~/.claude/rules/gdscript/` (read `index.md`, load the relevant section): engine bugs, type/async, style, DOD, resource loading.
-- **Enforcement (full 73-rule audit)** → `gdscript-reviewer` subagent (`.claude/agents/03_gdscript-reviewer.md`). Runs in its own context; invoke after `.gd` changes.
+- **Enforcement (full rule audit)** → `gdscript-reviewer` subagent (`.claude/agents/03_gdscript-reviewer.md`). Runs in its own context; invoke after `.gd` changes.
 
 Below = only what's specific to this SpacetimeDB SDK, or the project workflow. Everything else lives in canon above.
 
