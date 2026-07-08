@@ -1,5 +1,20 @@
 # Upstream PR plan — GDScript Blackholio client (SpacetimeDB issue #4830)
 
+> **DEPRECATED — outcome reached. Kept for historical record only.**
+>
+> The PR was opened and **closed** by a maintainer:
+> [clockworklabs/SpacetimeDB#5453](https://github.com/clockworklabs/SpacetimeDB/pull/5453).
+> Reason was policy, not code quality: the demo depends on a *community* Godot SDK
+> rather than an official SpacetimeDB SDK, so it belongs alongside that SDK — i.e.
+> this repo — not in the official monorepo. The maintainer praised the
+> implementation and left the door open to reopen, but no packaging change flips
+> the "community vs official SDK" bit; only clockworklabs adopting an official
+> GDScript SDK would.
+>
+> The demo now lives here permanently ([`godot-client/`](../godot-client/),
+> [`EXAMPLE.md`](../godot-client/EXAMPLE.md)). The plan below is left unedited as a
+> record of the attempt.
+
 Concrete checklist for contributing our GDScript Blackholio client to
 `clockworklabs/SpacetimeDB`, modeled on the closed PR #3128 and targeting the open
 tracking issue.

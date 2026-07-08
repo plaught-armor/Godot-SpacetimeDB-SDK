@@ -4,6 +4,12 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
+### Changed
+- Verified the SDK end-to-end against **SpacetimeDB 2.7.0**; tested range is now
+  `2.2.0`–`2.7.0`. No code change — the v3 WS sub-protocol, schema v10, and the
+  BSATN wire format are unchanged from 2.6.0. Live integration suites
+  (extended scalars, cache behaviors, reconnect, enum/`Result` columns) all pass.
+
 ## [2.3.3] - 2026-06-21
 
 ### Added

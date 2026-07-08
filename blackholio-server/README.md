@@ -23,7 +23,7 @@ Blackholio's upstream `master` targets SpacetimeDB `master` and uses newer macro
 syntax (`name =` table attribute, bare `ctx.sender`). Force-porting it to a
 released CLI compiles but **breaks gameplay** — `enter_game` rolls back, no
 circles spawn. Pinning to the released `2.5.0` crate here avoids the macro
-churn and matches the CLI this SDK is tested with (2.2.0–2.6.0), keeping the
+churn and matches the CLI this SDK is tested with (2.2.0–2.7.0), keeping the
 generated client bindings aligned.
 
 ## Publish & run

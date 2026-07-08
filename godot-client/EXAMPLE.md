@@ -13,7 +13,7 @@ the generated module autoload).
 
 You need a local SpacetimeDB running the Blackholio module named `blackholio`.
 
-1. **Install the SpacetimeDB CLI** (this example was verified with **2.5.0**):
+1. **Install the SpacetimeDB CLI** (this example was verified with **2.7.0**):
    <https://spacetimedb.com/install>
 
 2. **Start a local server** (keep it running):
