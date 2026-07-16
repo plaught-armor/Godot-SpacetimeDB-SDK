@@ -4,7 +4,17 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
-## [2.4.0] - 2026-07-15
+### Added
+- **Deterministic binding UIDs + reproducible codegen output.** Generated
+  bindings now get a stable `.uid` derived from an FNV-1a-64 hash of their
+  `res://` path (masked to 63 bits, always positive), written and registered
+  at generation time — so a fresh clone or regen keeps the same UIDs and
+  scene/`.tres` references don't break. Schema sections that arrive from the
+  server in HashMap order (modules, tables, reducers, procedures, and both
+  unique and btree indexes) are sorted by a stable name key before emission,
+  so the generated files are byte-for-byte reproducible. A boot-time collision
+  scan reports any two bindings that hash to the same UID (astronomically
+  unlikely, but deterministic if it ever happened).
 
 ### Added
 - **SpacetimeAuth OIDC token exchange.** A `SpacetimeAuth` node (thin
