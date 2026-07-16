@@ -54,6 +54,10 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 -   **Frame-Budgeted Apply:** Incoming row updates are applied under an adaptive per-frame time budget (fps-aware auto-tune, with a hard message ceiling), so large bursts — initial subscriptions, mass updates — drain across frames instead of stalling one. Tunable via `SpacetimeDBConnectionOptions` (`frame_budget_us`, `max_messages_per_frame`, `auto_tune_frame_budget`). BSATN parsing runs on a background thread by default (`threading`).
 -   **Request latency stats:** `get_stats()` returns a `SpacetimeDBStats` tracking per-request round-trip time bucketed by category (reducer / procedure / one-off / subscribe) — count, min/max/avg/last latency, and in-flight count. `get_stats().summary()` dumps all four; `get_stats().get_tracker(SpacetimeDBStats.Category.REDUCER)` reads one. Always-on (one `Time.get_ticks_usec` + two dict ops per request), main-thread, bounded pending set.
 
+### Authentication
+
+-   **SpacetimeAuth OIDC token exchange:** the `SpacetimeAuth` node exchanges a provider credential for a SpacetimeDB token via the OIDC token endpoint. Provider-agnostic — the `grant_type` and credential fields are caller-supplied — with exponential-backoff retries on transient failures and credential redaction in debug logs. `await exchange()` or connect `exchange_completed`; feed the returned `id_token` to `SpacetimeDBConnectionOptions.token`. Ships with `SpacetimeAuthResult` (POD outcome), `SpacetimeAuthProtocol` (pure, network-free transforms — unit-testable without a server), and `JwtHelper` for unverified client-side JWT claim decode (local bookkeeping only, not a security boundary). Endpoint, `grant_type`, and Steam fields verified against the official SpacetimeDB 2.7.0 docs. See the [API reference](docs/api.md#spacetimeauth-class).
+
 ### Serialization
 
 -   **Deep Nesting:** Arbitrary nesting of `Option<T>` and `Vec<T>` types: `Option<Option<T>>`, `Vec<Vec<T>>`, `Option<Vec<Option<T>>>`, etc. Recursive BSATN prefix-based serialization/deserialization.

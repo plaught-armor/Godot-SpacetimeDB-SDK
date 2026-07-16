@@ -1203,6 +1203,106 @@ class LocalDatabase:
     func count_where(table_name: StringName, predicate: Callable) -> int
 ```
 
+## `SpacetimeAuth` class
+
+**Inherits:** Node
+
+Exchanges a provider credential for a SpacetimeDB token via the SpacetimeAuth OIDC token endpoint. Thin `HTTPRequest` glue over an exponential-backoff retry loop; provider-agnostic — the `grant_type` and credential fields are caller-supplied. Add it to the tree before calling [`exchange()`](#exchange-method).
+
+#### Exports
+
+```gdscript
+class SpacetimeAuth:
+    @export var token_url: String = "https://auth.spacetimedb.com/oidc/token"
+    @export var debug_mode: bool = false
+    @export var request_timeout_seconds: float = 15.0
+    @export var max_attempts: int = 4              # transient failures retried up to this many times
+    @export var base_retry_delay_seconds: float = 0.5
+    @export var max_retry_delay_seconds: float = 4.0
+    @export var redact_fields: PackedStringArray   # request fields masked in debug logs
+```
+
+#### `exchange()` method
+
+```gdscript
+class SpacetimeAuth:
+    func exchange(
+        grant_type: String,
+        extra_fields: Dictionary[String, Variant],
+        client_id: String,
+    ) -> SpacetimeAuthResult
+```
+
+Coroutine — `await` it for the [`SpacetimeAuthResult`](#spacetimeauthresult-class), or connect [`exchange_completed`](#signals-1); the same result is delivered both ways. `extra_fields` carries the provider-specific credential fields. Transient failures (submit error, no response, 5xx) are retried with exponential backoff; a 2xx/4xx is authoritative and returned immediately.
+
+#### Signals
+
+```gdscript
+signal exchange_completed(result: SpacetimeAuthResult)
+```
+
+```gdscript
+var auth: SpacetimeAuth = SpacetimeAuth.new()
+add_child(auth)
+var result: SpacetimeAuthResult = await auth.exchange(
+    "urn:spacetimeauth:steam-ticket",
+    {"steam_ticket": ticket_hex, "steam_app_id": app_id},
+    "my-client-id",
+)
+auth.queue_free()
+if not result.is_successful():
+    push_error("auth failed: %s" % result.error)
+    return
+
+# Feed the id_token to the connection as its token, then connect as usual.
+var options: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
+options.token = result.id_token
+SpacetimeDB.MyModule.connect_db("https://your-host:3000", "my_module", options)
+```
+
+## `SpacetimeAuthResult` class
+
+**Inherits:** RefCounted
+
+POD outcome of a [`SpacetimeAuth.exchange()`](#exchange-method) call.
+
+```gdscript
+class SpacetimeAuthResult:
+    var id_token: String = ""    # the SpacetimeDB token, on success
+    var expires_in: int = 0      # token lifetime in seconds, if provided
+    var error: String = ""       # non-empty on failure
+    func is_successful() -> bool  # true when id_token is set and error is empty
+```
+
+## `SpacetimeAuthProtocol` class
+
+**Inherits:** RefCounted
+
+Pure, network-free transforms behind [`SpacetimeAuth`](#spacetimeauth-class) — form-encode, retry decision, backoff math, response classification, credential redaction. Static functions only; unit-testable without a live server or the scene tree.
+
+```gdscript
+class SpacetimeAuthProtocol:
+    static func build_form_body(client_id: String, grant_type: String, extra_fields: Dictionary[String, Variant]) -> String
+    static func is_transient(code: int) -> bool                       # retryable HTTP status?
+    static func backoff_delay(attempt: int, base: float, cap: float) -> float
+    static func transport_result_name(rc: int) -> String              # HTTPRequest.Result -> label
+    static func classify(...) -> SpacetimeAuthResult                  # HTTP response -> result
+    static func redact(body: String, fields: PackedStringArray) -> String
+```
+
+## `JwtHelper` class
+
+**Inherits:** RefCounted
+
+Unverified client-side JWT payload decode — reads claims (e.g. `login_method`) for local bookkeeping. **Not a security boundary**; the signature is not checked. Trust the token only via the server.
+
+```gdscript
+class JwtHelper:
+    static func decode_payload(jwt: String) -> Dictionary   # the JWT claims, unverified
+    static func login_method(jwt: String) -> String         # the `login_method` claim, or ""
+    static func summarize(jwt: String) -> String            # one-line human summary
+```
+
 # Rust Enums in Godot
 
 There is full support for rust enum sumtypes when derived from SpacetimeType.
