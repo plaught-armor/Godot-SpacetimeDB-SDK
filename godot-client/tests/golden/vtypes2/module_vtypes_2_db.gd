@@ -2,15 +2,15 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name Vtypes2ModuleDb extends RefCounted
 
-const table_names : Array[StringName] = [&"event_log", &"seq_row", &"dur_row", &"thing"]
+const table_names : Array[StringName] = [&"dur_row", &"event_log", &"seq_row", &"thing"]
 
+var dur_row: Vtypes2DurRowTable
 var event_log: Vtypes2EventLogTable
 var seq_row: Vtypes2SeqRowTable
-var dur_row: Vtypes2DurRowTable
 var thing: Vtypes2ThingTable
 
 func _init(p_local_db: LocalDatabase) -> void:
+	dur_row = preload('user://golden_gen/vtypes2/tables/vtypes_2_dur_row_table.gd').new(p_local_db)
 	event_log = preload('user://golden_gen/vtypes2/tables/vtypes_2_event_log_table.gd').new(p_local_db)
 	seq_row = preload('user://golden_gen/vtypes2/tables/vtypes_2_seq_row_table.gd').new(p_local_db)
-	dur_row = preload('user://golden_gen/vtypes2/tables/vtypes_2_dur_row_table.gd').new(p_local_db)
 	thing = preload('user://golden_gen/vtypes2/tables/vtypes_2_thing_table.gd').new(p_local_db)

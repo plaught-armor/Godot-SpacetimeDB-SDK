@@ -199,6 +199,7 @@ static func generate_schema(
 	var generated_files: Array[String] = codegen.generate_bindings()
 
 	_cleanup_unused_classes(BINDINGS_SCHEMA_PATH, generated_files)
+	_check_uid_collisions(BINDINGS_SCHEMA_PATH)
 
 	if DirAccess.dir_exists_absolute(LEGACY_DATA_PATH):
 		print_log("Removing legacy data directory: %s" % LEGACY_DATA_PATH)
@@ -248,3 +249,40 @@ static func _cleanup_unused_classes(dir_path: String = "res://schema", files: Ar
 	var subfolders: PackedStringArray = dir.get_directories()
 	for folder: String in subfolders:
 		_cleanup_unused_classes(dir_path + "/" + folder, files)
+
+
+## Walks [param dir_path] recursively and appends every file ending in
+## [param suffix] to [param out].
+static func _collect_files_by_suffix(dir_path: String, suffix: String, out: PackedStringArray) -> void:
+	var dir: DirAccess = DirAccess.open(dir_path)
+	if dir == null:
+		return
+	for file_name: String in dir.get_files():
+		if file_name.ends_with(suffix):
+			out.append("%s/%s" % [dir_path, file_name])
+	for sub: String in dir.get_directories():
+		_collect_files_by_suffix("%s/%s" % [dir_path, sub], suffix, out)
+
+
+## Deterministic binding uids share the full 63-bit id space with Godot's
+## randomly-minted uids, so a clash is possible (~1e-13) — and because our ids
+## are deterministic, a clash would reproduce on every clone. Scan the generated
+## bindings for duplicate uid ids and report any that exist. If this ever fires,
+## salt SpacetimeCodegen._stable_uid_id (e.g. prefix a version byte) and regenerate.
+## Scoped to [param dir_path] (the bindings dir) — only our own ids are
+## deterministic, so a wider res:// sweep buys nothing but I/O.
+static func _check_uid_collisions(dir_path: String) -> void:
+	var uid_files: PackedStringArray = []
+	_collect_files_by_suffix(dir_path, ".uid", uid_files)
+	var seen: Dictionary[int, String] = { }
+	for path: String in uid_files:
+		var text: String = FileAccess.get_file_as_string(path).strip_edges()
+		if text.is_empty():
+			continue
+		var id: int = ResourceUID.text_to_id(text)
+		if id == ResourceUID.INVALID_ID:
+			continue
+		if seen.has(id):
+			print_err("UID collision (%s): %s <-> %s" % [text, seen[id], path])
+		else:
+			seen[id] = path

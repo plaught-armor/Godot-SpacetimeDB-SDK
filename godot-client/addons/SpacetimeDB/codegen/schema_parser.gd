@@ -79,6 +79,19 @@ static func _sort_by_ty(a: Dictionary, b: Dictionary) -> bool:
 	return a.get("ty", -1) < b.get("ty", -1)
 
 
+# Server schema sections are HashMap-backed, so iteration order varies between
+# publishes. Sorting the parsed output lists by their stable "name" key makes the
+# generated bindings byte-for-byte reproducible across machines and regenerations.
+# Names are unique within each list, so the strict `<` required by sort_custom
+# (engine bug #58878 — never `<=`) never sees equal keys.
+static func _sort_by_name(a: Dictionary, b: Dictionary) -> bool:
+	return String(a.get("name", "")) < String(b.get("name", ""))
+
+
+static func _sort_by_constraint_name(a: Dictionary, b: Dictionary) -> bool:
+	return String(a.get("constraint_name", "")) < String(b.get("constraint_name", ""))
+
+
 static func _find_type_index(type_name: String, parsed_types_list: Array[Dictionary]) -> int:
 	for i: int in parsed_types_list.size():
 		if parsed_types_list[i].name == type_name:
@@ -396,6 +409,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			else:
 				SpacetimePlugin.print_err("Unique field index %d out of bounds for table %s (struct size %d)" % [unique_field_idx, table_name_str, target_type_def.struct.size()])
 
+		parsed_unique_indexes.sort_custom(_sort_by_constraint_name)
 		table_data.unique_indexes = parsed_unique_indexes
 
 		# Non-unique btree indexes get a filter() accessor. Single-column only;
@@ -637,6 +651,13 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			new_table_dict["name"] = name
 			new_table_dict["is_public"] = true
 		parsed_tables_list.append(new_table_dict)
+
+	# Sort the output lists by name so binding generation is deterministic
+	# regardless of the server's per-publish section order. Types stay in `ty`
+	# order (sorted above) — their positions are referenced by index elsewhere.
+	parsed_tables_list.sort_custom(_sort_by_name)
+	parsed_reducers_list.sort_custom(_sort_by_name)
+	parsed_procedures_list.sort_custom(_sort_by_name)
 
 	SpacetimePlugin.print_log("Schema parser finished")
 	parsed_schema.types = parsed_types_list

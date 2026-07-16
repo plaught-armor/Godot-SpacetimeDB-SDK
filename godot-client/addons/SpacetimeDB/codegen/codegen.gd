@@ -171,10 +171,15 @@ static func _get_type_def(schema: SpacetimeParsedSchema, type_idx: int) -> Dicti
 func generate_bindings() -> Array[String]:
 	var generated_files: Array[String] = []
 
-	for module_name: String in _plugin_config.module_configs:
+	# Sort module names so the per-module output order (and the autoload it
+	# references) is stable across regenerations.
+	var sorted_module_names: Array[String] = _plugin_config.module_configs.keys()
+	sorted_module_names.sort()
+
+	for module_name: String in sorted_module_names:
 		generated_files.append_array(_generate_module_bindings(module_name))
 
-	var autoload_content: String = _generate_autoload_gdscript(_plugin_config.module_configs.keys())
+	var autoload_content: String = _generate_autoload_gdscript(sorted_module_names)
 	var autoload_output_file_path: String = "%s/%s" % [_schema_path, SpacetimePlugin.AUTOLOAD_FILE_NAME]
 	var autoload_file: FileAccess = FileAccess.open(autoload_output_file_path, FileAccess.WRITE)
 	if autoload_file == null:
@@ -187,10 +192,41 @@ func generate_bindings() -> Array[String]:
 	generated_files.append(autoload_output_file_path)
 
 	SpacetimePlugin.print_log("Generated files:")
-	for generated_file in generated_files:
+	for generated_file: String in generated_files:
+		_write_deterministic_uid(generated_file)
 		SpacetimePlugin.print_log(generated_file)
 
 	return generated_files
+
+
+## Derives a stable ResourceUID id from the script's res:// path via FNV-1a
+## 64-bit. Same path yields the same id on every machine and every regen, so the
+## generated bindings can be gitignored: a scene/.tres `ext_resource uid="..."`
+## reference stays valid after a fresh clone + regenerate, with no diff churn.
+## The 63-bit mask keeps the id positive and away from ResourceUID.INVALID_ID (-1).
+static func _stable_uid_id(res_path: String) -> int:
+	var fnv: int = -3750763034362895579 # 0xcbf29ce484222325 (FNV offset basis as i64)
+	for byte: int in res_path.to_utf8_buffer():
+		fnv = (fnv ^ byte) * 0x100000001b3 # FNV prime; wraps at i64, that's intended
+	return fnv & 0x7FFFFFFFFFFFFFFF
+
+
+## Writes a `<path>.uid` sidecar with the deterministic id and syncs the editor's
+## in-memory uid cache so a live regen doesn't re-mint a random uid.
+static func _write_deterministic_uid(gd_path: String) -> void:
+	var id: int = _stable_uid_id(gd_path)
+	var uid_file: FileAccess = FileAccess.open("%s.uid" % gd_path, FileAccess.WRITE)
+	if uid_file == null:
+		SpacetimePlugin.print_err(
+			"failed to write uid for %s: %s" % [gd_path, FileAccess.get_open_error()],
+		)
+		return
+	uid_file.store_string(ResourceUID.id_to_text(id))
+	uid_file.close()
+	if ResourceUID.has_id(id):
+		ResourceUID.set_id(id, gd_path)
+	else:
+		ResourceUID.add_id(id, gd_path)
 
 
 ## Scans all global classes and autoloads in the project for GDScript enums.

@@ -2,13 +2,13 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name VsumModuleDb extends RefCounted
 
-const table_names : Array[StringName] = [&"shape_row", &"res_row", &"note"]
+const table_names : Array[StringName] = [&"note", &"res_row", &"shape_row"]
 
-var shape_row: VsumShapeRowTable
-var res_row: VsumResRowTable
 var note: VsumNoteTable
+var res_row: VsumResRowTable
+var shape_row: VsumShapeRowTable
 
 func _init(p_local_db: LocalDatabase) -> void:
-	shape_row = preload('user://golden_gen/vsum/tables/vsum_shape_row_table.gd').new(p_local_db)
-	res_row = preload('user://golden_gen/vsum/tables/vsum_res_row_table.gd').new(p_local_db)
 	note = preload('user://golden_gen/vsum/tables/vsum_note_table.gd').new(p_local_db)
+	res_row = preload('user://golden_gen/vsum/tables/vsum_res_row_table.gd').new(p_local_db)
+	shape_row = preload('user://golden_gen/vsum/tables/vsum_shape_row_table.gd').new(p_local_db)
