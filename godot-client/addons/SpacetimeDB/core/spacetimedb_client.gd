@@ -688,8 +688,8 @@ func _save_token(token_to_save: String) -> void:
 func _setup_threading() -> void:
 	if deserializer_worker != null:
 		return
-	if OS.has_feature("web") and use_threading:
-		push_error("Threads are not supported on Web. Threading has been disabled.")
+	if use_threading and not OS.has_feature("threads"):
+		push_error("Threads are not supported on this build. Threading has been disabled.")
 		use_threading = false
 	if not use_threading:
 		return
