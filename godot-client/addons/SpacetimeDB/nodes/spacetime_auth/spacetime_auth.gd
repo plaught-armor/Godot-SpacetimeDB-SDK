@@ -9,9 +9,9 @@ extends Node
 ## connection token). The node owns its own [HTTPRequest] child, so callers just
 ## add it to the tree and await:
 ## [codeblock]
-## var auth := SpacetimeAuth.new()
+## var auth: SpacetimeAuth = SpacetimeAuth.new()
 ## add_child(auth)
-## var result := await auth.exchange(
+## var result: SpacetimeAuthResult = await auth.exchange(
 ##     "urn:spacetimeauth:steam-ticket",                     # grant_type
 ##     {"steam_ticket": ticket_hex, "steam_app_id": app_id}, # provider fields
 ##     my_client_id,

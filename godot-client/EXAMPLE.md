@@ -49,6 +49,49 @@ You need a local SpacetimeDB running the Blackholio module named `blackholio`.
 Open `godot-client/` in Godot 4.7 and press **F5**. Enter a name to spawn.
 Controls: mouse to move, **Space** to split, **S** to suicide, **Q** to lock aim.
 
+## Authenticating with SpacetimeAuth (optional)
+
+Blackholio here connects anonymously — `options.token` is left empty, so the SDK
+requests a fresh identity on first connect (`scripts/main.gd`). A hosted or
+provider-gated deployment instead wants a real player identity from
+[SpacetimeAuth](https://docs.spacetimedb.com/). The `SpacetimeAuth` node exchanges
+a provider credential (Steam ticket, Google Play auth code, ...) for an id_token
+(a JWT) that you hand to the connection as its token:
+
+```gdscript
+# Exchange a provider credential for a SpacetimeAuth id_token.
+var auth: SpacetimeAuth = SpacetimeAuth.new()
+add_child(auth)
+var result: SpacetimeAuthResult = await auth.exchange(
+    "urn:spacetimeauth:steam-ticket",                     # grant_type
+    {"steam_ticket": ticket_hex, "steam_app_id": app_id}, # provider fields
+    my_client_id,
+)
+auth.queue_free()
+
+if not result.is_successful():
+    push_error("auth failed: %s" % result.error)
+    return
+
+# Feed the id_token to the connection as its token, then connect as usual.
+var options: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
+options.token = result.id_token
+SpacetimeDB.Blackholio.connect_db("https://your-host:3000", "blackholio", options)
+```
+
+The node is provider-agnostic: the `grant_type` string and the `extra_fields`
+keys are whatever the SpacetimeAuth endpoint defines for your provider — Steam
+above is verified against the 2.7.0 docs; look up the rest at
+<https://docs.spacetimedb.com/>. `exchange()` also emits `exchange_completed` for
+signal-based callers, retries transient failures (submit error / no response /
+5xx) with exponential backoff, and redacts credential fields from any error it
+logs.
+
+`JwtHelper` reads claims out of the id_token client-side (e.g.
+`JwtHelper.login_method(token)` to key a per-provider token cache). It does **not**
+verify the signature — never use it for an authorization decision; the server
+verifies on connect.
+
 ## Load testing (perf harness)
 
 Two headless tools stress the SDK's inbound pipeline (deserialize → apply →
