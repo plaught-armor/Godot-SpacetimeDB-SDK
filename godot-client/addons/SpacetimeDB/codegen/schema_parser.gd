@@ -428,6 +428,9 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				continue
 			parsed_btree_indexes.append(target_type_def.struct[btree_col_idx].duplicate())
 
+		# Server returns indexes in HashMap order; sort so the *_table.gd wrapper's
+		# btree accessor decls emit deterministically (mirrors unique_indexes above).
+		parsed_btree_indexes.sort_custom(_sort_by_name)
 		table_data.btree_indexes = parsed_btree_indexes
 
 		var is_public: bool = true

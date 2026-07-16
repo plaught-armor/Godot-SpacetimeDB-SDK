@@ -7,15 +7,15 @@ signal updated(old_row: VbtreeThing, new_row: VbtreeThing)
 signal deleted(row: VbtreeThing)
 
 var id: VbtreeThingIdUniqueIndex
-var score: VbtreeThingScoreBTreeIndex
 var owner: VbtreeThingOwnerBTreeIndex
+var score: VbtreeThingScoreBTreeIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"thing"
 	id = VbtreeThingIdUniqueIndex.new(p_local_db)
-	score = VbtreeThingScoreBTreeIndex.new(p_local_db)
 	owner = VbtreeThingOwnerBTreeIndex.new(p_local_db)
+	score = VbtreeThingScoreBTreeIndex.new(p_local_db)
 	on_insert(_emit_inserted)
 	on_update(_emit_updated)
 	on_delete(_emit_deleted)
