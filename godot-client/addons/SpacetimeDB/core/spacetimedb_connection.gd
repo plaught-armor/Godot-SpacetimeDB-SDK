@@ -138,7 +138,6 @@ func _physics_process(_delta: float) -> void:
 	elif state == WebSocketPeer.STATE_CLOSING:
 		# Connection is closing
 		_print_log("SpacetimeDBConnection: connection closing")
-		pass
 	elif state == WebSocketPeer.STATE_CLOSED:
 		var code: int = _websocket.get_close_code()
 		var reason: String = _websocket.get_close_reason()

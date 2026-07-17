@@ -118,12 +118,12 @@ static func _format_value(value: Variant) -> String:
 	var _vt: int = typeof(value)
 	if _vt == TYPE_STRING:
 		return "'%s'" % value.replace("'", "''")
-	elif _vt == TYPE_BOOL:
+	if _vt == TYPE_BOOL:
 		return "true" if value else "false"
-	elif _vt == TYPE_PACKED_BYTE_ARRAY:
+	if _vt == TYPE_PACKED_BYTE_ARRAY:
 		# SpacetimeDB hex literal: bare 0x... (not a quoted string).
 		return "0x%s" % (value as PackedByteArray).hex_encode()
-	elif _vt == TYPE_FLOAT:
+	if _vt == TYPE_FLOAT:
 		var f: float = value
 		if is_nan(f):
 			push_error("SpacetimeDBQuery: NaN cannot be represented in SQL.")
@@ -133,8 +133,7 @@ static func _format_value(value: Variant) -> String:
 			return "NULL"
 		# Lossless round-trip for double; locale-independent.
 		return "%.17g" % f
-	else:
-		return str(value)
+	return str(value)
 
 # --- Identifier validation ---
 

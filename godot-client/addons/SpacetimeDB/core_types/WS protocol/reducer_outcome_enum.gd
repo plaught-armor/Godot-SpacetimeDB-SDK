@@ -34,15 +34,14 @@ const ENUM_OPTIONS: Array[StringName] = [&'ReducerOk', &'', &'vec_u8', &'string'
 static func parse_enum_name(i: int) -> StringName:
 	if i == 0:
 		return &'ok'
-	elif i == 1:
+	if i == 1:
 		return &'okEmpty'
-	elif i == 2:
+	if i == 2:
 		return &'err'
-	elif i == 3:
+	if i == 3:
 		return &'internalError'
-	else:
-		printerr("Enum does not have value for %d. This is out of bounds." % i)
-		return &'Unknown'
+	printerr("Enum does not have value for %d. This is out of bounds." % i)
+	return &'Unknown'
 
 
 ## Returns the TransactionUpdateMessage from the Ok variant.

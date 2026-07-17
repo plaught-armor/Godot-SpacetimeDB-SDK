@@ -39,19 +39,18 @@ const _MSG_PATH: String = SpacetimePlugin.ADDON_PATH + "/core_types/server_messa
 static func get_script_path(msg_type: int) -> String:
 	if msg_type == Type.INITIAL_CONNECTION:
 		return _MSG_PATH + "initial_connection.gd"
-	elif msg_type == Type.SUBSCRIBE_APPLIED:
+	if msg_type == Type.SUBSCRIBE_APPLIED:
 		return _MSG_PATH + "subscribe_applied.gd"
-	elif msg_type == Type.UNSUBSCRIBE_APPLIED:
+	if msg_type == Type.UNSUBSCRIBE_APPLIED:
 		return _MSG_PATH + "unsubscribe_applied.gd"
-	elif msg_type == Type.SUBSCRIPTION_ERROR:
+	if msg_type == Type.SUBSCRIPTION_ERROR:
 		return _MSG_PATH + "subscription_error.gd"
-	elif msg_type == Type.TRANSACTION_UPDATE:
+	if msg_type == Type.TRANSACTION_UPDATE:
 		return _MSG_PATH + "transaction_update.gd"
-	elif msg_type == Type.ONE_OFF_QUERY_RESPONSE:
+	if msg_type == Type.ONE_OFF_QUERY_RESPONSE:
 		return _MSG_PATH + "one_off_query_response.gd"
-	elif msg_type == Type.REDUCER_RESULT:
+	if msg_type == Type.REDUCER_RESULT:
 		return _MSG_PATH + "reducer_result.gd"
-	elif msg_type == Type.PROCEDURE_RESULT:
+	if msg_type == Type.PROCEDURE_RESULT:
 		return _MSG_PATH + "procedure_result.gd"
-	else:
-		return ""
+	return ""

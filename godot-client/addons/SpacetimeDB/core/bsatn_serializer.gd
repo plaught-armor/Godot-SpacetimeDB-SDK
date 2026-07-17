@@ -233,13 +233,13 @@ func write_option(option_value: Option, bsatn_type: StringName, prop: Dictionary
 			_set_error("Failed to write None tag for Option property '%s'." % prop_name)
 			return false
 		return true
-	else: # is_some()
-		write_u8(0) # Tag for Some
-		if has_error():
-			_set_error("Failed to write Some tag for Option property '%s'." % prop_name)
-			return false
-		_write_value_from_bsatn_type(option_value.unwrap(), bsatn_type, prop_name)
-		return not has_error()
+	# is_some()
+	write_u8(0) # Tag for Some
+	if has_error():
+		_set_error("Failed to write Some tag for Option property '%s'." % prop_name)
+		return false
+	_write_value_from_bsatn_type(option_value.unwrap(), bsatn_type, prop_name)
+	return not has_error()
 
 
 ## Writes an array type
@@ -391,7 +391,7 @@ func write_native_arraylike(v: Variant, bsatn_type: StringName, prop: Dictionary
 		_write_value_from_bsatn_type(value, bsatn_component_type, prop_name + "[%s]" % i)
 
 
-func write_nested_resource(resource: Object, bsatn_type: StringName, prop: Dictionary) -> void:
+func write_nested_resource(resource: Object, _bsatn_type: StringName, prop: Dictionary) -> void:
 	if not resource is RefCounted: # Resource extends RefCounted — SpacetimeDBMessage too
 		_set_error("Cannot serialize non-RefCounted Object (got: %s)" % resource.get_class())
 		return
@@ -482,50 +482,50 @@ func _get_value_class_name(value: Variant) -> String:
 
 # Helper to get the specific BSATN writer METHOD NAME based on metadata value.
 func _get_primitive_writer_from_bsatn_type(bsatn_type_str: StringName) -> Callable:
-	# if-elif, not match: reached per element on the recursive vec/option path
-	# (_write_value_from_bsatn_type) plus at plan-build. match arm ~10 opcodes vs ~2
-	# for an if branch; ordered by expected field frequency.
+	# Chain of `if ... return`, not match: reached per element on the recursive
+	# vec/option path (_write_value_from_bsatn_type) plus at plan-build. match arm
+	# ~10 opcodes vs ~2 for an if branch; ordered by expected field frequency.
 	if bsatn_type_str == &"u32":
 		return write_u32_le
-	elif bsatn_type_str == &"i32":
+	if bsatn_type_str == &"i32":
 		return write_i32_le
-	elif bsatn_type_str == &"u64":
+	if bsatn_type_str == &"u64":
 		return write_u64_le
-	elif bsatn_type_str == &"i64":
+	if bsatn_type_str == &"i64":
 		return write_i64_le
-	elif bsatn_type_str == &"f32":
+	if bsatn_type_str == &"f32":
 		return write_f32_le
-	elif bsatn_type_str == &"bool":
+	if bsatn_type_str == &"bool":
 		return write_bool
-	elif bsatn_type_str == &"string":
+	if bsatn_type_str == &"string":
 		return write_string_with_u32_len
-	elif bsatn_type_str == &"u8":
+	if bsatn_type_str == &"u8":
 		return write_u8
-	elif bsatn_type_str == &"u16":
+	if bsatn_type_str == &"u16":
 		return write_u16_le
-	elif bsatn_type_str == &"i8":
+	if bsatn_type_str == &"i8":
 		return write_i8
-	elif bsatn_type_str == &"i16":
+	if bsatn_type_str == &"i16":
 		return write_i16_le
-	elif bsatn_type_str == &"f64":
+	if bsatn_type_str == &"f64":
 		return write_f64_le
-	elif bsatn_type_str == &"vec_u8":
+	if bsatn_type_str == &"vec_u8":
 		return write_vec_u8
-	elif bsatn_type_str == &"identity":
+	if bsatn_type_str == &"identity":
 		return write_identity
-	elif bsatn_type_str == &"connection_id":
+	if bsatn_type_str == &"connection_id":
 		return write_connection_id
-	elif bsatn_type_str == &"timestamp":
+	if bsatn_type_str == &"timestamp":
 		return write_timestamp
-	elif bsatn_type_str == &"scheduled_at":
+	if bsatn_type_str == &"scheduled_at":
 		return write_scheduled_at
-	elif bsatn_type_str == &"u128":
+	if bsatn_type_str == &"u128":
 		return write_u128
-	elif bsatn_type_str == &"i128":
+	if bsatn_type_str == &"i128":
 		return write_i128
-	elif bsatn_type_str == &"u256":
+	if bsatn_type_str == &"u256":
 		return write_u256
-	elif bsatn_type_str == &"i256":
+	if bsatn_type_str == &"i256":
 		return write_i256
 	return Callable()
 
@@ -603,30 +603,29 @@ func _get_writer_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 func _generate_default_type(bsatn_type_name: StringName) -> Variant:
 	if bsatn_type_name == &"i8" or bsatn_type_name == &"i16" or bsatn_type_name == &"i32" or bsatn_type_name == &"i64" or bsatn_type_name == &"u8" or bsatn_type_name == &"u16" or bsatn_type_name == &"u32" or bsatn_type_name == &"u64":
 		return int(0)
-	elif bsatn_type_name == &"f32" or bsatn_type_name == &"f64":
+	if bsatn_type_name == &"f32" or bsatn_type_name == &"f64":
 		return float(0)
-	elif bsatn_type_name == &"bool":
+	if bsatn_type_name == &"bool":
 		return false
-	elif bsatn_type_name == &"string":
+	if bsatn_type_name == &"string":
 		return ""
-	elif bsatn_type_name == &"vector2":
+	if bsatn_type_name == &"vector2":
 		return Vector2.ZERO
-	elif bsatn_type_name == &"vector2i":
+	if bsatn_type_name == &"vector2i":
 		return Vector2i.ZERO
-	elif bsatn_type_name == &"vector3":
+	if bsatn_type_name == &"vector3":
 		return Vector3.ZERO
-	elif bsatn_type_name == &"vector3i":
+	if bsatn_type_name == &"vector3i":
 		return Vector3i.ZERO
-	elif bsatn_type_name == &"vector4":
+	if bsatn_type_name == &"vector4":
 		return Vector4.ZERO
-	elif bsatn_type_name == &"vector4i":
+	if bsatn_type_name == &"vector4i":
 		return Vector4i.ZERO
-	elif bsatn_type_name == &"color":
+	if bsatn_type_name == &"color":
 		return Color.BLACK
-	elif bsatn_type_name == &"quaternion":
+	if bsatn_type_name == &"quaternion":
 		return Quaternion.IDENTITY
-	else:
-		return null
+	return null
 
 
 ## Helper function to serialize a value based on BSATN type string.

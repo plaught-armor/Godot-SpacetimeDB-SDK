@@ -589,7 +589,7 @@ func _wait_for_response(request_id: int, cache: Dictionary, sig: Signal, timeout
 	return result_container[0]
 
 
-func _init_db(local_db: LocalDatabase) -> void:
+func _init_db(_local_db: LocalDatabase) -> void:
 	pass
 
 
@@ -663,7 +663,7 @@ func _on_token_received(received_token: String) -> void:
 	_connection.connect_to_database(base_url, database_name, conn_id)
 
 
-func _on_token_request_failed(error_code: int, response_body: String) -> void:
+func _on_token_request_failed(error_code: int, _response_body: String) -> void:
 	printerr("SpacetimeDBClient: Failed to acquire token. Cannot connect.")
 	connection_error.emit(error_code, "Failed to acquire authentication token")
 

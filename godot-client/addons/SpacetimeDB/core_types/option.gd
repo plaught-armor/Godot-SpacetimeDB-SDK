@@ -115,5 +115,4 @@ func set_none() -> void:
 func _to_string() -> String:
 	if is_some():
 		return "Some(%s [type: %s])" % [_internal_data[0], typeof(_internal_data[0])]
-	else:
-		return "None"
+	return "None"

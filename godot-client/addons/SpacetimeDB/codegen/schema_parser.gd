@@ -850,12 +850,12 @@ static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_t
 			data["is_array"] = true
 		field_type = field_type.Array
 		return _parse_field_type(field_type, data, schema_types, depth + 1)
-	elif field_type.has("Product"):
+	if field_type.has("Product"):
 		var elements: Array = field_type.Product.get("elements", [])
 		if elements.is_empty():
 			return ""
 		return elements[0].get('name', { }).get('some', null)
-	elif field_type.has("Sum"):
+	if field_type.has("Sum"):
 		# Anonymous inline Result<T, E> — synthesize a named RustEnum-style type and
 		# return its name so it rides the enum-with-payload path (must precede the
 		# generic collapse below, which would otherwise drop the err variant).
@@ -871,14 +871,13 @@ static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_t
 				data["is_option"] = true
 		field_type = field_type.Sum.variants[0].get('algebraic_type', { })
 		return _parse_field_type(field_type, data, schema_types, depth + 1)
-	elif field_type.has("Ref"):
+	if field_type.has("Ref"):
 		var ref_idx: int = int(field_type.Ref)
 		if ref_idx < 0 or ref_idx >= schema_types.size():
 			SpacetimePlugin.print_err("Invalid schema: Ref index %d out of bounds (typespace size %d)" % [ref_idx, schema_types.size()])
 			return ""
 		return schema_types[ref_idx].get("name", { }).get("name", null)
-	else:
-		if field_type.is_empty():
-			SpacetimePlugin.print_err("Invalid schema: Empty algebraic_type encountered")
-			return ""
-		return _first_key(field_type)
+	if field_type.is_empty():
+		SpacetimePlugin.print_err("Invalid schema: Empty algebraic_type encountered")
+		return ""
+	return _first_key(field_type)

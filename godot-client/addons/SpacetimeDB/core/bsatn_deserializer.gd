@@ -324,7 +324,7 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 		for i: int in num_rows + 1:
 			offsets[i] = i * row_size
 		return { "offsets": offsets, "count": num_rows, "data_len": data_len }
-	elif size_hint_type == ROW_LIST_ROW_OFFSETS:
+	if size_hint_type == ROW_LIST_ROW_OFFSETS:
 		var num_offsets: int = read_u32_le(spb)
 		if has_error():
 			return { }
@@ -352,9 +352,8 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 				)
 				return { }
 		return { "offsets": offsets, "count": num_offsets, "data_len": data_len }
-	else:
-		_set_error("Unknown RowSizeHint type: %d" % size_hint_type, start_pos)
-		return { }
+	_set_error("Unknown RowSizeHint type: %d" % size_hint_type, start_pos)
+	return { }
 
 	return { }
 
@@ -508,7 +507,7 @@ func _read_array(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_str: String
 	var length: int = read_u32_le(spb)
 	if has_error() or length == 0:
 		return []
-	elif length > MAX_VEC_LEN:
+	if length > MAX_VEC_LEN:
 		_set_error("Array length %d exceeds limit %d for property '%s'" % [length, MAX_VEC_LEN, prop_name], start_pos)
 		return []
 
@@ -618,19 +617,19 @@ func _read_native_arraylike(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_
 	var t: int = prop.type
 	if t == TYPE_VECTOR2:
 		return Vector2.ZERO if has_error() else Vector2(components[0], components[1])
-	elif t == TYPE_VECTOR3:
+	if t == TYPE_VECTOR3:
 		return Vector3.ZERO if has_error() else Vector3(components[0], components[1], components[2])
-	elif t == TYPE_VECTOR4:
+	if t == TYPE_VECTOR4:
 		return Vector4.ZERO if has_error() else Vector4(components[0], components[1], components[2], components[3])
-	elif t == TYPE_COLOR:
+	if t == TYPE_COLOR:
 		return Color.BLACK if has_error() else Color(components[0], components[1], components[2], components[3])
-	elif t == TYPE_QUATERNION:
+	if t == TYPE_QUATERNION:
 		return Quaternion.IDENTITY if has_error() else Quaternion(components[0], components[1], components[2], components[3])
-	elif t == TYPE_VECTOR2I:
+	if t == TYPE_VECTOR2I:
 		return Vector2i.ZERO if has_error() else Vector2i(components[0], components[1])
-	elif t == TYPE_VECTOR3I:
+	if t == TYPE_VECTOR3I:
 		return Vector3i.ZERO if has_error() else Vector3i(components[0], components[1], components[2])
-	elif t == TYPE_VECTOR4I:
+	if t == TYPE_VECTOR4I:
 		return Vector4i.ZERO if has_error() else Vector4i(components[0], components[1], components[2], components[3])
 
 	_set_error("Unsupported native arraylike type for property '%s'" % prop_name, start_pos)
@@ -728,47 +727,47 @@ func _get_primitive_reader_from_bsatn_type(bsatn_type_str: StringName) -> Callab
 	# branch. Ordered by expected field frequency so common types short-circuit early.
 	if bsatn_type_str == &"u32":
 		return read_u32_le
-	elif bsatn_type_str == &"i32":
+	if bsatn_type_str == &"i32":
 		return read_i32_le
-	elif bsatn_type_str == &"u64":
+	if bsatn_type_str == &"u64":
 		return read_u64_le
-	elif bsatn_type_str == &"i64":
+	if bsatn_type_str == &"i64":
 		return read_i64_le
-	elif bsatn_type_str == &"f32":
+	if bsatn_type_str == &"f32":
 		return read_f32_le
-	elif bsatn_type_str == &"bool":
+	if bsatn_type_str == &"bool":
 		return read_bool
-	elif bsatn_type_str == &"string":
+	if bsatn_type_str == &"string":
 		return read_string_with_u32_len
-	elif bsatn_type_str == &"u8":
+	if bsatn_type_str == &"u8":
 		return read_u8
-	elif bsatn_type_str == &"u16":
+	if bsatn_type_str == &"u16":
 		return read_u16_le
-	elif bsatn_type_str == &"i8":
+	if bsatn_type_str == &"i8":
 		return read_i8
-	elif bsatn_type_str == &"i16":
+	if bsatn_type_str == &"i16":
 		return read_i16_le
-	elif bsatn_type_str == &"f64":
+	if bsatn_type_str == &"f64":
 		return read_f64_le
-	elif bsatn_type_str == &"vec_u8":
+	if bsatn_type_str == &"vec_u8":
 		return read_vec_u8
-	elif bsatn_type_str == &"identity":
+	if bsatn_type_str == &"identity":
 		return read_identity
-	elif bsatn_type_str == &"connection_id":
+	if bsatn_type_str == &"connection_id":
 		return read_connection_id
-	elif bsatn_type_str == &"timestamp":
+	if bsatn_type_str == &"timestamp":
 		return read_timestamp
-	elif bsatn_type_str == &"scheduled_at":
+	if bsatn_type_str == &"scheduled_at":
 		return read_scheduled_at
-	elif bsatn_type_str == &"u128":
+	if bsatn_type_str == &"u128":
 		return read_u128
-	elif bsatn_type_str == &"i128":
+	if bsatn_type_str == &"i128":
 		return read_i128
-	elif bsatn_type_str == &"u256":
+	if bsatn_type_str == &"u256":
 		return read_u256
-	elif bsatn_type_str == &"i256":
+	if bsatn_type_str == &"i256":
 		return read_i256
-	elif bsatn_type_str == &"transactionupdatemessage":
+	if bsatn_type_str == &"transactionupdatemessage":
 		return _read_transaction_update_message
 	return Callable()
 
@@ -778,32 +777,31 @@ func _get_reader_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 
 	if prop.class_name == &"Option":
 		return _read_option.bind(prop, bsatn_type_str)
-	elif prop_type == TYPE_ARRAY:
+	if prop_type == TYPE_ARRAY:
 		return _read_array.bind(prop, bsatn_type_str)
-	elif NATIVE_ARRAYLIKE.has(prop_type):
+	if NATIVE_ARRAYLIKE.has(prop_type):
 		return _read_native_arraylike.bind(prop, bsatn_type_str)
-	else:
-		var reader: Callable = Callable()
-		if not bsatn_type_str.is_empty():
-			reader = _get_primitive_reader_from_bsatn_type(bsatn_type_str)
-			if not reader.is_valid() and _schema.types.has(_normalize(bsatn_type_str)):
-				reader = _read_nested_resource.bind(prop)
-			elif not reader.is_valid() and debug_mode:
-				push_warning("Unknown BSATN_TYPES entry '%s' for property '%s'. Falling back to Variant.Type." % [bsatn_type_str, prop.name])
-		if not reader.is_valid():
-			if prop_type == TYPE_BOOL:
-				reader = read_bool
-			elif prop_type == TYPE_INT:
-				reader = read_i64_le
-			elif prop_type == TYPE_FLOAT:
-				reader = read_f32_le
-			elif prop_type == TYPE_STRING:
-				reader = read_string_with_u32_len
-			elif prop_type == TYPE_PACKED_BYTE_ARRAY:
-				reader = read_vec_u8
-			elif prop_type == TYPE_OBJECT:
-				reader = _read_nested_resource.bind(prop)
-		return reader
+	var reader: Callable = Callable()
+	if not bsatn_type_str.is_empty():
+		reader = _get_primitive_reader_from_bsatn_type(bsatn_type_str)
+		if not reader.is_valid() and _schema.types.has(_normalize(bsatn_type_str)):
+			reader = _read_nested_resource.bind(prop)
+		elif not reader.is_valid() and debug_mode:
+			push_warning("Unknown BSATN_TYPES entry '%s' for property '%s'. Falling back to Variant.Type." % [bsatn_type_str, prop.name])
+	if not reader.is_valid():
+		if prop_type == TYPE_BOOL:
+			reader = read_bool
+		elif prop_type == TYPE_INT:
+			reader = read_i64_le
+		elif prop_type == TYPE_FLOAT:
+			reader = read_f32_le
+		elif prop_type == TYPE_STRING:
+			reader = read_string_with_u32_len
+		elif prop_type == TYPE_PACKED_BYTE_ARRAY:
+			reader = read_vec_u8
+		elif prop_type == TYPE_OBJECT:
+			reader = _read_nested_resource.bind(prop)
+	return reader
 
 
 func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringName, context_prop_name: StringName) -> Variant:
@@ -854,9 +852,8 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 					_set_error("Failed to populate nested resource of type '%s' (schema key '%s') for context '%s'" % [bsatn_type_str, schema_key, context_prop_name], start_pos)
 				return null
 			return nested_instance
-		else:
-			_set_error("Cannot instantiate schema for BSATN type '%s' (schema key '%s', context: '%s'). Script valid: %s, Can instantiate: %s" % [bsatn_type_str, schema_key, context_prop_name, script != null, script.can_instantiate() if script else "N/A"], start_pos)
-			return null
+		_set_error("Cannot instantiate schema for BSATN type '%s' (schema key '%s', context: '%s'). Script valid: %s, Can instantiate: %s" % [bsatn_type_str, schema_key, context_prop_name, script != null, script.can_instantiate() if script else "N/A"], start_pos)
+		return null
 
 	_set_error("Unsupported BSATN type '%s' for deserialization (context: '%s'). No primitive, vec, or custom schema found." % [bsatn_type_str, context_prop_name], start_pos)
 	return null
@@ -946,26 +943,25 @@ func _inline_type_code(reader: Callable) -> int:
 	var _m: StringName = reader.get_method()
 	if _m == &"read_u32_le":
 		return TC.U32
-	elif _m == &"read_i32_le":
+	if _m == &"read_i32_le":
 		return TC.I32
-	elif _m == &"read_u64_le":
+	if _m == &"read_u64_le":
 		return TC.U64
-	elif _m == &"read_i64_le":
+	if _m == &"read_i64_le":
 		return TC.I64
-	elif _m == &"read_f32_le":
+	if _m == &"read_f32_le":
 		return TC.F32
-	elif _m == &"read_f64_le":
+	if _m == &"read_f64_le":
 		return TC.F64
-	elif _m == &"read_u8":
+	if _m == &"read_u8":
 		return TC.U8
-	elif _m == &"read_u16_le":
+	if _m == &"read_u16_le":
 		return TC.U16
-	elif _m == &"read_i8":
+	if _m == &"read_i8":
 		return TC.I8
-	elif _m == &"read_i16_le":
+	if _m == &"read_i16_le":
 		return TC.I16
-	else:
-		return TC.COMPLEX
+	return TC.COMPLEX
 
 
 ## Fetches the cached plan for [param script], building (and caching) it on first
