@@ -228,13 +228,15 @@ func read_string_with_u32_len(spb: StreamPeerBuffer) -> String:
 	var str_bytes: PackedByteArray = read_bytes(spb, length)
 	if has_error():
 		return ""
-	var str_result: String = str_bytes.get_string_from_utf8()
-	# Empty result for non-empty bytes that also fail ASCII decode = malformed UTF-8.
-	# (A legitimate embedded NUL is valid UTF-8 and is intentionally allowed.)
-	if str_result.is_empty() and length > 0 and str_bytes.get_string_from_ascii().is_empty():
-		_set_error("Failed to decode UTF-8 string length %d" % length, start_pos)
-		return ""
-	return str_result
+	# A length-prefixed byte run that read fully is valid at the wire level. Godot's
+	# String is NUL-terminated, so get_string_from_utf8() truncates at a leading or
+	# embedded NUL byte (U+0000) — a Godot representation limit, NOT a wire error.
+	# Return the decoded value as-is and do NOT raise a fatal error here: a fatal
+	# error propagates to the framing loop, which drops the ENTIRE pending packet
+	# (every batched message with it) over one NUL-containing string field. On
+	# genuinely malformed UTF-8, get_string_from_utf8() yields "" — graceful
+	# degradation is far cheaper than tearing down the whole message batch.
+	return str_bytes.get_string_from_utf8()
 
 
 func read_identity(spb: StreamPeerBuffer) -> PackedByteArray:

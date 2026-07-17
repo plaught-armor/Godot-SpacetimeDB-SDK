@@ -208,32 +208,16 @@ func write_rust_enum(rust_enum: RustEnum) -> void:
 		return
 	var sub_class: StringName = enum_options[rust_enum.value]
 	var data: Variant = rust_enum.data
-	if sub_class.begins_with("vec_"):
-		if data is not Array:
-			_set_error("Sum type of rust enum is Vec<T> but the godot type is not an array.")
-			return
-		var vec_type: StringName = sub_class.right(-4)
-		# If it's an Option type, we need to remove the opt prefix for the serializer
-		# This is a special case, the enum needs more info for the deserializer
-		if vec_type.begins_with("opt_"):
-			vec_type = vec_type.right(-4)
-		_write_value_from_bsatn_type(data, vec_type, &"")
-		return
-	if sub_class.begins_with("opt_"):
-		if data is not Option:
-			_set_error("Sum type of rust enum is Option<T> but the godot type is not an Option.")
-			return
-		var opt_type: StringName = sub_class.right(-4)
-		# If it's a Vec type, we need to remove the vec prefix for the serializer
-		# This is a special case, the enum needs more info for the deserializer
-		if opt_type.begins_with("vec_"):
-			opt_type = opt_type.right(-4)
-		_write_value_from_bsatn_type(data, opt_type, &"")
-		return
-	if not sub_class.is_empty():
-		if data == null:
-			data = _generate_default_type(sub_class)
-		_write_value_from_bsatn_type(data, sub_class, &"")
+	if sub_class.is_empty():
+		return # unit variant — tag only, no payload
+	# Delegate WITHOUT stripping the vec_/opt_ prefix. Those prefixes carry the
+	# length/tag byte the reader expects, and _write_value_from_bsatn_type already
+	# recurses through them symmetrically with the deserializer's
+	# _read_value_from_bsatn_type. Stripping the prefix here dropped that tag and
+	# desynced the wire for Option-carrying variants (opt_T / vec_opt_T).
+	if data == null and not (sub_class.begins_with(&"vec_") or sub_class.begins_with(&"opt_")):
+		data = _generate_default_type(sub_class)
+	_write_value_from_bsatn_type(data, sub_class, &"")
 
 
 ## Writes an option value
