@@ -5,11 +5,17 @@ This product includes software developed by Clockwork Labs, Inc as part of the
 SpacetimeDB project (https://github.com/clockworklabs/SpacetimeDB), licensed
 under the Apache License, Version 2.0 (see LICENSE).
 
-This directory is a vendored, unmodified copy of the Rust server source from:
+This directory is a vendored copy of the Rust server source from:
 
     SpacetimeDB monorepo, demo/Blackholio/server-rust
     commit 353557cede4dd8cab1dd0a31f93677e175609bda (tag v2.6.0-26-g353557ced)
 
-The only local change is the dependency pin in Cargo.toml
-(spacetimedb = "2.5.0") so the module builds against the SpacetimeDB CLI
-version this SDK is tested with. See README.md for rationale.
+Local changes to the upstream source (Apache-2.0 section 4(b)):
+
+  1. Cargo.toml — dependency pinned to spacetimedb = "2.5.0", so the module
+     builds against the SpacetimeDB CLI version this SDK is tested with.
+  2. src/lib.rs — added a `probe_vector3` procedure and its `Vector3` type,
+     used only by the SDK's wire-fixture tests. Marked in-file. No upstream
+     code was altered or removed.
+
+See README.md for rationale.

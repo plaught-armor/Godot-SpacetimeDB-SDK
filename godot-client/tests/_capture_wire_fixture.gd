@@ -13,10 +13,12 @@
 #   wire_snapshot.bin — the subscription snapshot (SubscribeApplied + rows)
 #   wire_txn.bin      — a transaction update carrying a reducer event, produced by
 #                       calling enter_game while subscribed
+#   wire_procedure.bin — a value-returning procedure response (probe_vector3)
 extends Node
 
 const SNAPSHOT_PATH: String = "res://tests/fixtures/wire_snapshot.bin"
 const TXN_PATH: String = "res://tests/fixtures/wire_txn.bin"
+const PROC_PATH: String = "res://tests/fixtures/wire_procedure.bin"
 
 var _file: FileAccess
 var _count: int = 0
@@ -34,16 +36,22 @@ func _ready() -> void:
 func _on_connected(_identity: PackedByteArray, _token: String) -> void:
 	SpacetimeDB.Blackholio._connection.message_received.connect(_on_packet)
 
+	# publish.sh republishes with --delete-data, so give the module's scheduled
+	# food spawner a moment to seed entities before snapshotting one.
+	await get_tree().create_timer(3.0).timeout
+
 	# 1. Subscription snapshot. Narrow queries so the fixture stays small; the
 	#    entity filter still yields a row with a real nested DbVector2.
 	_open(SNAPSHOT_PATH)
 	var sub: SpacetimeDBSubscription = SpacetimeDB \
 			.Blackholio \
-			.subscribe([
-				"SELECT * FROM config",
-				"SELECT * FROM player",
-				"SELECT * FROM entity WHERE entity_id = 1",
-			])
+			.subscribe(
+		[
+			"SELECT * FROM config",
+			"SELECT * FROM player",
+			"SELECT * FROM entity WHERE entity_id = 1",
+		]
+	)
 	await sub.wait_for_applied(10.0)
 	await get_tree().create_timer(0.5).timeout
 	_close("snapshot")
@@ -54,6 +62,14 @@ func _on_connected(_identity: PackedByteArray, _token: String) -> void:
 	await call.wait_for_response(10.0)
 	await get_tree().create_timer(3.0).timeout
 	_close("txn")
+
+	# 3. Procedure return. The shape that shipped broken: a value-returning
+	#    procedure, whose Result<T, E> the decoder could not resolve at all.
+	_open(PROC_PATH)
+	var proc: SpacetimeDBProcedureCall = SpacetimeDB.Blackholio.procedures.probe_vector_3()
+	await proc.wait_for_response(10.0)
+	await get_tree().create_timer(0.5).timeout
+	_close("procedure")
 
 	get_tree().quit()
 

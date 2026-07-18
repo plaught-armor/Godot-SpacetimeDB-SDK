@@ -10,12 +10,19 @@ Vendored from the SpacetimeDB monorepo, `demo/Blackholio/server-rust`
 (commit `353557cede4dd8cab1dd0a31f93677e175609bda`). Copyright Clockwork Labs,
 Inc; Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
-The source is unmodified. The **only** local change is the dependency pin in
-`Cargo.toml`:
+Upstream gameplay code is unaltered. There are two local additions, both marked
+in-file and recorded in [`NOTICE`](NOTICE) per Apache-2.0 section 4(b):
 
-```toml
-spacetimedb = "2.5.0"
-```
+1. The dependency pin in `Cargo.toml`:
+
+   ```toml
+   spacetimedb = "2.5.0"
+   ```
+
+2. A `probe_vector3` procedure in `src/lib.rs`, appended at the end of the file.
+   Nothing in the game calls it — it exists so the SDK test suite can capture
+   real wire bytes for a value-returning procedure, the one shape stock
+   Blackholio does not exercise.
 
 ## Why vendored instead of cloning upstream
 

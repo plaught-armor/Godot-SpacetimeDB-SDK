@@ -611,3 +611,28 @@ pub fn circle_recombine(ctx: &ReducerContext, timer: CircleRecombineTimer) -> Re
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// LOCAL ADDITION (not present in upstream Blackholio) — see NOTICE.
+//
+// A procedure returning a native array-like type, so the SDK's test suite can
+// capture real wire bytes for a value-returning procedure. Nothing in the game
+// calls it. Stock Blackholio has no value-returning procedure, which is exactly
+// why a decode bug on that path shipped undetected: every synthetic test passed.
+// ---------------------------------------------------------------------------
+
+#[derive(spacetimedb::SpacetimeType, Debug, Clone, Copy)]
+pub struct Vector3 {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+#[spacetimedb::procedure]
+pub fn probe_vector3(_ctx: &mut spacetimedb::ProcedureContext) -> Result<Vector3, String> {
+    Ok(Vector3 {
+        x: 1.5,
+        y: -2.25,
+        z: 3.75,
+    })
+}

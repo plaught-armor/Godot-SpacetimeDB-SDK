@@ -19,6 +19,9 @@ extends SceneTree
 
 const FIXTURE: String = "res://tests/fixtures/wire_snapshot.bin"
 const TXN_FIXTURE: String = "res://tests/fixtures/wire_txn.bin"
+const PROC_FIXTURE: String = "res://tests/fixtures/wire_procedure.bin"
+# What blackholio-server's probe_vector3 procedure returns.
+const EXPECTED_VECTOR: Vector3 = Vector3(1.5, -2.25, 3.75)
 # Set by the module's init reducer — the value the server actually holds.
 const EXPECTED_WORLD_SIZE: int = 1000
 
@@ -28,6 +31,7 @@ var _total: int = 0
 func _initialize() -> void:
 	var fails: int = _test_real_frames_decode()
 	fails += _test_real_transaction_decodes()
+	fails += _test_real_procedure_return_decodes()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -158,6 +162,62 @@ func _test_real_transaction_decodes() -> int:
 			if String(table.table_name) == "player":
 				player_inserts += table.inserts.size()
 	f += _check_i("enter_game inserted the player row", player_inserts, 1)
+	return f
+
+
+# The path that shipped broken. A value-returning procedure returns Result<T, E>,
+# which has no named Typespace entry — the synthesized type was flushed before
+# returns were parsed, so the decoder was pointed at a type that did not exist and
+# every such call failed. Synthetic tests could not see it; these are real bytes.
+func _test_real_procedure_return_decodes() -> int:
+	var frames: Array[PackedByteArray] = _frames(PROC_FIXTURE)
+	var f: int = _check_b("procedure fixture has frames", frames.is_empty(), false)
+	if frames.is_empty():
+		return f
+
+	var deserializer: BSATNDeserializer = BSATNDeserializer.new(
+		SpacetimeDBSchema.new("Blackholio"),
+		false,
+	)
+	var payloads: Array[PackedByteArray] = []
+	for frame: PackedByteArray in frames:
+		for msg: SpacetimeDBServerMessage in deserializer.process_bytes_and_extract_messages(
+			frame.slice(1)
+		):
+			if msg is ProcedureResultData:
+				payloads.append((msg as ProcedureResultData).return_bytes)
+
+	f += _check_b("no decode error on real bytes", deserializer.has_error(), false)
+	f += _check_b("decoded a procedure result", payloads.is_empty(), false)
+	if payloads.is_empty():
+		return f
+
+	# Decode the Result<Vector3, String> payload the same way a generated call does.
+	var value_deserializer: BSATNDeserializer = BSATNDeserializer.new(
+		SpacetimeDBSchema.new("Blackholio"),
+		false,
+	)
+	var buffer: StreamPeerBuffer = StreamPeerBuffer.new()
+	buffer.big_endian = false
+	buffer.data_array = payloads[0]
+	buffer.seek(0)
+	var decoded: Variant = value_deserializer._read_value_from_bsatn_type(
+		buffer,
+		&"BlackholioResultVector3String",
+		&"procedure_return",
+	)
+	f += _check_b("Result payload resolved", decoded != null, true)
+	if decoded == null:
+		printerr("      decode error: %s" % value_deserializer.get_last_error())
+		return f
+	var ok_value: Variant = decoded.get_ok()
+	f += _check_b("ok variant holds a Vector3", ok_value is Vector3, true)
+	if ok_value is Vector3:
+		f += _check_b(
+			"procedure return round-trips off the wire (%s)" % [ok_value],
+			(ok_value as Vector3).is_equal_approx(EXPECTED_VECTOR),
+			true,
+		)
 	return f
 
 

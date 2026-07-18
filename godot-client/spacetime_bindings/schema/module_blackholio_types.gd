@@ -8,3 +8,4 @@ const Config = preload('res://spacetime_bindings/schema/types/blackholio_config.
 const Entity = preload('res://spacetime_bindings/schema/types/blackholio_entity.gd')
 const Food = preload('res://spacetime_bindings/schema/types/blackholio_food.gd')
 const Player = preload('res://spacetime_bindings/schema/types/blackholio_player.gd')
+const ResultVector3String = preload('res://spacetime_bindings/schema/types/blackholio_result_vector_3_string.gd')
