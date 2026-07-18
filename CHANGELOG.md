@@ -16,14 +16,24 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   scan reports any two bindings that hash to the same UID (astronomically
   unlikely, but deterministic if it ever happened).
 
-- **Native array-like reducer and procedure returns.** A reducer or procedure
-  returning a `Vector3`, `Color`, `Quaternion` or any other native array-like type
-  can now be decoded; previously every such return failed with "Unsupported BSATN
-  type" regardless of what the wire held. Two gaps lined up: codegen emitted the
-  return's BSATN type without the component list that struct fields and reducer
-  params both already carried, and the decoder had no branch for that shape. The
-  suffix is applied to the base type before any wrapper prefix, so composed
-  returns come out as `opt_vector3[f32,f32,f32]` and decode correctly.
+- **Value-returning procedures now decode.** A procedure returning Rust's
+  idiomatic `Result<T, String>` previously could not be decoded at all: the call
+  succeeded and the bytes arrived intact, then decode failed with "Unsupported
+  BSATN type `ResultVector3String`". This affected every value-returning
+  procedure, not an edge case. `Result<T, E>` has no named Typespace entry, so the
+  parser synthesizes one per distinct pair — but that flush ran before returns were
+  parsed, leaving codegen pointing the decoder at a type that was never emitted.
+  Verified end to end against a live module.
+- **Native array-like returns and enum variant payloads.** A `Vector3`, `Color`,
+  `Quaternion` or any other native array-like type now carries its component list
+  (`vector3[f32,f32,f32]`) when it appears as a return type or as an enum/`Result`
+  variant payload; without it the decoder had no component types to read. The
+  suffix is applied to the base type before any wrapper prefix, so composed forms
+  come out as `opt_vector3[f32,f32,f32]` and decode correctly. Struct fields and
+  call parameters already carried it.
+  > Note: this is reachable via **procedures only**. The Rust macro rejects a
+  > non-unit reducer return outright (`is not a valid reducer return type`), so a
+  > reducer cannot return one of these in the first place.
 
 ### Fixed
 - **Truncated gzip frames are no longer silent.** `StreamPeerGZIP` consumes every
