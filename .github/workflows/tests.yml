@@ -1,0 +1,59 @@
+name: Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes an in-flight run redundant.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Matches config/features in godot-client/project.godot ("4.7").
+  GODOT_VERSION: 4.7.1-stable
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Godot binary
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/godot-bin
+          key: godot-${{ env.GODOT_VERSION }}-linux-x86_64
+
+      - name: Download Godot
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/godot-bin
+          url="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          curl -fsSL --retry 3 -o /tmp/godot.zip "$url"
+          unzip -q /tmp/godot.zip -d ~/godot-bin
+          mv "$HOME/godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64" "$HOME/godot-bin/godot"
+          chmod +x ~/godot-bin/godot
+
+      - name: Report Godot version
+        run: ~/godot-bin/godot --headless --version
+
+      # run_tests.sh imports on its own when the class cache is stale, but doing it
+      # as its own step keeps an import failure from surfacing as a test failure.
+      # Godot can exit non-zero on import warnings, hence `|| true` — a genuinely
+      # broken import still fails loudly in the test step that follows.
+      - name: Warm import cache
+        working-directory: godot-client
+        run: ~/godot-bin/godot --headless --path . --import || true
+
+      - name: Run test suite
+        working-directory: godot-client
+        env:
+          GODOT_BIN: /home/runner/godot-bin/godot
+        run: ./run_tests.sh

@@ -1,0 +1,74 @@
+name: Benches
+
+# Benches are not correctness gates and some take minutes each, so they do not
+# run per push. They DO rot silently, though: bench_e2e_receive sat broken for
+# weeks after the MAX_VEC_LEN guard landed, because its 200k row count exceeded
+# the new cap and nothing ever ran it. This job only asserts each bench still
+# executes — it does not compare numbers, which are machine-dependent.
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: benches-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.7.1-stable
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Godot binary
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/godot-bin
+          key: godot-${{ env.GODOT_VERSION }}-linux-x86_64
+
+      - name: Download Godot
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/godot-bin
+          url="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          curl -fsSL --retry 3 -o /tmp/godot.zip "$url"
+          unzip -q /tmp/godot.zip -d ~/godot-bin
+          mv "$HOME/godot-bin/Godot_v${GODOT_VERSION}_linux.x86_64" "$HOME/godot-bin/godot"
+          chmod +x ~/godot-bin/godot
+
+      - name: Warm import cache
+        working-directory: godot-client
+        run: ~/godot-bin/godot --headless --path . --import || true
+
+      - name: Smoke-run every bench
+        working-directory: godot-client
+        run: |
+          set -uo pipefail
+          failed=0
+          for b in tests/bench_*.gd; do
+            name="$(basename "$b")"
+            start=$(date +%s)
+            timeout 900 ~/godot-bin/godot --headless --path . --script "$b" > /tmp/bench.log 2>&1
+            rc=$?
+            elapsed=$(( $(date +%s) - start ))
+            if [ "$rc" -eq 0 ]; then
+              echo "OK    $name  ${elapsed}s"
+            else
+              echo "FAIL  $name (exit $rc)  ${elapsed}s"
+              tail -25 /tmp/bench.log
+              failed=$((failed + 1))
+            fi
+          done
+          echo "---"
+          if [ "$failed" -ne 0 ]; then
+            echo "$failed bench(es) failed to run"
+            exit 1
+          fi
+          echo "all benches ran"
