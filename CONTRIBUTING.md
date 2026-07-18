@@ -61,7 +61,21 @@ not register the generated `class_name`s as project globals.
 
 ## Code style
 
-- Follow the [official GDScript style guide](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_styleguide.html).
+Baseline is the [official GDScript style guide](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_styleguide.html).
+On top of that, this SDK follows
+[**gdscript-lint**](https://github.com/plaught-armor/gdscript-lint) — a rule
+corpus for the Godot 4 engine gotchas that `gdformat` and `gdtoolkit`'s `gdlint`
+don't cover: the things that compile fine and then break, leak, or silently
+corrupt at runtime. Each rule is tied to a Godot issue number where one exists,
+and every performance-motivated rule is benchmarked before it ships, so the
+rules are checkable rather than taste. `rules/index.md` in that repo is the map;
+the linter itself is a single zero-dependency Python file you can run locally.
+
+That matters more here than in a typical game project: an SDK's bugs surface in
+*other people's* projects, where they are far harder to trace back.
+
+The rules that come up most in this codebase:
+
 - Run `gdscript-formatter` on changed `.gd` files, then verify they still parse.
 - Static typing is mandatory: `var x: Type = value` (never `:=`), typed `for`
   loops, typed parameters and return values.
@@ -71,6 +85,10 @@ not register the generated `class_name`s as project globals.
 - Bracket access on known schemas (`data["key"]`), not `.get("key", default)`;
   reserve `.get()` for genuinely optional external data.
 - Check `is_instance_valid()` after any `await` that involves a `Node`.
+
+BSATN decoding is a genuine `Variant` boundary — decoded rows and row callbacks
+arrive untyped. Convert to the typed form at that boundary, then keep everything
+downstream typed.
 
 ## Pull requests
 
