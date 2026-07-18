@@ -22,7 +22,9 @@
 #       --script tests/test_codegen_golden.gd
 extends SceneTree
 
-const FIXTURES: Array[String] = ["vtypes", "vsum", "vtypes2", "vbtree"]
+# PackedStringArray (S6), not Array[String]. A plain var, not `const`: a const
+# Packed*Array reports a byte-count size and reads back wrong (C1 — never const one).
+var _fixtures: PackedStringArray = ["vtypes", "vsum", "vtypes2", "vbtree", "vreserved"]
 # Committed test inputs. NOT spacetime_bindings/codegen_debug/ — that dir is
 # gitignored (transient codegen dumps), so fixtures there are absent on a clean
 # clone. These live with the test and codegen never writes here.
@@ -39,7 +41,7 @@ func _initialize() -> void:
 	if regen:
 		print("REGEN mode — writing goldens, not asserting")
 
-	for module: String in FIXTURES:
+	for module: String in _fixtures:
 		_run_module(module, regen)
 
 	if regen:
@@ -128,7 +130,10 @@ func _check_orphans(module: String, generated_rels: Dictionary[String, bool]) ->
 		if not generated_rels.has(rel):
 			_total += 1
 			_fails += 1
-			printerr("FAIL  %s/%s — golden has no generated counterpart (codegen dropped it, or stale golden)" % [module, rel])
+			printerr(
+				"FAIL  %s/%s — golden has no generated counterpart (codegen dropped it, or stale golden)"
+				% [module, rel]
+			)
 
 
 ## Collects `.gd` file paths under [param base], relative to it. Depth-bounded (NASA rule 2).

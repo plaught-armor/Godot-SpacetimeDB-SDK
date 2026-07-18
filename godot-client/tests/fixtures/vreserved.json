@@ -1,0 +1,67 @@
+{
+	"sections": [
+		{
+			"Typespace": {
+				"types": [
+					{
+						"Product": {
+							"elements": [
+								{ "name": { "some": "func" }, "algebraic_type": { "U32": [] } },
+								{ "name": { "some": "signal" }, "algebraic_type": { "U32": [] } },
+								{ "name": { "some": "class" }, "algebraic_type": { "U32": [] } }
+							]
+						}
+					}
+				]
+			}
+		},
+		{
+			"Types": [
+				{ "source_name": { "scope": [], "source_name": "Thing" }, "ty": 0 }
+			]
+		},
+		{
+			"Tables": [
+				{
+					"source_name": "signal",
+					"product_type_ref": 0,
+					"primary_key": [0],
+					"indexes": [
+						{
+							"source_name": { "some": "signal_class_idx_btree" },
+							"accessor_name": { "some": "class" },
+							"algorithm": { "BTree": [2] }
+						}
+					],
+					"constraints": [
+						{ "source_name": { "some": "signal_func_key" }, "data": { "Unique": { "columns": [0] } } }
+					]
+				},
+				{
+					"source_name": "alpha",
+					"product_type_ref": 0,
+					"primary_key": [0],
+					"indexes": [],
+					"constraints": [
+						{ "source_name": { "some": "alpha_func_key" }, "data": { "Unique": { "columns": [0] } } }
+					]
+				}
+			]
+		},
+		{
+			"Reducers": [
+				{
+					"source_name": "match",
+					"params": {
+						"elements": [
+							{ "name": { "some": "id" }, "algebraic_type": { "U32": [] } }
+						]
+					},
+					"visibility": { "ClientCallable": [] },
+					"ok_return_type": { "Product": { "elements": [] } },
+					"err_return_type": { "String": [] }
+				}
+			]
+		}
+	]
+}

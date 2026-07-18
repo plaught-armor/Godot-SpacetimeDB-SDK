@@ -96,6 +96,12 @@ static func _gd_type_from_nested(nested_type: Array, base_gd_type: String) -> St
 	return base_gd_type
 
 
+## Sorts [name, is_public] pairs by name (strict, deterministic). Table names are
+## unique per module, so there is no tie to break (C11 strict `<`).
+static func _sort_pair_by_name(a: Array, b: Array) -> bool:
+	return a[0] < b[0]
+
+
 ## Escapes a field/param name if it collides with a GDScript reserved word.
 static func _safe_name(field_name: String) -> String:
 	if field_name in GDSCRIPT_RESERVED_WORDS:
@@ -113,9 +119,11 @@ static func _format_create_param(x: Array) -> String:
 	return "p_%s: %s" % [x[0], x[1]]
 
 
-## Formats an enum variant name as an `Options` member line.
+## Formats an enum variant name as an `Options` member line. Sanitized so a variant
+## named a GDScript keyword doesn't break the `enum Options { ... }` body; the wire
+## name is preserved separately in parse_enum_name (kept raw).
 static func _format_enum_variant_member(x: Dictionary) -> String:
-	return "\t%s," % [x.get("name", "")]
+	return "\t%s," % [_safe_name(x.get("name", ""))]
 
 
 ## Extracts a safe parameter name from a reducer/procedure param dict.
@@ -351,12 +359,21 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			var generated_table_names: Array[String]
 			if type_def.has("table_names"):
 				var table_names_arr: Array = type_def.get("table_names", [])
-				for i in table_names_arr.size():
-					var tbl_name: String = table_names_arr[i]
-					if _plugin_config.module_configs[module_name].hide_private_tables and not type_def.get("is_public", [])[i]:
-						SpacetimePlugin.print_log("Skipping private table %s" % tbl_name)
+				var is_public_arr: Array = type_def.get("is_public", [])
+				# Sort the (name, is_public) pairs jointly by table name so the emitted
+				# `const table_names` is byte-stable regardless of the server's HashMap
+				# iteration order — a single row type can back multiple tables (a struct
+				# with several #[table] attrs, or a view over an existing table's type).
+				# is_public rides in the pair so the private-table filter stays aligned.
+				var pairs: Array = []
+				for i: int in table_names_arr.size():
+					pairs.append([table_names_arr[i], is_public_arr[i] if i < is_public_arr.size() else true])
+				pairs.sort_custom(_sort_pair_by_name)
+				for pair: Array in pairs:
+					if _plugin_config.module_configs[module_name].hide_private_tables and not pair[1]:
+						SpacetimePlugin.print_log("Skipping private table %s" % pair[0])
 						continue
-					generated_table_names.append(tbl_name)
+					generated_table_names.append(pair[0])
 
 			content = _generate_struct_gdscript(schema, type_def, generated_table_names)
 		elif type_def.has("enum"):
@@ -520,7 +537,10 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 
 func _generate_table_unique_index_gdscript(schema: SpacetimeParsedSchema, unique_index_def: Dictionary, table_def: Dictionary) -> String:
 	var table_name: String = table_def.get("name", "")
-	var field_name: String = unique_index_def.get("name", "")
+	# _safe_name at source: the class-name (to_pascal_case, unchanged by the suffix)
+	# and _field_name (row-property lookup) both derive from this and must match the
+	# sanitized names the table wrapper emits.
+	var field_name: String = _safe_name(unique_index_def.get("name", ""))
 	var original_field_type: String = unique_index_def.get("type", "Variant")
 	var field_type: String = schema.type_map.get(original_field_type, "Variant")
 	var type_def: Dictionary = _get_type_def(schema, table_def.get("type_idx", -1)) if table_def.has("type_idx") else { }
@@ -544,7 +564,8 @@ func _generate_table_unique_index_gdscript(schema: SpacetimeParsedSchema, unique
 
 func _generate_table_btree_index_gdscript(schema: SpacetimeParsedSchema, btree_index_def: Dictionary, table_def: Dictionary) -> String:
 	var table_name: String = table_def.get("name", "")
-	var field_name: String = btree_index_def.get("name", "")
+	# _safe_name at source (see the unique-index generator).
+	var field_name: String = _safe_name(btree_index_def.get("name", ""))
 	var original_field_type: String = btree_index_def.get("type", "Variant")
 	var field_type: String = schema.type_map.get(original_field_type, "Variant")
 	var type_def: Dictionary = _get_type_def(schema, table_def.get("type_idx", -1)) if table_def.has("type_idx") else { }
@@ -593,16 +614,19 @@ func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictiona
 	var type_def: Dictionary = _get_type_def(schema, table_def.get("type_idx", -1)) if table_def.has("type_idx") else { }
 	var original_type_name: String = type_def.get("name", "Variant")
 	var type_name: String = schema.type_map.get(original_type_name, "Variant")
+	# Key by the _safe_name: these keys become the index member var names + are matched
+	# against _table_scalar_fields (also _safe_name'd) to route the typed finders. The
+	# PascalCase class-name part is unaffected by keywords (keywords are lowercase).
 	var unique_index_fields: Dictionary[String, String] = { }
 	for unique_index_def in table_def.get("unique_indexes", []):
-		var field_name: String = unique_index_def.get("name", "")
+		var field_name: String = _safe_name(unique_index_def.get("name", ""))
 		var unique_index_class_name: String = "%s%s%sUniqueIndex" % \
 				[schema.module.to_pascal_case(), table_name.to_pascal_case(), field_name.to_pascal_case()]
 		unique_index_fields[field_name] = unique_index_class_name
 
 	var btree_index_fields: Dictionary[String, String] = { }
 	for btree_index_def in table_def.get("btree_indexes", []):
-		var field_name: String = btree_index_def.get("name", "")
+		var field_name: String = _safe_name(btree_index_def.get("name", ""))
 		var btree_index_class_name: String = "%s%s%sBTreeIndex" % \
 				[schema.module.to_pascal_case(), table_name.to_pascal_case(), field_name.to_pascal_case()]
 		btree_index_fields[field_name] = btree_index_class_name
@@ -854,7 +878,9 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 	# Assemble: header, then constants, then fields, then create func
 	var out: PackedStringArray = [header]
 	if not primary_key_name.is_empty():
-		out.append("const PRIMARY_KEY: StringName = &\"%s\"\n" % primary_key_name)
+		# _safe_name to match the @export property (fields are sanitized at line ~795);
+		# a PK column named a GDScript keyword would otherwise point at a missing property.
+		out.append("const PRIMARY_KEY: StringName = &\"%s\"\n" % _safe_name(primary_key_name))
 	if not bsatn_type_entries.is_empty():
 		out.append("const BSATN_TYPES: Dictionary[StringName, StringName] = { %s }\n" % ", ".join(bsatn_type_entries))
 	out.append("\n" + field_lines + "\n" + create_func_documentation_comment)
@@ -922,12 +948,12 @@ func _generate_enum_gdscript(schema: SpacetimeParsedSchema, type_def: Dictionary
 			)
 			create_funcs.append(
 				"static func create_%s(_data: %s) -> %s:\n" % [variant_name.to_snake_case(), variant_gd_type, _class_name] +
-				"\treturn create(Options.%s, _data)\n\n" % [variant_name],
+				"\treturn create(Options.%s, _data)\n\n" % [_safe_name(variant_name)],
 			)
 		else:
 			create_funcs.append(
 				"static func create_%s() -> %s:\n" % [variant_name.to_snake_case(), _class_name] +
-				"\treturn create(Options.%s)\n\n" % [variant_name],
+				"\treturn create(Options.%s)\n\n" % [_safe_name(variant_name)],
 			)
 
 	out.append("".join(get_funcs))
@@ -995,13 +1021,20 @@ func _generate_db_gdscript(module_name: String, schema: SpacetimeParsedSchema) -
 	out.append("class_name %sModuleDb extends RefCounted\n\n" % schema.module.to_pascal_case())
 	out.append("const table_names : Array[StringName] = [%s]\n\n" % ", ".join(table_names))
 	for table_name in tables:
-		out.append("var %s: %s\n" % [table_name.to_snake_case(), tables[table_name]])
+		# _safe_name the member (a table named a keyword breaks `var <kw>:`); the
+		# preload path below keeps the raw snake_case that names the file on disk.
+		out.append("var %s: %s\n" % [_safe_name(table_name.to_snake_case()), tables[table_name]])
 
 	out.append("\nfunc _init(p_local_db: LocalDatabase) -> void:\n")
 	for table_name in tables:
 		out.append(
 			"\t%s = preload('%s/tables/%s_%s_table.gd').new(p_local_db)\n"
-			% [table_name.to_snake_case(), _schema_path, schema.module.to_snake_case(), table_name.to_snake_case()],
+			% [
+				_safe_name(table_name.to_snake_case()),
+				_schema_path,
+				schema.module.to_snake_case(),
+				table_name.to_snake_case(),
+			],
 		)
 
 	return "".join(out)
@@ -1105,8 +1138,10 @@ func _generate_reducers_gdscript(module_name: String, schema: SpacetimeParsedSch
 
 		out.append("\n".join(description_comment) + "\n")
 		var reducer_name: String = reducer.get("name", "")
+		# Sanitize the GDScript function name (a reducer named a keyword breaks parse);
+		# the call_reducer() string keeps the raw wire name.
 		out.append(
-			"func %s(%s) -> SpacetimeDBReducerCall:\n" % [reducer_name, params_str] +
+			"func %s(%s) -> SpacetimeDBReducerCall:\n" % [_safe_name(reducer_name), params_str] +
 			"\treturn _client.call_reducer('%s', [%s], [%s], &'%s')\n\n" %
 			[reducer_name, param_names_str, param_bsatn_types_str, ret_bsatn_type],
 		)
@@ -1179,8 +1214,10 @@ func _generate_procedures_gdscript(_module_name: String, schema: SpacetimeParsed
 
 		out.append("\n".join(description_comment) + "\n")
 		var proc_name: String = proc.get("name", "")
+		# Sanitize the GDScript function name (a procedure named a keyword breaks parse);
+		# the call_procedure() string keeps the raw wire name.
 		out.append(
-			"func %s(%s) -> SpacetimeDBProcedureCall:\n" % [proc_name, params_str] +
+			"func %s(%s) -> SpacetimeDBProcedureCall:\n" % [_safe_name(proc_name), params_str] +
 			"\treturn _client.call_procedure('%s', [%s], [%s], &'%s')\n\n" %
 			[proc_name, param_names_str, param_bsatn_types_str, ret_bsatn_type],
 		)

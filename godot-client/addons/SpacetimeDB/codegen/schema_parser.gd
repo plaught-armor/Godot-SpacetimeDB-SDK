@@ -253,8 +253,10 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			_set_gd_native(type_name, type_data)
 
 		var ty_idx: int = int(type_info.get("ty", -1))
-		if ty_idx == -1:
-			SpacetimePlugin.print_err("Invalid schema: Type 'ty' not found for type: %s" % type_info)
+		# `< 0` (not just `== -1`): any negative would otherwise index typespace from
+		# the tail via Godot's negative-index rule and read the wrong type definition.
+		if ty_idx < 0:
+			SpacetimePlugin.print_err("Invalid schema: Type 'ty' missing/negative for type: %s" % type_info)
 			return parsed_schema
 		if ty_idx >= typespace.size():
 			SpacetimePlugin.print_err("Invalid schema: Type index %d out of bounds for typespace (size %d) for type %s" % [ty_idx, typespace.size(), type_name])
@@ -357,7 +359,9 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		var ref_idx: int = int(ref_idx_raw)
 
 		var original_type_name_for_table: String = "UNKNOWN_TYPE_FOR_TABLE"
-		if ref_idx < schema_types_raw.size():
+		# Lower-bound guard: a negative ref would index from the tail via Godot's
+		# negative-index rule and silently bind the table to the wrong row type.
+		if ref_idx >= 0 and ref_idx < schema_types_raw.size():
 			original_type_name_for_table = schema_types_raw[ref_idx].get("name", { }).get("name")
 		var target_type_idx: int = _find_type_index(original_type_name_for_table, parsed_types_list)
 		var target_type_def: Dictionary = parsed_types_list[target_type_idx] if target_type_idx >= 0 else { }
