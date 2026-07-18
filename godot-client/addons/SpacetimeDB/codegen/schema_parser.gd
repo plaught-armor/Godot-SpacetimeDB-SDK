@@ -115,6 +115,9 @@ static func _first_key(d: Dictionary) -> String:
 		return k
 	return ""
 
+# NOTE: the synthesized names ("ResultI32String" and friends) are effectively
+# RESERVED — a user type declared with the same spelling collides, and the flush
+# below appends over it rather than yielding.
 # Synthesized sum types for anonymous inline `Result<T, E>` columns, accumulated by
 # _parse_field_type during a parse and flushed into the type list afterward. Anonymous
 # inline sums (the only ones are Option — handled separately — and Result) have no named
@@ -658,6 +661,31 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			new_table_dict["name"] = name
 			new_table_dict["is_public"] = true
 		parsed_tables_list.append(new_table_dict)
+
+	# Second flush. The one above runs before reducers and procedures are parsed, so
+	# a Result<T, E> first seen in a RETURN type registered after it and was never
+	# emitted — codegen still referenced the synthesized name, leaving the decoder to
+	# fail with "Unsupported BSATN type 'ResultVector3String'" on every value-returning
+	# procedure. Skips names the first flush already took.
+	for synth_name: String in _synth_result_types:
+		if type_map.has(synth_name):
+			continue
+		parsed_types_list.append(_synth_result_types[synth_name])
+		var synth_class: String = module_name.to_pascal_case() + synth_name.to_pascal_case()
+		type_map[synth_name] = synth_class
+		meta_type_map[synth_name] = synth_class
+
+	# Return type_idx could not resolve for anything the second flush just added, so
+	# fill those in now that the types exist.
+	for call_data: Dictionary in parsed_reducers_list + parsed_procedures_list:
+		if call_data.has("return_type_idx"):
+			continue
+		var ret_type: String = call_data.get("return_type", "")
+		if ret_type.is_empty() or GDNATIVE_PRIMITIVE_TYPES.has(ret_type) or DEFAULT_TYPE_MAP.has(ret_type):
+			continue
+		var idx: int = _find_type_index(ret_type, parsed_types_list)
+		if idx >= 0:
+			call_data["return_type_idx"] = idx
 
 	# Sort the output lists by name so binding generation is deterministic
 	# regardless of the server's per-publish section order. Types stay in `ty`

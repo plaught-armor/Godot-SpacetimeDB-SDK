@@ -159,13 +159,30 @@ func _param_to_bsatn_type(schema: SpacetimeParsedSchema, param: Dictionary) -> S
 
 
 ## Returns the BSATN enum option string for a variant definition.
-static func _variant_to_enum_option(variant: Dictionary, meta_type_map: Dictionary) -> String:
+static func _variant_to_enum_option(variant: Dictionary, schema: SpacetimeParsedSchema) -> String:
 	var type: String = variant.get("type", "")
-	var rust_type: String = meta_type_map.get(type, type)
+	var rust_type: String = schema.meta_type_map.get(type, type)
+	# Variants carry no type_idx, so resolve the payload by name. Without this a
+	# Result<Vector3, String> emits a bare "vector3" and the decoder has no component
+	# types to read — the same gap returns had before _with_arraylike_components.
+	rust_type = _with_arraylike_components_by_name(schema, rust_type, type)
 	var variant_nested: Array = variant.get("nested_type", [])
 	if not variant_nested.is_empty():
 		rust_type = SpacetimeCodegen._build_bsatn_type(variant_nested, rust_type, false)
 	return "&'%s'" % rust_type if not rust_type.is_empty() else "&''"
+
+
+## [method _with_arraylike_components] keyed by type name rather than index, for the
+## call sites that have no type_idx to hand (enum/Result variant payloads).
+static func _with_arraylike_components_by_name(
+	schema: SpacetimeParsedSchema, base_meta: String, type_name: String
+) -> String:
+	if type_name.is_empty():
+		return base_meta
+	for i: int in schema.types.size():
+		if schema.types[i].get("name", "") == type_name:
+			return _with_arraylike_components(schema, base_meta, i)
+	return base_meta
 
 
 ## Safely accesses schema.types by index, returning an empty Dictionary if out of bounds.
@@ -918,7 +935,7 @@ func _generate_enum_gdscript(schema: SpacetimeParsedSchema, type_def: Dictionary
 	var variant_names: String = "\n".join(variants.map(_format_enum_variant_member))
 
 	var _class_name: String = schema.module.to_pascal_case() + enum_name.to_pascal_case()
-	var enum_options_list: Array = variants.map(func(x): return _variant_to_enum_option(x, schema.meta_type_map))
+	var enum_options_list: Array = variants.map(func(x): return _variant_to_enum_option(x, schema))
 	var enum_options_entries: String = ", ".join(enum_options_list)
 
 	var out: PackedStringArray = [
