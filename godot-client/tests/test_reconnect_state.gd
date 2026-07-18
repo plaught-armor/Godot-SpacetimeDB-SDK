@@ -2,8 +2,9 @@
 #
 #   1. disconnect_db() while the socket is already closed (e.g. cancelled mid-backoff
 #      during a reconnect) must still emit `disconnected` — disconnect_from_server()
-#      would be a no-op and emit nothing, so the client surfaces it directly. It must
-#      also clear the intentional-disconnect flag so it can't poison a later event.
+#      would be a no-op and emit nothing, so the client surfaces it directly. And it
+#      must be idempotent: a second disconnect_db() does not re-fire the terminal
+#      signal (at-most-once per session).
 #   2. _finish_resubscribe(epoch) must only clear the saved queries and emit
 #      `reconnected` when its epoch is still current — a superseded reconnect cycle's
 #      late settle does nothing.
@@ -42,7 +43,9 @@ func _test_disconnect_while_closed() -> int:
 	# No _connection assigned → socket is "closed"; disconnect_db must self-emit.
 	client.disconnect_db()
 	f += _check_i("disconnect while closed → disconnected once", _disconnected_count, 1)
-	f += _check_b("intentional flag cleared", client._intentional_disconnect, false)
+	# Idempotent: a second disconnect_db must NOT re-fire the terminal signal.
+	client.disconnect_db()
+	f += _check_i("second disconnect_db → still once", _disconnected_count, 1)
 
 	client.disconnected.disconnect(_on_disconnected)
 	client.free()
@@ -67,6 +70,11 @@ func _test_finish_resubscribe_epoch_guard() -> int:
 	client._finish_resubscribe(5)
 	f += _check_i("current epoch → reconnected once", _reconnected_count, 1)
 	f += _check_i("current epoch → saved cleared", client._saved_subscription_queries.size(), 0)
+
+	# _finish_resubscribe bumps the epoch, so a repeat (a late settle or the watchdog
+	# timer that both call it) must NOT re-fire reconnected.
+	client._finish_resubscribe(5)
+	f += _check_i("repeat finish → no second reconnected", _reconnected_count, 1)
 
 	client.reconnected.disconnect(_on_reconnected)
 	client.free()

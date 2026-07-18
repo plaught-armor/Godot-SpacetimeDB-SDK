@@ -57,6 +57,9 @@ func _initialize() -> void:
 	f += _test_disconnect_db_closes_handshake_socket()
 	f += _test_late_identity_token_does_not_restore_wiped_token()
 	f += _test_decode_uses_separate_deserializer()
+	f += _test_disconnect_db_stamps_pending_calls()
+	f += _test_drop_stamps_pending_calls()
+	f += _test_deserializer_reset_stream_state()
 	f += _test_rest_api_sets_timeout()
 	f += _test_rest_timeout_routes_to_failure()
 
@@ -113,11 +116,6 @@ func _test_disconnect_db_closes_handshake_socket() -> int:
 
 	f += _check_b("disconnect mid-handshake: socket closed", conn.closed, true)
 	f += _check_i("disconnect mid-handshake: disconnected once", _disconnected_count, 1)
-	f += _check_b(
-		"disconnect mid-handshake: intentional flag cleared",
-		client._intentional_disconnect,
-		false,
-	)
 
 	client.disconnected.disconnect(_on_disconnected)
 	client.free()
@@ -171,6 +169,65 @@ func _test_decode_uses_separate_deserializer() -> int:
 	f += _check_i("decode uses _decode_deserializer (u32=42)", int(decoded), 42)
 
 	client.free()
+	return f
+
+
+# LOW: disconnect_db() must stamp still-PENDING reducer/procedure calls DISCONNECTED
+# so an awaiter gets that outcome instead of a misleading TIMEOUT.
+func _test_disconnect_db_stamps_pending_calls() -> int:
+	var f: int = 0
+	var client: SpacetimeDBClient = SpacetimeDBClient.new()
+	var call: SpacetimeDBReducerCall = SpacetimeDBReducerCall.create(client, 7)
+	client._pending_reducer_calls[7] = call
+	f += _check_b(
+		"pre: call is PENDING",
+		call.outcome == SpacetimeDBReducerCall.Outcome.PENDING,
+		true,
+	)
+
+	client.disconnect_db()
+
+	f += _check_b(
+		"disconnect_db stamps pending call DISCONNECTED",
+		call.outcome == SpacetimeDBReducerCall.Outcome.DISCONNECTED,
+		true,
+	)
+	f += _check_i("pending map cleared", client._pending_reducer_calls.size(), 0)
+
+	client.free()
+	return f
+
+
+# M2: an unintentional drop must stamp in-flight calls DISCONNECTED at the handler
+# (not later in _prepare_for_reconnect), so an awaiter doesn't self-stamp TIMEOUT.
+func _test_drop_stamps_pending_calls() -> int:
+	var f: int = 0
+	var client: SpacetimeDBClient = SpacetimeDBClient.new()
+	# No connection_options → the auto-reconnect branch is skipped; handler still stamps.
+	var call: SpacetimeDBReducerCall = SpacetimeDBReducerCall.create(client, 9)
+	client._pending_reducer_calls[9] = call
+
+	client._on_connection_disconnected()
+
+	f += _check_b(
+		"drop stamps pending call DISCONNECTED",
+		call.outcome == SpacetimeDBReducerCall.Outcome.DISCONNECTED,
+		true,
+	)
+
+	client.free()
+	return f
+
+
+# MED-1 seam: reset_stream_state() must drop buffered partial bytes + clear error.
+func _test_deserializer_reset_stream_state() -> int:
+	var f: int = 0
+	var d: BSATNDeserializer = BSATNDeserializer.new(null, false)
+	d._pending_data = PackedByteArray([1, 2, 3]) # simulate a partial-message prefix
+	d.reset_stream_state()
+
+	f += _check_b("reset clears _pending_data", d._pending_data.is_empty(), true)
+	f += _check_b("reset clears error state", d.has_error(), false)
 	return f
 
 

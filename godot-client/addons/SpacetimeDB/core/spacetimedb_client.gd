@@ -147,7 +147,17 @@ var _reconnect_attempt: int = 0
 ## the socket dropped from a local freeze, not a network fault). Consumed on the
 ## first scheduled attempt.
 var _reconnect_immediate: bool = false
-var _intentional_disconnect: bool = false
+# `disconnected` means "terminally disconnected" (not a transient drop that
+# auto-reconnect recovers), so it must fire at most once per session. Guards
+# against a server close + a cleanup disconnect_db(), or an exhausted reconnect +
+# disconnect_db(), double-firing. Re-armed when a fresh connect is requested.
+var _disconnected_emitted: bool = false
+## Watchdog bound for a resubscribe cycle: if the server accepts the Subscribe but
+## never delivers a settle (SubscribeApplied/SubscriptionError) for some query set,
+## the cycle would never complete and `reconnected` would never fire. After this it
+## is force-completed (epoch-guarded, so a finished/superseded cycle is a no-op).
+const RESUBSCRIBE_TIMEOUT_SECONDS: float = 15.0
+
 var _saved_subscription_queries: Array[PackedStringArray] = []
 ## Bumped on every new reconnect cycle (start/cancel/resubscribe). A resubscribe
 ## settle-callback captures the epoch live when it was armed and bails if the epoch
@@ -191,6 +201,7 @@ func initialize_and_connect() -> void:
 	if _is_initialized:
 		return
 
+	_disconnected_emitted = false # re-arm the terminal signal for this session
 	print_log("SpacetimeDBClient: Initializing...")
 
 	# 1. Load Schema
@@ -248,6 +259,7 @@ func initialize_and_connect() -> void:
 ## Pass a [SpacetimeDBConnectionOptions] to configure threading, compression, and reconnection.
 func connect_db(host_url: String, database_name: String, options: SpacetimeDBConnectionOptions = null) -> void:
 	_cancel_reconnection()
+	_disconnected_emitted = false # re-arm the terminal signal for this session
 	if not options:
 		options = SpacetimeDBConnectionOptions.new()
 	connection_options = options
@@ -286,7 +298,6 @@ func connect_db(host_url: String, database_name: String, options: SpacetimeDBCon
 
 ## Intentionally disconnects from the database. Does not trigger auto-reconnect.
 func disconnect_db() -> void:
-	_intentional_disconnect = true
 	_cancel_reconnection()
 	_token = ""
 	# Close the socket whenever the peer is live — including mid-handshake
@@ -294,12 +305,42 @@ func disconnect_db() -> void:
 	# STATE_OPEN) misses. Leaving a handshake running lets it emit connected after
 	# the user asked to stop, or trigger an auto-reconnect they cancelled.
 	# disconnect_from_server() clears the connection flags, so the later
-	# STATE_CLOSED tick stays silent (no rogue connection signal); the client
-	# surfaces the single terminal signal here.
+	# STATE_CLOSED tick stays silent (no rogue connection signal) — that is why the
+	# terminal signal is surfaced here instead of via the connection layer.
 	if _connection and _connection.is_websocket_active():
 		_connection.disconnect_from_server()
-	_intentional_disconnect = false
+	# Wake response waiters and stamp in-flight calls DISCONNECTED so an awaiter
+	# gets that outcome rather than a misleading TIMEOUT.
+	_response_wait_aborted.emit()
+	_fail_pending_calls_disconnected()
+	_emit_disconnected()
+
+
+# Idempotent terminal `disconnected`. See _disconnected_emitted: `disconnected`
+# fires at most once per session, so a server-initiated close (or an exhausted
+# reconnect) followed by a cleanup disconnect_db() does not double-fire it.
+func _emit_disconnected() -> void:
+	if _disconnected_emitted:
+		return
+	_disconnected_emitted = true
 	disconnected.emit()
+
+
+# Stamps every still-PENDING reducer/procedure call DISCONNECTED and clears the
+# pending maps. Shared by disconnect_db and the reconnect path.
+func _fail_pending_calls_disconnected() -> void:
+	for call_id: int in _pending_reducer_calls:
+		var handle: SpacetimeDBReducerCall = _pending_reducer_calls[call_id]
+		if handle.outcome == SpacetimeDBReducerCall.Outcome.PENDING:
+			handle.outcome = SpacetimeDBReducerCall.Outcome.DISCONNECTED
+			handle.error_message = "Connection lost during reducer call"
+	_pending_reducer_calls.clear()
+	for call_id: int in _pending_procedure_calls:
+		var handle: SpacetimeDBProcedureCall = _pending_procedure_calls[call_id]
+		if handle.outcome == SpacetimeDBProcedureCall.Outcome.PENDING:
+			handle.outcome = SpacetimeDBProcedureCall.Outcome.DISCONNECTED
+			handle.error_message = "Connection lost during procedure call"
+	_pending_procedure_calls.clear()
 
 
 ## Returns [code]true[/code] if the WebSocket is currently open.
@@ -537,9 +578,15 @@ func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdat
 
 	# Wait for response
 	var result: Variant = await _wait_for_response(request_id, _one_off_query_cache, one_off_query_received, timeout_seconds)
-	if result == null:
+	if not (result is Array):
 		return []
-	return result as Array[TableUpdateData]
+	# `result as Array[TableUpdateData]` would be a silent no-op (C14): the value came
+	# from an untyped Dictionary[int, Array], so the cast leaves it runtime-untyped.
+	# assign() actually produces a typed Array the caller's `: Array[TableUpdateData]`
+	# can rely on.
+	var rows: Array[TableUpdateData] = []
+	rows.assign(result)
+	return rows
 
 
 ## Awaits the reducer result for [param request_id_to_match], returning the [TransactionUpdateMessage] or [code]null[/code] on timeout.
@@ -723,6 +770,7 @@ func _on_websocket_message_received(raw_bytes: PackedByteArray) -> void:
 
 
 func _thread_loop() -> void:
+	var last_epoch: int = 0
 	while not _thread_should_exit:
 		_packet_semaphore.wait()
 		if _thread_should_exit:
@@ -738,6 +786,14 @@ func _thread_loop() -> void:
 		_packet_queue.clear()
 		var batch_epoch: int = _session_epoch
 		_packet_mutex.unlock()
+
+		# Fresh session (reconnect bumped the epoch): discard any trailing partial-
+		# message bytes the prior session left in the deserializer before parsing new
+		# bytes, or the first post-reconnect packet mis-parses against a stale prefix.
+		# _deserializer is worker-thread-only, so this needs no lock.
+		if batch_epoch != last_epoch:
+			_deserializer.reset_stream_state()
+			last_epoch = batch_epoch
 
 		# Parse all packets without holding any lock
 		var local_results: Array[SpacetimeDBServerMessage] = []
@@ -1088,9 +1144,17 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			for table_update: TableUpdateData in message.tables:
 				_local_db.apply_table_update(table_update, qid)
 		_local_db.forget_query(qid)
+		# Also handle a query unsubscribed before its SubscribeApplied arrived: its
+		# handle still sits in pending_subscriptions, and without this it would leak
+		# there forever and its `end` would never fire.
+		var sub: SpacetimeDBSubscription = null
 		if current_subscriptions.has(qid):
-			var sub: SpacetimeDBSubscription = current_subscriptions[qid]
+			sub = current_subscriptions[qid]
 			current_subscriptions.erase(qid)
+		elif pending_subscriptions.has(qid):
+			sub = pending_subscriptions[qid]
+			pending_subscriptions.erase(qid)
+		if sub:
 			sub.end.emit()
 		print_log("SpacetimeDBClient: Unsubscribe applied for query_id %d." % qid)
 
@@ -1155,11 +1219,15 @@ func _handle_transaction_update(update_sets: TransactionUpdateMessage) -> void:
 
 
 func _on_connection_disconnected() -> void:
+	# Only unintentional closes reach here: disconnect_db() closes via
+	# disconnect_from_server(), which clears the connection flags so the connection
+	# layer stays silent (no signal to this handler). So there is no intentional
+	# case to special-case.
 	_response_wait_aborted.emit()
-	if _intentional_disconnect:
-		_intentional_disconnect = false
-		disconnected.emit()
-		return
+	# Stamp in-flight calls DISCONNECTED now (not later in _prepare_for_reconnect,
+	# after the backoff) so an awaiter that resumes next frame gets DISCONNECTED
+	# instead of self-stamping TIMEOUT. The request ids won't survive the reconnect.
+	_fail_pending_calls_disconnected()
 
 	# A graceful server close (normal WS code) that lands during a reconnect
 	# attempt routes here, not through _on_connection_error (which only fires on
@@ -1173,16 +1241,12 @@ func _on_connection_disconnected() -> void:
 		print_log("SpacetimeDBClient: Unintentional disconnect, starting auto-reconnect.")
 		_start_reconnection()
 	else:
-		disconnected.emit()
+		_emit_disconnected()
 
 
 func _on_connection_error(code: int, reason: String) -> void:
 	_response_wait_aborted.emit()
-	if _intentional_disconnect:
-		_intentional_disconnect = false
-		connection_error.emit(code, reason)
-		return
-
+	_fail_pending_calls_disconnected() # awaiters get DISCONNECTED, not a late TIMEOUT
 	if _reconnect_state == _ReconnectState.RECONNECTING:
 		print_log("SpacetimeDBClient: Reconnect attempt %d failed: %s (code %d)" % [_reconnect_attempt, reason, code])
 		_schedule_next_reconnect_attempt()
@@ -1200,9 +1264,7 @@ func _on_connection_error(code: int, reason: String) -> void:
 ## the escalating backoff a genuine drop would warrant.
 func _on_connection_stalled(code: int) -> void:
 	_response_wait_aborted.emit()
-	if _intentional_disconnect:
-		_intentional_disconnect = false
-		return
+	_fail_pending_calls_disconnected() # awaiters get DISCONNECTED, not a late TIMEOUT
 	if _reconnect_state == _ReconnectState.RECONNECTING:
 		_reconnect_immediate = true # a stall during reconnect keeps the fast path
 		_schedule_next_reconnect_attempt()
@@ -1250,7 +1312,7 @@ func _schedule_next_reconnect_attempt() -> void:
 		_reconnect_attempt = 0
 		_saved_subscription_queries.clear()
 		reconnect_failed.emit()
-		disconnected.emit()
+		_emit_disconnected()
 		return
 
 	_reconnect_attempt += 1
@@ -1266,7 +1328,7 @@ func _schedule_next_reconnect_attempt() -> void:
 		printerr("SpacetimeDBClient: Cannot schedule reconnect — not in scene tree.")
 		_reconnect_state = _ReconnectState.IDLE
 		reconnect_failed.emit()
-		disconnected.emit()
+		_emit_disconnected()
 		return
 
 	_reconnect_timer = tree.create_timer(backoff)
@@ -1276,7 +1338,7 @@ func _schedule_next_reconnect_attempt() -> void:
 		printerr("SpacetimeDBClient: Failed to create reconnect timer.")
 		_reconnect_state = _ReconnectState.IDLE
 		reconnect_failed.emit()
-		disconnected.emit()
+		_emit_disconnected()
 
 
 func _calculate_backoff(attempt: int) -> float:
@@ -1301,7 +1363,7 @@ func _attempt_reconnect() -> void:
 		printerr("SpacetimeDBClient: Cannot reconnect — missing connection or token.")
 		_reconnect_state = _ReconnectState.IDLE
 		reconnect_failed.emit()
-		disconnected.emit()
+		_emit_disconnected()
 		return
 
 	_prepare_for_reconnect()
@@ -1318,24 +1380,11 @@ func _prepare_for_reconnect() -> void:
 		_local_db.clear_all_tables()
 
 	_reducer_result_cache.clear()
-	for call_id: int in _pending_reducer_calls:
-		var handle: SpacetimeDBReducerCall = _pending_reducer_calls[call_id]
-		if handle.outcome == SpacetimeDBReducerCall.Outcome.PENDING:
-			handle.outcome = SpacetimeDBReducerCall.Outcome.DISCONNECTED
-			handle.error_message = "Connection lost during reducer call"
-	_pending_reducer_calls.clear()
-
+	_procedure_result_cache.clear()
 	# Cleared so a post-reconnect request_id (counter resets to 0 below) can't read a
 	# stale pre-disconnect one-off result out of the cache.
 	_one_off_query_cache.clear()
-
-	_procedure_result_cache.clear()
-	for call_id: int in _pending_procedure_calls:
-		var handle: SpacetimeDBProcedureCall = _pending_procedure_calls[call_id]
-		if handle.outcome == SpacetimeDBProcedureCall.Outcome.PENDING:
-			handle.outcome = SpacetimeDBProcedureCall.Outcome.DISCONNECTED
-			handle.error_message = "Connection lost during procedure call"
-	_pending_procedure_calls.clear()
+	_fail_pending_calls_disconnected()
 
 	for sub: SpacetimeDBSubscription in pending_subscriptions.values():
 		sub.end.emit()
@@ -1418,12 +1467,49 @@ func _resubscribe_saved_queries() -> void:
 		sub.applied.connect(on_settled, CONNECT_ONE_SHOT)
 		sub.end.connect(on_settled, CONNECT_ONE_SHOT)
 
+	# Watchdog: a server that accepts a Subscribe but never settles one set would
+	# otherwise hang the cycle (reconnected never fires, saved set never clears).
+	# Force-complete after a timeout. Epoch-guarded via _finish_resubscribe, so a
+	# cycle that already settled or was superseded by a fresh reconnect is a no-op.
+	# Routed through a bound method-ref (not a lambda) so the timeout Callable carries
+	# Godot's freed-instance check — if the client is freed before the timer fires,
+	# the call safely no-ops instead of invoking on a dangling self.
+	var tree: SceneTree = get_tree()
+	if tree:
+		var watchdog: SceneTreeTimer = tree.create_timer(RESUBSCRIBE_TIMEOUT_SECONDS)
+		watchdog.timeout.connect(
+			_on_resubscribe_watchdog.bind(epoch, applied_count, total_sets),
+			CONNECT_ONE_SHOT,
+		)
+
+
+# Watchdog timeout for a resubscribe cycle. Bound with the cycle's captured epoch,
+# shared applied-count, and total set count. Force-completes the cycle only if it is
+# still current and unsettled; _finish_resubscribe is epoch-guarded so a settled or
+# superseded cycle is a no-op.
+# S6 ignored: applied_count is a shared mutable counter (`[0]`) read by reference so
+# the watchdog sees live on_settled updates; PackedInt32Array is copy-on-write and
+# would capture a stale copy at bind() time.
+func _on_resubscribe_watchdog(epoch: int, applied_count: Array[int], total_sets: int) -> void: # gdlint: ignore[S6]
+	if epoch == _resubscribe_epoch and applied_count[0] < total_sets:
+		push_warning(
+			(
+				"SpacetimeDBClient: resubscribe timed out (%d/%d settled) — completing anyway."
+				% [applied_count[0], total_sets]
+			)
+		)
+		_finish_resubscribe(epoch)
+
 
 ## Completes a resubscribe cycle: clears the saved set and emits [signal reconnected],
 ## but only if [param epoch] is still current — a superseded cycle does nothing.
 func _finish_resubscribe(epoch: int) -> void:
 	if epoch != _resubscribe_epoch:
 		return
+	# Supersede this cycle so a late settle OR the watchdog timer that also calls
+	# _finish_resubscribe can't re-fire reconnected (both compare their captured
+	# epoch to _resubscribe_epoch and bail once it moves).
+	_resubscribe_epoch += 1
 	_saved_subscription_queries.clear()
 	reconnected.emit()
 

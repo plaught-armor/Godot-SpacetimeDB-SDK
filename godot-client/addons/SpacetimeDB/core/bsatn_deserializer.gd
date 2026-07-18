@@ -87,6 +87,15 @@ func clear_error() -> void:
 	_status = ParseStatus.OK
 
 
+## Discards buffered partial-message bytes AND clears error state. Call on a session
+## boundary (reconnect) so the first fresh-session packet parses against an empty
+## framing buffer instead of a stale partial-message prefix from the dropped session.
+func reset_stream_state() -> void:
+	_pending_data.clear()
+	_last_error = ""
+	_status = ParseStatus.OK
+
+
 #--- Primitive Readers ---
 func read_i8(spb: StreamPeerBuffer) -> int:
 	if _status != ParseStatus.OK:
