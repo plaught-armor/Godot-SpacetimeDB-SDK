@@ -16,7 +16,15 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   scan reports any two bindings that hash to the same UID (astronomically
   unlikely, but deterministic if it ever happened).
 
-### Added
+- **Native array-like reducer and procedure returns.** A reducer or procedure
+  returning a `Vector3`, `Color`, `Quaternion` or any other native array-like type
+  can now be decoded; previously every such return failed with "Unsupported BSATN
+  type" regardless of what the wire held. Two gaps lined up: codegen emitted the
+  return's BSATN type without the component list that struct fields and reducer
+  params both already carried, and the decoder had no branch for that shape. The
+  suffix is applied to the base type before any wrapper prefix, so composed
+  returns come out as `opt_vector3[f32,f32,f32]` and decode correctly.
+
 - **SpacetimeAuth OIDC token exchange.** A `SpacetimeAuth` node (thin
   `HTTPRequest` glue with an exponential-backoff retry loop) exchanges a
   provider credential for a SpacetimeDB token. Provider-agnostic — the
@@ -30,12 +38,44 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   local bookkeeping — not a security boundary).
 
 ### Fixed
+- **Truncated gzip frames are no longer silent.** `StreamPeerGZIP` consumes every
+  byte it is handed, emits whatever it managed to inflate, and reports no error,
+  and `finish()` is compression-only — so a short frame previously reached the
+  BSATN reader looking like a complete one. The decompressed length is now
+  cross-checked against the gzip ISIZE trailer. The old "may be truncated"
+  warning never fired on truncation at all (it only ever caught trailing bytes
+  after the member); it is reworded to say that, and suppressed when an input
+  error has already reported its own cause.
+- **`BSATN_TYPES` entries are now matched case-insensitively on decode.** The
+  serializer already lowercased at its metadata read and the deserializer did
+  not, so a hand-written `"U32"` would serialize correctly and then miss every
+  lowercase-keyed reader, silently falling back to the `Variant.Type` default
+  and decoding an `i64` where a `u32` was meant. Two schema lookups that used raw
+  or underscore-only keys now normalize the same way the keys are stored.
+- **Performance monitors follow a reconnect to a different database.** The client
+  reuses one connection object across reconnects, so pointing it at another
+  database left the monitors reporting under the original name — and leaked them,
+  since teardown removes by the current name. Registration is now driven from a
+  single suffix-to-getter table instead of three hand-maintained copies.
+- A non-`RefCounted` instance from the `ClassDB` fallback is freed rather than
+  leaked on the error return, and a debug warning no longer fires when a schema
+  script is legitimately registered under both its declared and filename keys.
+
 - Keep the BSATN deserializer worker thread on **threaded** Web exports.
   The guard now gates on `OS.has_feature("threads")` instead of
   `OS.has_feature("web")`, so cross-origin-isolated (SharedArrayBuffer /
   COOP-COEP) Web builds keep the background deserializer instead of being
   forced onto the slower main-thread path; genuinely non-threaded builds
   still fall back cleanly.
+
+### Performance
+- **Gated the native-array-like probe in `_read_value_from_bsatn_type`.** That
+  function is recursed into once per element for a `Vec<T>` of non-primitives, so
+  an unconditional regex search there was charged to every nested struct element
+  in an array. Measured on 4.8.dev: ~152 ns for the search against ~18 ns for the
+  trailing-bracket check that now guards it. Only a component list ends in `]`, so
+  the gate cannot skip a real match. Both benches are committed
+  (`tests/bench_arraylike_probe.gd`, `tests/bench_vec_struct.gd`).
 
 ### Changed
 - Verified the SDK end-to-end against **SpacetimeDB 2.7.0**; tested range is now
