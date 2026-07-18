@@ -1,0 +1,44 @@
+# Project-local gdscript-formatter lint rules disabled for the SpacetimeDB Godot
+# SDK. Each rule below conflicts with a DELIBERATE, verified convention of this
+# codebase — established by a per-finding investigation (codec review, 2026-07),
+# not a blanket waiver. The gd-check hook reads this file and appends these to
+# its `--disable` list for files in this repo; other projects are unaffected.
+# The authoritative correctness gate is run_tests.sh (headless Godot). These
+# specific rules produce only false positives or flag intentional conventions
+# here. One rule name per line; `#` comments allowed.
+
+# class-name: class_name uses a leading `_` to mark an "internal base — inherit,
+# don't consume directly" (e.g. _ModuleTable, _ModuleTableType). Codegen EMITS
+# `extends _ModuleTable*` into every generated binding and the byte-compared
+# goldens, and row_receiver.gd string-matches "_ModuleTableType". Renaming is a
+# coordinated codegen + goldens + user-code + docs break for zero benefit.
+class-name
+
+# enum-member-name: enum members mirror the SpacetimeDB wire-protocol variant
+# names verbatim — ok/okEmpty/err/internalError come from the schema JSON and
+# codegen emits them as-is; Default/SendDroppedRows mirror Rust CallReducerFlags
+# / UnsubscribeFlags. These are the cross-SDK (Rust/C#/TS) protocol lexicon;
+# CONSTANT_CASE would diverge and break the codegen-uniform enum output.
+enum-member-name
+
+# enum-name / signal-name / variable-name: a leading `_` marks internal enums,
+# signals, and static sentinels as private — a convention applied SDK-wide across
+# every member kind. The linter's rules reserve `_` differently; keeping it here
+# preserves the "not public API" signal (e.g. _ReconnectState, _response_wait_aborted).
+enum-name
+signal-name
+variable-name
+
+# constant-name: `const CompressionPreference = SpacetimeDBConnection.CompressionPreference`
+# is a TYPE ALIAS used as a type annotation, not a value constant. CONSTANT_CASE
+# would break the type spelling.
+constant-name
+
+# private-access: the linter cannot tell own-class access from cross-class — it
+# flags `x._foo = ...` inside a class's own static create() factory (the SDK's
+# companion call-objects all use this pattern). The remaining hits are deliberate
+# friend-coupling (reducer/procedure/subscription call-objects reaching the
+# client's internals; the editor plugin wiring _plugin_config into its children).
+# All are false positives or intentional; a genuine fix would be a facade
+# refactor, not a rename.
+private-access
