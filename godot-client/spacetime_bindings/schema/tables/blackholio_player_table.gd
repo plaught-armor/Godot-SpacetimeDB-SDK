@@ -6,14 +6,14 @@ signal inserted(row: BlackholioPlayer)
 signal updated(old_row: BlackholioPlayer, new_row: BlackholioPlayer)
 signal deleted(row: BlackholioPlayer)
 
-var player_id: BlackholioPlayerPlayerIdUniqueIndex
 var identity: BlackholioPlayerIdentityUniqueIndex
+var player_id: BlackholioPlayerPlayerIdUniqueIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"player"
-	player_id = BlackholioPlayerPlayerIdUniqueIndex.new(p_local_db)
 	identity = BlackholioPlayerIdentityUniqueIndex.new(p_local_db)
+	player_id = BlackholioPlayerPlayerIdUniqueIndex.new(p_local_db)
 	on_insert(_emit_inserted)
 	on_update(_emit_updated)
 	on_delete(_emit_deleted)
