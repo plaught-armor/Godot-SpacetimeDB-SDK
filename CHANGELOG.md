@@ -4,6 +4,8 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-07-18
+
 ### Added
 - **Deterministic binding UIDs + reproducible codegen output.** Generated
   bindings now get a stable `.uid` derived from an FNV-1a-64 hash of their
@@ -58,6 +60,19 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 - A non-`RefCounted` instance from the `ClassDB` fallback is freed rather than
   leaked on the error return, and a debug warning no longer fires when a schema
   script is legitimately registered under both its declared and filename keys.
+
+### Changed
+- **Tests now run in CI.** The only workflow was release-on-tag, so nothing ran
+  the suite on push or pull request. Tests run per push and PR against Godot
+  4.7.1-stable; benches get a separate weekly workflow, since they are not
+  correctness gates and several take minutes each.
+- **Test fixtures now include real wire bytes.** Every test previously built its
+  bytes by hand or round-tripped the SDK's serializer against its own
+  deserializer — both self-consistent, so a divergence from what the server
+  actually sends stayed invisible (which is how the procedure decode bug above
+  survived a green suite). Captured frames from a live module now cover a
+  subscription snapshot, a nested struct, a reducer result, and a
+  value-returning procedure return, replayed without needing a server.
 
 ### Performance
 - **Gated the native-array-like probe in `_read_value_from_bsatn_type`.** That
