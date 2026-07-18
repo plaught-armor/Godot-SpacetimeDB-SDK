@@ -82,7 +82,11 @@ func decode() -> Variant:
 	spb.data_array = return_bytes
 	spb.big_endian = false
 	spb.seek(0)
-	return _client._deserializer._read_value_from_bsatn_type(spb, _return_bsatn_type, &"procedure_return")
+	# Main-thread decoder, not the worker's _deserializer (thread-race, see client).
+	# Clear any error left by a prior failed decode(): this instance is never reset
+	# by worker traffic, so a stale error would make every later decode() null.
+	_client._decode_deserializer.clear_error()
+	return _client._decode_deserializer._read_value_from_bsatn_type(spb, _return_bsatn_type, &"procedure_return")
 
 
 ## Returns [code]true[/code] if the procedure returned successfully.

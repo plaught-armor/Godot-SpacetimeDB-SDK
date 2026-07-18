@@ -121,6 +121,13 @@ var _one_off_query_cache: Dictionary[int, Array] = { }
 # --- Components ---
 var _connection: SpacetimeDBConnection
 var _deserializer: BSATNDeserializer
+# Separate deserializer for main-thread SpacetimeDBReducerCall/ProcedureCall
+# decode(): the worker thread mutates _deserializer's status/pending/plan/name
+# caches while parsing, so a user handler calling decode() on the main thread must
+# NOT touch the same instance (unguarded concurrent Dictionary writes = corruption).
+# decode() is always main-thread + synchronous, so a single dedicated instance is
+# race-free without a lock.
+var _decode_deserializer: BSATNDeserializer
 var _serializer: BSATNSerializer
 var _local_db: LocalDatabase
 var _rest_api: SpacetimeDBRestAPI # Optional, for token/REST calls
@@ -191,6 +198,7 @@ func initialize_and_connect() -> void:
 
 	# 2. Initialize Parser
 	_deserializer = BSATNDeserializer.new(schema, debug_mode)
+	_decode_deserializer = BSATNDeserializer.new(schema, debug_mode)
 	_serializer = BSATNSerializer.new(debug_mode)
 
 	# 3. Initialize Local Database
@@ -281,15 +289,17 @@ func disconnect_db() -> void:
 	_intentional_disconnect = true
 	_cancel_reconnection()
 	_token = ""
-	if _connection and _connection.is_connected_db():
+	# Close the socket whenever the peer is live — including mid-handshake
+	# (STATE_CONNECTING), which is_connected_db() (== _is_connected, set only on
+	# STATE_OPEN) misses. Leaving a handshake running lets it emit connected after
+	# the user asked to stop, or trigger an auto-reconnect they cancelled.
+	# disconnect_from_server() clears the connection flags, so the later
+	# STATE_CLOSED tick stays silent (no rogue connection signal); the client
+	# surfaces the single terminal signal here.
+	if _connection and _connection.is_websocket_active():
 		_connection.disconnect_from_server()
-	else:
-		# Socket already closed (e.g. cancelled mid-backoff during a reconnect):
-		# disconnect_from_server() would be a no-op and emit nothing, leaving callers
-		# waiting on disconnected forever and the intentional flag stuck. Surface the
-		# terminal signal here instead.
-		_intentional_disconnect = false
-		disconnected.emit()
+	_intentional_disconnect = false
+	disconnected.emit()
 
 
 ## Returns [code]true[/code] if the WebSocket is currently open.
@@ -1086,6 +1096,15 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 
 	elif message is IdentityTokenMessage:
 		print_log("SpacetimeDBClient: Received Identity Token.")
+		# Guard FIRST — a late IdentityToken from a socket the user already tore
+		# down (disconnect_db mid-handshake) must be a full no-op. In particular it
+		# must not restore _token, which disconnect_db deliberately wiped to force a
+		# fresh token on the next connect. Legit reconnect is unaffected: STATE_OPEN
+		# sets _is_connected before any packet is delivered, so is_connected_db() is
+		# true by the time this token is processed.
+		if _connection == null or not _connection.is_connected_db():
+			print_log("SpacetimeDBClient: IdentityToken for a closed connection — ignoring.")
+			return
 		_identity = message.identity
 		if not _token and message.token:
 			_token = message.token
@@ -1142,7 +1161,15 @@ func _on_connection_disconnected() -> void:
 		disconnected.emit()
 		return
 
-	if connection_options and connection_options.auto_reconnect:
+	# A graceful server close (normal WS code) that lands during a reconnect
+	# attempt routes here, not through _on_connection_error (which only fires on
+	# code -1). Without this branch _start_reconnection() early-returns on the
+	# RECONNECTING state and the machine wedges — no timer, no reconnect_failed.
+	# Mirror _on_connection_error / _on_connection_stalled: advance the attempt.
+	if _reconnect_state == _ReconnectState.RECONNECTING:
+		print_log("SpacetimeDBClient: Reconnect attempt %d closed by server, scheduling next." % _reconnect_attempt)
+		_schedule_next_reconnect_attempt()
+	elif connection_options and connection_options.auto_reconnect:
 		print_log("SpacetimeDBClient: Unintentional disconnect, starting auto-reconnect.")
 		_start_reconnection()
 	else:

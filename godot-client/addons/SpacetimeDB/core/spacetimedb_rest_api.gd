@@ -25,6 +25,14 @@ enum RequestType {
 	REDUCER_CALL,
 }
 
+## Bounds a stalled token/identity fetch. Without it HTTPRequest.timeout defaults
+## to 0 (infinite): a server that accepts the TCP connection but never responds
+## (wedged load balancer, mid-connection firewall drop) leaves _pending_request_type
+## stuck on TOKEN forever — every later request_new_token() no-ops and no
+## token_request_failed ever fires. On timeout, request_completed delivers
+## RESULT_TIMEOUT, which routes through the normal failure path.
+const REQUEST_TIMEOUT_SECONDS: float = 15.0
+
 var _http_request: HTTPRequest = HTTPRequest.new()
 var _base_url: String
 var _token: String
@@ -46,6 +54,7 @@ func _init(base_url: String, debug_mode: bool) -> void:
 	self._base_url = base_url
 	self._debug_mode = debug_mode
 	add_child(_http_request)
+	_http_request.timeout = REQUEST_TIMEOUT_SECONDS
 	# Fresh HTTPRequest — no prior connections to guard against.
 	_http_request.request_completed.connect(_on_request_completed)
 
