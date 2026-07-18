@@ -25,18 +25,6 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   suffix is applied to the base type before any wrapper prefix, so composed
   returns come out as `opt_vector3[f32,f32,f32]` and decode correctly.
 
-- **SpacetimeAuth OIDC token exchange.** A `SpacetimeAuth` node (thin
-  `HTTPRequest` glue with an exponential-backoff retry loop) exchanges a
-  provider credential for a SpacetimeDB token. Provider-agnostic — the
-  `grant_type` and request fields are caller-supplied — with the endpoint,
-  `grant_type`, Steam fields, and `id_token`/`expires_in` contract verified
-  against the official SpacetimeDB 2.7.0 docs. Ships alongside
-  `SpacetimeAuthProtocol` (pure, network-free transforms: form-encode, retry
-  decision, backoff math, response classify, credential redaction),
-  `SpacetimeAuthResult` (POD outcome), and a `JwtHelper` for unverified
-  client-side JWT payload decode (reading claims such as `login_method` for
-  local bookkeeping — not a security boundary).
-
 ### Fixed
 - **Truncated gzip frames are no longer silent.** `StreamPeerGZIP` consumes every
   byte it is handed, emits whatever it managed to inflate, and reports no error,
@@ -61,13 +49,6 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   leaked on the error return, and a debug warning no longer fires when a schema
   script is legitimately registered under both its declared and filename keys.
 
-- Keep the BSATN deserializer worker thread on **threaded** Web exports.
-  The guard now gates on `OS.has_feature("threads")` instead of
-  `OS.has_feature("web")`, so cross-origin-isolated (SharedArrayBuffer /
-  COOP-COEP) Web builds keep the background deserializer instead of being
-  forced onto the slower main-thread path; genuinely non-threaded builds
-  still fall back cleanly.
-
 ### Performance
 - **Gated the native-array-like probe in `_read_value_from_bsatn_type`.** That
   function is recursed into once per element for a `Vec<T>` of non-primitives, so
@@ -76,6 +57,29 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   trailing-bracket check that now guards it. Only a component list ends in `]`, so
   the gate cannot skip a real match. Both benches are committed
   (`tests/bench_arraylike_probe.gd`, `tests/bench_vec_struct.gd`).
+
+## [2.4.0] - 2026-07-15
+
+### Added
+- **SpacetimeAuth OIDC token exchange.** A `SpacetimeAuth` node (thin
+  `HTTPRequest` glue with an exponential-backoff retry loop) exchanges a
+  provider credential for a SpacetimeDB token. Provider-agnostic — the
+  `grant_type` and request fields are caller-supplied — with the endpoint,
+  `grant_type`, Steam fields, and `id_token`/`expires_in` contract verified
+  against the official SpacetimeDB 2.7.0 docs. Ships alongside
+  `SpacetimeAuthProtocol` (pure, network-free transforms: form-encode, retry
+  decision, backoff math, response classify, credential redaction),
+  `SpacetimeAuthResult` (POD outcome), and a `JwtHelper` for unverified
+  client-side JWT payload decode (reading claims such as `login_method` for
+  local bookkeeping — not a security boundary).
+
+### Fixed
+- Keep the BSATN deserializer worker thread on **threaded** Web exports.
+  The guard now gates on `OS.has_feature("threads")` instead of
+  `OS.has_feature("web")`, so cross-origin-isolated (SharedArrayBuffer /
+  COOP-COEP) Web builds keep the background deserializer instead of being
+  forced onto the slower main-thread path; genuinely non-threaded builds
+  still fall back cleanly.
 
 ### Changed
 - Verified the SDK end-to-end against **SpacetimeDB 2.7.0**; tested range is now
