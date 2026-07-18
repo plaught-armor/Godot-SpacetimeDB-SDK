@@ -96,7 +96,7 @@ func exchange(
 	# exchange would collide on it (its request() returns ERR_BUSY and burns the
 	# retry budget waiting for the first to release the socket). Reject the
 	# overlapping call cleanly. This wrapper is the single site that clears
-	# _pending, so it holds on every _exchange_impl return path (NASA rule 3).
+	# _pending, so it holds on every _exchange_impl return path.
 	if _pending:
 		var busy: SpacetimeAuthResult = SpacetimeAuthResult.new()
 		busy.error = "exchange already in flight on this SpacetimeAuth node"

@@ -61,11 +61,16 @@ not register the generated `class_name`s as project globals.
 
 ## Code style
 
-- Global GDScript rules: `~/.claude/rules/gdscript/` (start at `index.md`).
-- Project-local pitfalls: `.claude/rules/gdscript-pitfalls.md`.
+- Follow the [official GDScript style guide](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_styleguide.html).
 - Run `gdscript-formatter` on changed `.gd` files, then verify they still parse.
 - Static typing is mandatory: `var x: Type = value` (never `:=`), typed `for`
   loops, typed parameters and return values.
+- Prefer `Packed*Array` over `Array[primitive]`, and never declare an array or
+  dictionary `const` — `const` containers are shared mutable references in
+  Godot 4.
+- Bracket access on known schemas (`data["key"]`), not `.get("key", default)`;
+  reserve `.get()` for genuinely optional external data.
+- Check `is_instance_valid()` after any `await` that involves a `Node`.
 
 ## Pull requests
 
