@@ -25,7 +25,7 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32",
 @export var args: PackedByteArray
 
 
-func _init(p_reducer_name: String = "", p_args: PackedByteArray = PackedByteArray(), p_request_id: int = 0, p_flags: CallReducerFlags = CallReducerFlags.Default):
+func _init(p_reducer_name: String = "", p_args: PackedByteArray = PackedByteArray(), p_request_id: int = 0, p_flags: CallReducerFlags = CallReducerFlags.Default) -> void:
 	reducer_name = p_reducer_name
 	args = p_args
 	request_id = p_request_id

@@ -15,7 +15,7 @@ var query_id: QueryIdData
 var error_message: String
 
 
-func _init():
+func _init() -> void:
 	request_id = -1
 	query_id = null
 

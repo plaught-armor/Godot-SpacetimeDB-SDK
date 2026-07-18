@@ -13,5 +13,5 @@ var query_id: QueryIdData
 var tables: Array[TableUpdateData]
 
 
-func _init():
+func _init() -> void:
 	query_id = QueryIdData.new()

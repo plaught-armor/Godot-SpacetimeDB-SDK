@@ -106,7 +106,11 @@ func _add_table_names(table_names: Array, is_table: bool, script: GDScript, scri
 	for table_name in table_names:
 		var sn: StringName = StringName(table_name)
 		var lower_table_name: StringName = sn.to_lower().replace("_", "")
-		if types.has(lower_table_name) and debug_mode:
+		# A script declaring table_names is registered twice — once under each declared
+		# name, then again under its filename as a fallback alias. Those collide
+		# whenever the two agree, so only a different script taking over the key is
+		# worth reporting.
+		if debug_mode and types.get(lower_table_name) not in [null, script]:
 			push_warning(
 				"SpacetimeDBSchema: Overwriting schema for table '%s' (from %s)"
 				% [table_name, script_path]

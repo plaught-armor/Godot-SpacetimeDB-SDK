@@ -25,7 +25,7 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32",
 @export var args: PackedByteArray
 
 
-func _init(p_procedure_name: String = "", p_args: PackedByteArray = PackedByteArray(), p_request_id: int = 0, p_flags: CallProcedureFlags = CallProcedureFlags.Default):
+func _init(p_procedure_name: String = "", p_args: PackedByteArray = PackedByteArray(), p_request_id: int = 0, p_flags: CallProcedureFlags = CallProcedureFlags.Default) -> void:
 	procedure_name = p_procedure_name
 	args = p_args
 	request_id = p_request_id

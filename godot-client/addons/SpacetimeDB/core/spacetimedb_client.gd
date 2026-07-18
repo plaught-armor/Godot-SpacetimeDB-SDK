@@ -1061,9 +1061,10 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		_stats.record_response(rid)
 		if message.is_error:
 			printerr("SpacetimeDBClient: OneOffQuery error (request_id=%d): %s" % [rid, message.error_message])
-			_one_off_query_cache[rid] = [] as Array[TableUpdateData]
+			var no_tables: Array[TableUpdateData] = []
+			_one_off_query_cache[rid] = no_tables
 			_evict_oldest(_one_off_query_cache)
-			one_off_query_received.emit(rid, [] as Array[TableUpdateData], message.error_message)
+			one_off_query_received.emit(rid, no_tables, message.error_message)
 		else:
 			print_log("SpacetimeDBClient: OneOffQuery result (request_id=%d): %d tables" % [rid, message.tables.size()])
 			_one_off_query_cache[rid] = message.tables

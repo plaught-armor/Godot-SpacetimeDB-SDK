@@ -14,6 +14,6 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32",
 @export var query_string: String
 
 
-func _init(p_request_id: int = 0, p_query_string: String = ""):
+func _init(p_request_id: int = 0, p_query_string: String = "") -> void:
 	request_id = p_request_id
 	query_string = p_query_string

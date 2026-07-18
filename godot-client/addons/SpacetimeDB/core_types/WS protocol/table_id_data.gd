@@ -12,6 +12,6 @@ var pascal_case: String
 var snake_case: String
 
 
-func _init(p_pascal: String = "", p_snake: String = ""):
+func _init(p_pascal: String = "", p_snake: String = "") -> void:
 	pascal_case = p_pascal
 	snake_case = p_snake

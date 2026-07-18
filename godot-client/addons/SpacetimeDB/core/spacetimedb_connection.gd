@@ -79,14 +79,7 @@ func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
 	_options = options
 	_db_name = db_name
 	if options.monitor_mode:
-		Performance.add_custom_monitor("spacetime/" + db_name + "_second_received_packets", get_second_received_packets)
-		Performance.add_custom_monitor("spacetime/" + db_name + "_second_received_bytes", get_second_received_bytes)
-		Performance.add_custom_monitor("spacetime/" + db_name + "_total_received_packets", get_received_packets)
-		Performance.add_custom_monitor("spacetime/" + db_name + "_total_received_kbytes", get_received_kbytes)
-		Performance.add_custom_monitor("spacetime/" + db_name + "_second_sent_packets", get_second_sent_packets)
-		Performance.add_custom_monitor("spacetime/" + db_name + "_second_sent_bytes", get_second_sent_bytes)
-		Performance.add_custom_monitor("spacetime/" + db_name + "_total_sent_packets", get_sent_packets)
-		Performance.add_custom_monitor("spacetime/" + db_name + "_total_sent_kbytes", get_sent_kbytes)
+		_register_monitors()
 
 	_websocket.inbound_buffer_size = options.inbound_buffer_size
 	_websocket.outbound_buffer_size = options.outbound_buffer_size
@@ -179,20 +172,37 @@ static func is_stall_gap(gap_ms: int, threshold_ms: int) -> bool:
 	return threshold_ms > 0 and gap_ms >= threshold_ms
 
 
+## Monitor name suffix to the getter [Performance] samples for it. Built per call
+## rather than held as a constant because the values are bound to this instance.
+## Every caller is cold: construct, rename, teardown.
+func _monitor_getters() -> Dictionary[String, Callable]:
+	return {
+		"_second_received_packets": get_second_received_packets,
+		"_second_received_bytes": get_second_received_bytes,
+		"_total_received_packets": get_received_packets,
+		"_total_received_kbytes": get_received_kbytes,
+		"_second_sent_packets": get_second_sent_packets,
+		"_second_sent_bytes": get_second_sent_bytes,
+		"_total_sent_packets": get_sent_packets,
+		"_total_sent_kbytes": get_sent_kbytes,
+	}
+
+
+func _register_monitors() -> void:
+	var getters: Dictionary[String, Callable] = _monitor_getters()
+	for suffix: String in getters:
+		Performance.add_custom_monitor("spacetime/" + _db_name + suffix, getters[suffix])
+
+
+func _unregister_monitors() -> void:
+	for suffix: String in _monitor_getters():
+		Performance.remove_custom_monitor("spacetime/" + _db_name + suffix)
+
+
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
 		if _options and _options.monitor_mode:
-			for suffix: String in [
-				"_second_received_packets",
-				"_second_received_bytes",
-				"_total_received_packets",
-				"_total_received_kbytes",
-				"_second_sent_packets",
-				"_second_sent_bytes",
-				"_total_sent_packets",
-				"_total_sent_kbytes",
-			]:
-				Performance.remove_custom_monitor("spacetime/" + _db_name + suffix)
+			_unregister_monitors()
 	elif what == NOTIFICATION_CRASH or what == NOTIFICATION_WM_CLOSE_REQUEST:
 		if is_websocket_active():
 			get_tree().auto_accept_quit = false
@@ -266,6 +276,17 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 	if _is_connected:
 		_print_log("SpacetimeDBConnection: Already connected.")
 		return
+
+	# The client reuses one connection across reconnects, so a caller that points it
+	# at a different database would otherwise keep reporting under the original
+	# name's monitors — and leak them, since teardown removes by the current name.
+	if database_name != _db_name:
+		var rename_monitors: bool = _options.monitor_mode
+		if rename_monitors:
+			_unregister_monitors()
+		_db_name = database_name
+		if rename_monitors:
+			_register_monitors()
 
 	if _connection_requested:
 		_print_log("SpacetimeDBConnection: Previous attempt still in progress, resetting.")

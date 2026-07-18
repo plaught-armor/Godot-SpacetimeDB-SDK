@@ -572,7 +572,7 @@ func _read_array(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_str: String
 	else:
 		if not bsatn_type_str.is_empty():
 			element_reader = _get_primitive_reader_from_bsatn_type(bsatn_type_str)
-			if not element_reader.is_valid() and _schema.types.has(bsatn_type_str):
+			if not element_reader.is_valid() and _schema.types.has(_normalize(bsatn_type_str)):
 				element_reader = _read_nested_resource.bind(element_prop_sim)
 		if not element_reader.is_valid():
 			element_reader = _get_reader_callable_for_property(element_prop_sim, &"")
@@ -665,6 +665,11 @@ func _read_nested_resource(spb: StreamPeerBuffer, prop: Dictionary) -> Object:
 	elif ClassDB.can_instantiate(nested_class_name):
 		nested_instance = ClassDB.instantiate(nested_class_name)
 		if not nested_instance is RefCounted: # Resource extends RefCounted
+			# A bare Object has no refcount to reap it, so free it here rather than
+			# leak on the error return. null is possible in principle — can_instantiate
+			# does not promise a non-null instance — and must not be freed.
+			if nested_instance != null:
+				nested_instance.free()
 			_set_error("ClassDB instantiated '%s' for '%s' but it is not a RefCounted" % [nested_class_name, prop_name], spb.get_position())
 			return null
 	else:
@@ -851,7 +856,7 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 		return _read_option(spb, { "name": context_prop_name }, bsatn_type_str.right(-4))
 
 	# Custom Resource (schema type)
-	var schema_key: StringName = bsatn_type_str.replace("_", "")
+	var schema_key: StringName = _normalize(bsatn_type_str)
 	if _schema.types.has(schema_key):
 		var script: GDScript = _schema.get_type(schema_key)
 		if script and script.can_instantiate():
@@ -905,7 +910,11 @@ func _create_deserialization_plan(script: Script) -> Array:
 			continue
 
 		var prop_name: StringName = prop.name
-		var bsatn_type_str: StringName = bsatn_types.get(prop_name, &"")
+		# Lowercased to match the serializer, which does the same at its BSATN_TYPES
+		# read. Codegen emits lowercase, but a hand-written "U32" would otherwise
+		# serialize correctly and then miss every lowercase-keyed primitive reader,
+		# silently falling back to the Variant.Type default (i64 for an int).
+		var bsatn_type_str: StringName = StringName(bsatn_types.get(prop_name, &"").to_lower())
 		var reader_callable: Callable = _get_reader_callable_for_property(prop, bsatn_type_str)
 
 		if not reader_callable.is_valid():

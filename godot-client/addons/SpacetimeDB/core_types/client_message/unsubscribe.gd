@@ -26,7 +26,7 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32",
 @export var flags: UnsubscribeFlags = UnsubscribeFlags.Default
 
 
-func _init(p_request_id: int = 0, p_query_id: int = 0, p_flags: UnsubscribeFlags = UnsubscribeFlags.Default):
+func _init(p_request_id: int = 0, p_query_id: int = 0, p_flags: UnsubscribeFlags = UnsubscribeFlags.Default) -> void:
 	request_id = p_request_id
 	query_id = p_query_id
 	flags = p_flags

@@ -4,6 +4,14 @@
 ## confirmation and eventual unsubscription. Connect to [signal applied] or
 ## [code]await[/code] [method wait_for_applied] to know when the initial
 ## row snapshot has been processed.
+##
+## [b]A handle is scoped to one connection.[/b] When the client reconnects it ends
+## every outstanding handle and re-subscribes the saved queries under fresh ones,
+## so a handle held across a reconnect stays [constant State.ENDED] permanently even
+## though the underlying query is live again. The rows keep flowing — only this
+## object is stale. Code that needs a handle after a drop should take a fresh one
+## from a [method SpacetimeDBClient.subscribe] call made in response to
+## [signal SpacetimeDBClient.reconnected], not cache one from before the drop.
 class_name SpacetimeDBSubscription
 extends RefCounted
 

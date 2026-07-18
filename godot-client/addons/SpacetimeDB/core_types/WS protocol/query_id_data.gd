@@ -14,5 +14,5 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"u32" }
 @export var id: int
 
 
-func _init(p_id: int = 0):
+func _init(p_id: int = 0) -> void:
 	id = p_id

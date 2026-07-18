@@ -40,7 +40,7 @@ static func parse_enum_name(i: int) -> StringName:
 		return &'err'
 	if i == 3:
 		return &'internalError'
-	printerr("Enum does not have value for %d. This is out of bounds." % i)
+	push_error("Enum does not have value for %d. This is out of bounds." % i)
 	return &'Unknown'
 
 
