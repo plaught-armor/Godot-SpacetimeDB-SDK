@@ -31,8 +31,11 @@ static var _summary_claims: PackedStringArray = [
 ## dictionary on a malformed token or a payload that isn't a JSON object. The
 ## signature is NOT checked — see the class SECURITY note.
 static func decode_payload(jwt: String) -> Dictionary:
+	# A well-formed JWT is exactly header.payload.signature (3 segments). Reject
+	# anything else — defense-in-depth so a truncated/garbage token can't be read
+	# as if it carried valid claims (the server remains the real trust boundary).
 	var parts: PackedStringArray = jwt.split(".")
-	if parts.size() < 2:
+	if parts.size() != 3:
 		return { }
 	var payload_b64url: String = parts[1]
 	# base64url -> base64: the URL-safe alphabet uses `-_` instead of `+/` and drops padding.

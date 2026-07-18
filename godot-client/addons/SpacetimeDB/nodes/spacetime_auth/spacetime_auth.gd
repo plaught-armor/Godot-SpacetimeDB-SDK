@@ -62,6 +62,9 @@ const TOKEN_URL_DEFAULT: String = "https://auth.spacetimedb.com/oidc/token"
 ]
 
 var _http: HTTPRequest
+## True while an exchange() coroutine is in flight; guards against a second
+## concurrent exchange colliding on the single shared _http child.
+var _pending: bool = false
 
 
 func _print_log(message: String) -> void:
@@ -72,8 +75,10 @@ func _print_log(message: String) -> void:
 func _ensure_http() -> void:
 	if not is_instance_valid(_http):
 		_http = HTTPRequest.new()
-		_http.timeout = request_timeout_seconds
 		add_child(_http)
+	# Set every call so an inspector tweak to request_timeout_seconds after the
+	# first exchange still takes effect on reuse (not just at construction).
+	_http.timeout = request_timeout_seconds
 
 
 ## Exchange a provider credential for a SpacetimeAuth id_token. Coroutine: await
@@ -83,9 +88,30 @@ func _ensure_http() -> void:
 ## Retries transient failures (submit error / no response / 5xx) with exponential
 ## backoff; a 2xx/4xx is authoritative and returned immediately.
 func exchange(
-		grant_type: String,
-		extra_fields: Dictionary[String, Variant],
-		client_id: String,
+	grant_type: String,
+	extra_fields: Dictionary[String, Variant],
+	client_id: String,
+) -> SpacetimeAuthResult:
+	# Re-entrancy guard. The node owns one _http child; a second concurrent
+	# exchange would collide on it (its request() returns ERR_BUSY and burns the
+	# retry budget waiting for the first to release the socket). Reject the
+	# overlapping call cleanly. This wrapper is the single site that clears
+	# _pending, so it holds on every _exchange_impl return path (NASA rule 3).
+	if _pending:
+		var busy: SpacetimeAuthResult = SpacetimeAuthResult.new()
+		busy.error = "exchange already in flight on this SpacetimeAuth node"
+		exchange_completed.emit(busy)
+		return busy
+	_pending = true
+	var result: SpacetimeAuthResult = await _exchange_impl(grant_type, extra_fields, client_id)
+	_pending = false
+	return result
+
+
+func _exchange_impl(
+	grant_type: String,
+	extra_fields: Dictionary[String, Variant],
+	client_id: String,
 ) -> SpacetimeAuthResult:
 	var result: SpacetimeAuthResult = SpacetimeAuthResult.new()
 	if client_id.is_empty():
@@ -97,6 +123,11 @@ func exchange(
 		push_error("[SpacetimeAuth] %s" % result.error)
 		exchange_completed.emit(result)
 		return result
+	if max_attempts < 1:
+		result.error = "max_attempts must be >= 1 (got %d)" % max_attempts
+		push_error("[SpacetimeAuth] %s" % result.error)
+		exchange_completed.emit(result)
+		return result
 
 	_ensure_http()
 
@@ -105,8 +136,8 @@ func exchange(
 
 	_print_log(
 		(
-				"POST %s grant_type=%s client_id=%s (%d bytes)"
-				% [token_url, grant_type, client_id, body.length()]
+			"POST %s grant_type=%s client_id=%s (%d bytes)"
+			% [token_url, grant_type, client_id, body.length()]
 		),
 	)
 
@@ -140,8 +171,8 @@ func exchange(
 		)
 		push_warning(
 			(
-					"[SpacetimeAuth] transient failure (attempt %d/%d), retry in %.1fs"
-					% [attempt + 1, max_attempts, delay]
+				"[SpacetimeAuth] transient failure (attempt %d/%d), retry in %.1fs"
+				% [attempt + 1, max_attempts, delay]
 			),
 		)
 		await get_tree().create_timer(delay).timeout
