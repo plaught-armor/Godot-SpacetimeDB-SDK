@@ -55,8 +55,12 @@ func update_module_ui() -> void:
 	for module_id: String in _plugin_config.module_configs:
 		var module_config: SpacetimeDBModuleConfig = _plugin_config.module_configs[module_id]
 		var new_module: Control = $"Prefabs/ModulePrefab".duplicate() as Control
-		var name_input: LineEdit = new_module.get_node("VBoxContainer/HBoxContainer/VBoxContainer/ModuleNameInput") as LineEdit
-		var alias_input: LineEdit = new_module.get_node("VBoxContainer/HBoxContainer/VBoxContainer/ModuleAliasInput") as LineEdit
+		var name_input: LineEdit = new_module.get_node(
+			"VBoxContainer/HBoxContainer/VBoxContainer/ModuleNameInput"
+		) as LineEdit
+		var alias_input: LineEdit = new_module.get_node(
+			"VBoxContainer/HBoxContainer/VBoxContainer/ModuleAliasInput"
+		) as LineEdit
 		var reducer_config_box: CheckBox = new_module.get_node("VBoxContainer/ReducerCheckbox") as CheckBox
 		var table_config_box: CheckBox = new_module.get_node("VBoxContainer/TableCheckbox") as CheckBox
 		name_input.text = module_config.name
@@ -66,35 +70,35 @@ func update_module_ui() -> void:
 		_modules_container.add_child(new_module)
 
 		var remove_button: Button = new_module.get_node("VBoxContainer/HBoxContainer/RemoveButton") as Button
-		remove_button.button_down.connect(
-			func():
-				_plugin_config.module_configs.erase(module_config.alias)
-				plugin_config_changed.emit()
-				update_module_ui()
-		)
+		remove_button \
+				.button_down \
+				.connect(func():
+					_plugin_config.module_configs.erase(module_config.alias)
+					plugin_config_changed.emit()
+					update_module_ui())
 		new_module.show()
-		reducer_config_box.toggled.connect(
-			func(on: bool):
-				module_config.hide_scheduled_reducers = on
-				plugin_config_changed.emit()
-		)
-		table_config_box.toggled.connect(
-			func(on: bool):
-				module_config.hide_private_tables = on
-				plugin_config_changed.emit()
-		)
-		name_input.text_changed.connect(
-			func(text: String):
-				module_config.name = text
-				plugin_config_changed.emit()
-		)
-		alias_input.text_changed.connect(
-			func(text: String):
-				_plugin_config.module_configs.erase(module_config.alias)
-				module_config.alias = text
-				_plugin_config.module_configs.set(module_config.alias, module_config)
-				plugin_config_changed.emit()
-		)
+		reducer_config_box \
+				.toggled \
+				.connect(func(on: bool):
+					module_config.hide_scheduled_reducers = on
+					plugin_config_changed.emit())
+		table_config_box \
+				.toggled \
+				.connect(func(on: bool):
+					module_config.hide_private_tables = on
+					plugin_config_changed.emit())
+		name_input \
+				.text_changed \
+				.connect(func(text: String):
+					module_config.name = text
+					plugin_config_changed.emit())
+		alias_input \
+				.text_changed \
+				.connect(func(text: String):
+					_plugin_config.module_configs.erase(module_config.alias)
+					module_config.alias = text
+					_plugin_config.module_configs.set(module_config.alias, module_config)
+					plugin_config_changed.emit())
 	if _modules_container.get_child_count() == 0:
 		_add_module_hint_label.show()
 		_generate_button.disabled = true
@@ -128,14 +132,20 @@ func add_log(text: Variant) -> void:
 func add_err(text: Variant) -> void:
 	var text_type: int = typeof(text)
 	if text_type == TYPE_STRING:
-		_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] %s[/color]\n" % [ERROR_LOG_ICON, text]
+		_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] %s[/color]\n" % [
+			ERROR_LOG_ICON,
+			text,
+		]
 	elif text_type == TYPE_ARRAY:
 		_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] " % [ERROR_LOG_ICON]
 		for i in text as Array:
 			_logs_label.text += str(i) + " "
 		_logs_label.text += "[/color]\n"
 	else:
-		_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] %s[/color]\n" % [ERROR_LOG_ICON, str(text)]
+		_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] %s[/color]\n" % [
+			ERROR_LOG_ICON,
+			str(text),
+		]
 
 
 func destroy() -> void:
@@ -145,6 +155,8 @@ func destroy() -> void:
 	_add_module_hint_label = null
 	_new_module_name_input = null
 	_new_module_alias_input = null
+	_new_module_reducer_checkbox = null
+	_new_module_table_checkbox = null
 	_generate_button = null
 
 
@@ -165,7 +177,9 @@ func _on_new_module() -> void:
 	var reducer_config: bool = _new_module_reducer_checkbox.button_pressed
 	if alias.is_empty():
 		alias = name
-	var module_config: SpacetimeDBModuleConfig = _plugin_config.module_configs.get(alias, SpacetimeDBModuleConfig.new())
+	var module_config: SpacetimeDBModuleConfig = _plugin_config \
+			.module_configs \
+			.get(alias, SpacetimeDBModuleConfig.new())
 	module_config.name = name
 	module_config.alias = alias
 	module_config.hide_private_tables = table_config

@@ -33,6 +33,11 @@ func _init_subscription() -> void:
 	var db: LocalDatabase = await _get_db(true)
 	if not is_instance_valid(self) or not is_inside_tree():
 		return
+	# _get_db can return null (unresolved module / db never initialized);
+	# _subscribe_to_table dereferences db, so bail before handing it a null.
+	if not is_instance_valid(db):
+		push_error("[RowReceiver] could not resolve local database for %s" % get_path())
+		return
 	_subscribe_to_table(db, selected_table_name)
 
 
@@ -62,7 +67,7 @@ func on_set(schema: _ModuleTableType) -> void:
 		name = "Receiver [EMPTY]"
 		table_to_receive = schema
 		if not selected_table_name.is_empty():
-			set_selected_table_name("")
+			set_selected_table_name(&"")
 	else:
 		var script_resource: Script = schema.get_script()
 
@@ -70,7 +75,9 @@ func on_set(schema: _ModuleTableType) -> void:
 			var global_name: String = script_resource.get_global_name()
 			global_name = global_name.replace("_gd", "")
 			if global_name == "_ModuleTableType":
-				push_error("_ModuleTableType is the base class for table types, not a reciever table. Selection is not changed.")
+				push_error(
+					"_ModuleTableType is the base class for table types, not a receiver table. Selection is not changed."
+				)
 				return
 			table_to_receive = schema
 			name = "Receiver [%s]" % global_name
@@ -91,7 +98,7 @@ func on_set(schema: _ModuleTableType) -> void:
 			set_selected_table_name(_derived_table_names[0])
 		else:
 			if not selected_table_name.is_empty():
-				set_selected_table_name("")
+				set_selected_table_name(&"")
 
 	if Engine.is_editor_hint():
 		property_list_changed.emit()
@@ -105,6 +112,8 @@ func set_selected_table_name(value: StringName) -> void:
 
 func get_table_data() -> Array[_ModuleTableType]:
 	var db: LocalDatabase = await _get_db()
+	if not is_instance_valid(self):
+		return []
 	if db:
 		return db.get_all_rows(selected_table_name)
 	return []
@@ -116,15 +125,29 @@ func _print_log(log_message: String) -> void:
 
 
 func _get_db(wait_for_init: bool = false) -> LocalDatabase:
+	# No table selected → no db to resolve. Guards the public get_table_data()
+	# path and a schema cleared to null via the setter's null branch.
+	if table_to_receive == null:
+		return null
 	if _current_db_instance == null or not is_instance_valid(_current_db_instance):
 		var constants: Dictionary = (table_to_receive.get_script() as GDScript).get_script_constant_map()
 		var module_name: String = constants.get("module_name", "").to_pascal_case()
+		# A stub/misconfigured table type may lack the module_name constant; the
+		# empty string would resolve SpacetimeDB[""] to null and crash below.
+		if module_name.is_empty():
+			push_error("[RowReceiver] table type on %s has no module_name constant" % get_path())
+			return null
 		var client: SpacetimeDBClient = SpacetimeDB[module_name]
+		if client == null:
+			push_error("[RowReceiver] no SpacetimeDB client for module '%s'" % module_name)
+			return null
 		_current_db_instance = client.get_local_database()
 
 		if _current_db_instance == null and wait_for_init:
 			_print_log("Waiting for db to be initialized...")
 			await client.database_initialized
+			if not is_instance_valid(client):
+				return null
 			_current_db_instance = client.get_local_database()
 			_print_log("Db initialized")
 	return _current_db_instance
