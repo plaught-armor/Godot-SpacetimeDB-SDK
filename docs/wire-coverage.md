@@ -1,0 +1,71 @@
+# Wire coverage
+
+Which parts of the protocol are validated against **bytes a real server sent**,
+versus bytes this SDK authored itself.
+
+## Why this file exists
+
+Most of the suite builds its wire bytes by hand, or round-trips the SDK's
+serializer against its own deserializer. Both are self-consistent: if our model
+of BSATN diverges from what SpacetimeDB actually sends, those tests still pass.
+
+That is not theoretical. Value-returning procedures could not be decoded **at
+all** — `Result<T, E>` returns failed with "Unsupported BSATN type" — while the
+full suite and the byte-identical codegen goldens stayed green. It was found by
+calling a procedure against a live server, not by a test.
+
+So: synthetic coverage is necessary but proves less than it looks like. This
+table tracks the difference.
+
+## Server message types
+
+| Message | Synthetic test | Real wire bytes |
+|---|---|---|
+| `SubscribeAppliedMessage` | yes | **yes** — `wire_snapshot.bin` |
+| `ReducerResultMessage` | yes | **yes** — `wire_txn.bin` |
+| `TransactionUpdateMessage` | yes | **partial** — only nested inside a reducer result |
+| `ProcedureResultData` | yes | **yes** — `wire_procedure.bin`, `wire_procedure_err.bin` |
+| `IdentityTokenMessage` | yes | no |
+| `OneOffQueryResponseMessage` | no | no |
+| `SubscriptionErrorMessage` | no | no |
+| `UnsubscribeAppliedMessage` | no | no |
+
+`TransactionUpdateMessage` is marked partial deliberately: a caller's own row
+changes arrive **inside** the reducer response, so the fixture exercises that
+path but never a standalone broadcast of another client's transaction.
+
+## Client API surface
+
+| Call | Real wire bytes |
+|---|---|
+| `subscribe` | **yes** |
+| `call_reducer` | **yes** |
+| `call_procedure` | **yes** (both `Result` arms) |
+| `unsubscribe` | no |
+| `query_sql` | no — `OneOffQueryResponse` has no test of any kind |
+| `connect_db` / reconnect + resubscribe | no |
+
+## Data shapes
+
+Covered by real bytes: a nested struct (`DbVector2` on an entity), a
+synthesized `Result<T, E>` in both arms, and a native array-like payload
+(`vector3[f32,f32,f32]`).
+
+Not covered by real bytes: `Option` fields, enum/sum columns on a table, btree
+and unique index reads, `Identity`/`u128`/`u256` scalars, and procedure
+**parameters** (only returns are exercised).
+
+## Regenerating the fixtures
+
+The fixtures pin what one server version sends. They will not catch a wire
+format change until someone recaptures:
+
+```sh
+spacetime start --data-dir ~/.local/share/spacetime-blackholio
+cd blackholio-server && ./publish.sh
+cd ../godot-client && <godot> --headless --path . res://tests/_capture_wire_fixture.tscn
+```
+
+Captured against SpacetimeDB **2.7.0**. Note the `spacetime` CLI reports its own
+version, which may lag the server binary it launches — check the server log line
+`spacetimedb-standalone version:` for the truth.
