@@ -12,7 +12,12 @@ class_name SpacetimeDBStats
 extends RefCounted
 
 ## Request kinds tracked separately. Closed set → enum, not StringName.
-enum Category { REDUCER, PROCEDURE, ONE_OFF, SUBSCRIBE }
+enum Category {
+	REDUCER,
+	PROCEDURE,
+	ONE_OFF,
+	SUBSCRIBE,
+}
 
 ## Cap on outstanding (unanswered) sends retained before the oldest is dropped.
 ## A request that never gets a response (timeout, disconnect) would otherwise leak
@@ -34,6 +39,7 @@ class Tracker extends RefCounted:
 	func avg_usec() -> int:
 		return total_usec / count if count > 0 else 0
 
+
 # request_id -> send timestamp (usec) and request_id -> Category int. Split into two
 # dicts (rather than one record per request) to avoid a per-call object allocation
 # on the reducer hot path; both are transient, keyed by the same id, popped together.
@@ -50,6 +56,11 @@ func _init() -> void:
 
 ## Records that a request of [param category] went out under [param request_id].
 func record_send(request_id: int, category: Category) -> void:
+	# A reused id (u32 wrap or an allocator bug) while a prior send is still in
+	# flight would double-count in_flight — only one response ever arrives for the
+	# id. Retire the old send's in_flight before overwriting so the counter stays balanced.
+	if _pending_usec.has(request_id):
+		_trackers[_pending_cat[request_id]].in_flight -= 1
 	if _pending_usec.size() >= MAX_PENDING:
 		_drop_oldest_pending()
 	_pending_usec[request_id] = Time.get_ticks_usec()
@@ -99,7 +110,8 @@ func summary() -> String:
 	for name: String in Category:
 		var t: Tracker = _trackers[Category[name]]
 		lines.append(
-			"%s: n=%d avg=%.2fms min=%.2fms max=%.2fms last=%.2fms in_flight=%d" % [
+			"%s: n=%d avg=%.2fms min=%.2fms max=%.2fms last=%.2fms in_flight=%d"
+			% [
 				name.to_lower(),
 				t.count,
 				t.avg_usec() / 1000.0,

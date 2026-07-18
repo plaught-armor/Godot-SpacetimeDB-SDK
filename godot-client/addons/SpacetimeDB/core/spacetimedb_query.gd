@@ -138,24 +138,26 @@ func _to_string() -> String:
 
 
 static func _format_value(value: Variant) -> String:
-	var _vt: int = typeof(value)
-	if _vt == TYPE_NIL:
+	var vt: int = typeof(value)
+	if vt == TYPE_NIL:
 		# `field = NULL` never matches in SQL; almost always a caller mistake. Fail
 		# loud rather than silently emit `str(null)` = "<null>" (which was unquoted
 		# and injectable) or a no-match condition.
 		push_error("SpacetimeDBQuery: null value has no SQL equality form (use a different query).")
 		return "NULL"
-	if _vt == TYPE_STRING or _vt == TYPE_STRING_NAME:
+	if vt == TYPE_STRING or vt == TYPE_STRING_NAME:
 		# StringName must be quoted+escaped like String — typeof(&\"x\") is
 		# TYPE_STRING_NAME (21), distinct from TYPE_STRING (4). Falling through to the
 		# raw str() default was a SQL-injection hole (e.g. .where("state", &"alive")).
+		# SpacetimeDB parses with PostgreSqlDialect (standard_conforming_strings):
+		# backslash is literal in '...' literals, so doubling ' is the only escape.
 		return "'%s'" % String(value).replace("'", "''")
-	if _vt == TYPE_BOOL:
+	if vt == TYPE_BOOL:
 		return "true" if value else "false"
-	if _vt == TYPE_PACKED_BYTE_ARRAY:
+	if vt == TYPE_PACKED_BYTE_ARRAY:
 		# SpacetimeDB hex literal: bare 0x... (not a quoted string).
 		return "0x%s" % (value as PackedByteArray).hex_encode()
-	if _vt == TYPE_FLOAT:
+	if vt == TYPE_FLOAT:
 		var f: float = value
 		if is_nan(f):
 			push_error("SpacetimeDBQuery: NaN cannot be represented in SQL.")
@@ -165,7 +167,13 @@ static func _format_value(value: Variant) -> String:
 			return "NULL"
 		# Lossless round-trip for double; locale-independent.
 		return "%.17g" % f
-	return str(value)
+	if vt == TYPE_INT:
+		# Integer literal — digits/sign only, no quoting or escaping needed.
+		return str(value)
+	# Any other type (Vector*, Array, Dictionary, Object, ...) has no SQL literal
+	# form here; str() would emit unquoted malformed SQL. Fail loud instead.
+	push_error("SpacetimeDBQuery: unsupported value type %d for SQL formatting." % vt)
+	return "NULL"
 
 # --- Identifier validation ---
 
@@ -176,7 +184,10 @@ static func _validate_identifier(name: Variant) -> String:
 		_identifier_regex = RegEx.new()
 		_identifier_regex.compile("^[a-zA-Z_][a-zA-Z0-9_]*$")
 	if not _identifier_regex.search(s):
-		push_error("SpacetimeDBQuery: Invalid SQL identifier '%s'. Only alphanumeric characters and underscores are allowed." % s)
+		push_error(
+			"SpacetimeDBQuery: Invalid SQL identifier '%s'. Only alphanumeric characters and underscores are allowed."
+			% s
+		)
 		return ""
 	return s
 

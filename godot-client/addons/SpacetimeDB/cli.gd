@@ -7,6 +7,7 @@
 ## Exits 0 on success, 1 on failure.
 extends SceneTree
 
+
 func _initialize() -> void:
 	if not ResourceLoader.exists(SpacetimePlugin.SAVE_PATH, "SpacetimeDBPluginConfig"):
 		printerr("Plugin config not found at %s" % [SpacetimePlugin.SAVE_PATH])
@@ -20,7 +21,7 @@ func _initialize() -> void:
 		return
 
 	var http_request: HTTPRequest = HTTPRequest.new()
-	http_request.timeout = 4
+	http_request.timeout = 4.0
 	root.add_child(http_request)
 	# Unbounded wait — one frame for the HTTPRequest node to enter the tree.
 	# Headless context: process_frame always fires, no deadline needed.

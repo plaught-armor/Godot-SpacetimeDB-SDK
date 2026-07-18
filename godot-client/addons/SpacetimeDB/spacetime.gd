@@ -68,13 +68,16 @@ func _enter_tree():
 	ui.generate_schema.connect(_on_generate_schema)
 	ui.clear_logs()
 
-	http_request.timeout = 4
+	http_request.timeout = 4.0
 	add_child(http_request)
 
 	var config_file: ConfigFile = ConfigFile.new()
 	var cfg_load_err: int = config_file.load(CONFIG_PATH)
 	if cfg_load_err != OK:
-		printerr("SpacetimePlugin: Failed to load plugin.cfg (err %d) at %s" % [cfg_load_err, CONFIG_PATH])
+		printerr(
+			"SpacetimePlugin: Failed to load plugin.cfg (err %d) at %s"
+			% [cfg_load_err, CONFIG_PATH]
+		)
 
 	var version: String = config_file.get_value("plugin", "version", "0.0.0")
 	var author: String = config_file.get_value("plugin", "author", "??")
@@ -110,11 +113,17 @@ func _exit_tree():
 	if ProjectSettings.has_setting("autoload/" + AUTOLOAD_NAME):
 		remove_autoload_singleton(AUTOLOAD_NAME)
 
+	# Don't leave the static singleton pointing at a freed plugin instance.
+	instance = null
+
 
 func load_codegen_data() -> void:
 	if ResourceLoader.exists(SAVE_PATH, "SpacetimeDBPluginConfig"):
-		plugin_config = ResourceLoader.load(SAVE_PATH)
-		print_log("Loaded module configs from %s" % [SAVE_PATH])
+		# `as` yields null (not a crash) on a stale/mistyped .tres from an older
+		# SDK; the null branch below then rebuilds a fresh config. Log only on hit.
+		plugin_config = ResourceLoader.load(SAVE_PATH) as SpacetimeDBPluginConfig
+		if plugin_config != null:
+			print_log("Loaded module configs from %s" % [SAVE_PATH])
 	if plugin_config == null or plugin_config.module_configs.is_empty():
 		plugin_config = SpacetimeDBPluginConfig.new()
 	ui._plugin_config = plugin_config
@@ -138,7 +147,10 @@ func _on_check_uri() -> void:
 	_sanitize_uri()
 	var uri: String = plugin_config.uri + "/v1/ping"
 	print_log("Pinging... " + uri)
-	http_request.request(uri)
+	var send_err: Error = http_request.request(uri)
+	if send_err != OK:
+		print_err("Ping failed to start (err %d) — another request may be in flight." % send_err)
+		return
 	var ping_start: int = Time.get_ticks_usec()
 	var result: Array = await http_request.request_completed
 	if not is_instance_valid(http_request) or not is_inside_tree():
@@ -160,8 +172,8 @@ func _on_generate_schema() -> void:
 
 
 static func generate_schema(
-		request: HTTPRequest,
-		config: SpacetimeDBPluginConfig,
+	request: HTTPRequest,
+	config: SpacetimeDBPluginConfig,
 ) -> bool:
 	if config.uri.ends_with("/"):
 		config.uri = config.uri.left(-1)
@@ -170,16 +182,28 @@ static func generate_schema(
 	var failed: bool = false
 	for module_alias: String in config.module_configs:
 		var module_config: SpacetimeDBModuleConfig = config.module_configs[module_alias]
-		var schema_uri: String = "%s/v1/database/%s/schema?version=10" % [config.uri, module_config.name]
-		request.request(schema_uri)
+		var schema_uri: String = "%s/v1/database/%s/schema?version=10" % [
+			config.uri,
+			module_config.name,
+		]
+		var send_err: Error = request.request(schema_uri)
+		if send_err != OK:
+			print_err(
+				"Schema request failed to start for %s (err %d)" % [module_config.name, send_err]
+			)
+			failed = true
+			continue
 		var result: Array = await request.request_completed
 		if not is_instance_valid(request):
 			return false
 
 		if result[1] == 200:
-			var json: String = PackedByteArray(result[3]).get_string_from_utf8()
+			var json: String = (result[3] as PackedByteArray).get_string_from_utf8()
 			module_config.unparsed_module_schema = json
-			print_log("Fetched schema for module: %s with alias: %s" % [module_config.name, module_config.alias])
+			print_log(
+				"Fetched schema for module: %s with alias: %s"
+				% [module_config.name, module_config.alias]
+			)
 			continue
 
 		if result[1] == 404:
@@ -187,7 +211,10 @@ static func generate_schema(
 		elif result[1] == 0:
 			print_err("Request timeout - %s" % [schema_uri])
 		else:
-			print_err("Failed to fetch module schema: %s - Response code %s" % [module_config.name, result[1]])
+			print_err(
+				"Failed to fetch module schema: %s - Response code %s"
+				% [module_config.name, result[1]]
+			)
 		failed = true
 
 	if failed:
