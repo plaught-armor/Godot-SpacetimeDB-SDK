@@ -22,6 +22,21 @@ const U256_SIZE: int = 32
 const I256_SIZE: int = 32
 const ROW_LIST_FIXED_SIZE: int = 0
 const ROW_LIST_ROW_OFFSETS: int = 1
+## Base BSATN meta name to the Variant type it decodes into, keyed by the name
+## codegen emits ahead of the component list ("vector3" in "vector3[f32,f32,f32]").
+## Row fields dispatch on the property's own Variant type instead; this is for the
+## type-string-only path, where no property is in hand.
+const NATIVE_ARRAYLIKE_BY_META_NAME: Dictionary[StringName, Variant.Type] = {
+	&"vector2": TYPE_VECTOR2,
+	&"vector2i": TYPE_VECTOR2I,
+	&"vector3": TYPE_VECTOR3,
+	&"vector3i": TYPE_VECTOR3I,
+	&"vector4": TYPE_VECTOR4,
+	&"vector4i": TYPE_VECTOR4I,
+	&"quaternion": TYPE_QUATERNION,
+	&"color": TYPE_COLOR,
+}
+
 const NATIVE_ARRAYLIKE: Array[Variant.Type] = [
 	TYPE_VECTOR2,
 	TYPE_VECTOR2I,
@@ -854,6 +869,19 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 	# Option<T>
 	if bsatn_type_str.begins_with("opt_"):
 		return _read_option(spb, { "name": context_prop_name }, bsatn_type_str.right(-4))
+
+	# Native array-like (Vector3, Color, ...) — "vector3[f32,f32,f32]". Reducer and
+	# procedure returns reach this function as a bare type string with no property
+	# to read a Variant type off, so recover it from the name ahead of the brackets.
+	var arraylike_match: RegExMatch = _native_arraylike_regex.search(bsatn_type_str)
+	if arraylike_match:
+		var base_name: StringName = StringName(arraylike_match.get_string("struct"))
+		if NATIVE_ARRAYLIKE_BY_META_NAME.has(base_name):
+			var arraylike_prop: Dictionary = {
+				"name": context_prop_name,
+				"type": NATIVE_ARRAYLIKE_BY_META_NAME[base_name],
+			}
+			return _read_native_arraylike(spb, arraylike_prop, bsatn_type_str)
 
 	# Custom Resource (schema type)
 	var schema_key: StringName = _normalize(bsatn_type_str)

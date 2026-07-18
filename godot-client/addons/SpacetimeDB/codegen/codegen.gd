@@ -175,6 +175,22 @@ static func _get_type_def(schema: SpacetimeParsedSchema, type_idx: int) -> Dicti
 	return schema.types[type_idx]
 
 
+## Appends the component list a native array-like type needs on the wire, turning
+## "vector3" into "vector3[f32,f32,f32]". Fields and params already do this inline;
+## returns need it too, or the decoder has no component types to read. Any other
+## type passes through untouched.
+static func _with_arraylike_components(
+	schema: SpacetimeParsedSchema, base_meta: String, type_idx: int
+) -> String:
+	var type_def: Dictionary = _get_type_def(schema, type_idx)
+	if not type_def.has("gd_arraylike"):
+		return base_meta
+	var inner_types: PackedStringArray = []
+	for el: Dictionary in type_def.struct:
+		inner_types.append(schema.meta_type_map.get(el.type, "f32"))
+	return "%s[%s]" % [base_meta, ",".join(inner_types)]
+
+
 func generate_bindings() -> Array[String]:
 	var generated_files: Array[String] = []
 
@@ -1132,6 +1148,9 @@ func _generate_reducers_gdscript(module_name: String, schema: SpacetimeParsedSch
 		var ret_data: Dictionary = reducer.get("return_data", { })
 		var ret_type_name: String = reducer.get("return_type", "")
 		var ret_bsatn_type: String = schema.meta_type_map.get(ret_type_name, ret_type_name)
+		ret_bsatn_type = _with_arraylike_components(
+			schema, ret_bsatn_type, reducer.get("return_type_idx", -1)
+		)
 		var ret_nested: Array = ret_data.get("nested_type", [])
 		if not ret_nested.is_empty():
 			ret_bsatn_type = _build_bsatn_type(ret_nested, ret_bsatn_type, false)
@@ -1209,6 +1228,9 @@ func _generate_procedures_gdscript(_module_name: String, schema: SpacetimeParsed
 
 		# Build return BSATN type string for decode()
 		var ret_bsatn_type: String = schema.meta_type_map.get(ret_type_name, ret_type_name)
+		ret_bsatn_type = _with_arraylike_components(
+			schema, ret_bsatn_type, proc.get("return_type_idx", -1)
+		)
 		if not ret_nested.is_empty():
 			ret_bsatn_type = _build_bsatn_type(ret_nested, ret_bsatn_type, false)
 
