@@ -31,44 +31,61 @@ static func table(name: String) -> SpacetimeDBQuery:
 
 ## Creates a query from an existing [_ModuleTable] (uses its internal table name).
 static func from(t: _ModuleTable) -> SpacetimeDBQuery:
+	if t == null:
+		push_error("SpacetimeDBQuery.from: null table.")
+		return null
+	var validated: String = _validate_identifier(t._table_name)
+	if validated.is_empty():
+		push_error("SpacetimeDBQuery.from: invalid table name '%s'." % t._table_name)
+		return null
 	var q: SpacetimeDBQuery = SpacetimeDBQuery.new()
-	q._table_name = t._table_name
+	q._table_name = validated
 	return q
+
+
+# Validates the field, then appends `field <op> value`. Skips the append entirely on
+# an invalid identifier (which already push_error'd) so to_sql() can't emit a
+# malformed ` <op> value` fragment with a blank column.
+func _append_comparison(field: String, op: String, value: Variant) -> void:
+	var ident: String = _validate_identifier(field)
+	if ident.is_empty():
+		return
+	_conditions.append("%s %s %s" % [ident, op, _format_value(value)])
 
 
 ## Adds [code]field = value[/code]. Multiple conditions are AND'd.
 func where(field: String, value: Variant) -> SpacetimeDBQuery:
-	_conditions.append("%s = %s" % [_validate_identifier(field), _format_value(value)])
+	_append_comparison(field, "=", value)
 	return self
 
 
 ## Adds [code]field != value[/code].
 func where_ne(field: String, value: Variant) -> SpacetimeDBQuery:
-	_conditions.append("%s != %s" % [_validate_identifier(field), _format_value(value)])
+	_append_comparison(field, "!=", value)
 	return self
 
 
 ## Adds [code]field > value[/code].
 func where_gt(field: String, value: Variant) -> SpacetimeDBQuery:
-	_conditions.append("%s > %s" % [_validate_identifier(field), _format_value(value)])
+	_append_comparison(field, ">", value)
 	return self
 
 
 ## Adds [code]field < value[/code].
 func where_lt(field: String, value: Variant) -> SpacetimeDBQuery:
-	_conditions.append("%s < %s" % [_validate_identifier(field), _format_value(value)])
+	_append_comparison(field, "<", value)
 	return self
 
 
 ## Adds [code]field >= value[/code].
 func where_gte(field: String, value: Variant) -> SpacetimeDBQuery:
-	_conditions.append("%s >= %s" % [_validate_identifier(field), _format_value(value)])
+	_append_comparison(field, ">=", value)
 	return self
 
 
 ## Adds [code]field <= value[/code].
 func where_lte(field: String, value: Variant) -> SpacetimeDBQuery:
-	_conditions.append("%s <= %s" % [_validate_identifier(field), _format_value(value)])
+	_append_comparison(field, "<=", value)
 	return self
 
 
@@ -78,10 +95,13 @@ func where_in(field: String, values: Array) -> SpacetimeDBQuery:
 	if values.is_empty():
 		push_error("SpacetimeDBQuery.where_in: empty value list for field '%s'." % field)
 		return self
+	var ident: String = _validate_identifier(field)
+	if ident.is_empty():
+		return self
 	var formatted: Array[String] = []
 	for v: Variant in values:
 		formatted.append(_format_value(v))
-	_conditions.append("%s IN (%s)" % [_validate_identifier(field), ", ".join(formatted)])
+	_conditions.append("%s IN (%s)" % [ident, ", ".join(formatted)])
 	return self
 
 
@@ -94,7 +114,10 @@ func where_any(pairs: Array) -> SpacetimeDBQuery:
 		if p.size() != 2:
 			push_error("SpacetimeDBQuery.where_any: each pair must be [field, value].")
 			continue
-		ors.append("%s = %s" % [_validate_identifier(p[0]), _format_value(p[1])])
+		var ident: String = _validate_identifier(p[0])
+		if ident.is_empty():
+			continue
+		ors.append("%s = %s" % [ident, _format_value(p[1])])
 	if not ors.is_empty():
 		_conditions.append("(%s)" % " OR ".join(ors))
 	return self
@@ -116,8 +139,17 @@ func _to_string() -> String:
 
 static func _format_value(value: Variant) -> String:
 	var _vt: int = typeof(value)
-	if _vt == TYPE_STRING:
-		return "'%s'" % value.replace("'", "''")
+	if _vt == TYPE_NIL:
+		# `field = NULL` never matches in SQL; almost always a caller mistake. Fail
+		# loud rather than silently emit `str(null)` = "<null>" (which was unquoted
+		# and injectable) or a no-match condition.
+		push_error("SpacetimeDBQuery: null value has no SQL equality form (use a different query).")
+		return "NULL"
+	if _vt == TYPE_STRING or _vt == TYPE_STRING_NAME:
+		# StringName must be quoted+escaped like String — typeof(&\"x\") is
+		# TYPE_STRING_NAME (21), distinct from TYPE_STRING (4). Falling through to the
+		# raw str() default was a SQL-injection hole (e.g. .where("state", &"alive")).
+		return "'%s'" % String(value).replace("'", "''")
 	if _vt == TYPE_BOOL:
 		return "true" if value else "false"
 	if _vt == TYPE_PACKED_BYTE_ARRAY:

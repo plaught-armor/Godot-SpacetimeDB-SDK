@@ -182,7 +182,11 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 	# schema.types is still keyed with underscore-stripped names for Rust/filename compat
 	var schema_key: StringName = table_name_lower.replace("_", "")
 	if not _schema.types.has(schema_key):
-		printerr("LocalDatabase: No schema found for table '", table_name_lower, "' to determine PK.")
+		printerr(
+			"LocalDatabase: No schema found for table '",
+			table_name_lower,
+			"' to determine PK.",
+		)
 		return &""
 
 	var schema: GDScript = _schema.get_type(schema_key)
@@ -219,9 +223,78 @@ func _get_row_properties(table_name_lower: StringName) -> Array[StringName]:
 	return props
 
 
+# The column names of a generated row/record Object, from its authoritative
+# BSATN_TYPES const (the same list the serializer/deserializer enumerate). Empty
+# for anything that is not a generated record (plain Object, no BSATN_TYPES).
+static func _record_columns(obj: Object) -> Array:
+	var script: Script = obj.get_script()
+	if script == null:
+		return []
+	var bt: Variant = script.get_script_constant_map().get(&"BSATN_TYPES", null)
+	if bt is Dictionary:
+		return bt.keys()
+	return []
+
+
+# Value-equality that descends into nested Resource columns (product/sum-type
+# wrappers) and Arrays. Variant `==` compares two Objects by identity, and every
+# row/nested record is a fresh `.new()` per delivery (no interning), so an identity
+# compare reports two structurally-equal rows unequal — firing spurious row_updated
+# on the PK path and missing dedup on the PK-less path. Columns come from the
+# record's BSATN_TYPES; primitives / Packed*Array short-circuit on the final
+# `a == b`, so the common all-primitive row pays no extra cost.
+static func _values_equal(a: Variant, b: Variant) -> bool:
+	var ta: int = typeof(a)
+	if ta != typeof(b):
+		return false
+	if ta == TYPE_OBJECT:
+		# typeof already guarantees non-null (null is TYPE_NIL); is_instance_valid
+		# additionally guards a freed ref (H8).
+		if not (is_instance_valid(a) and is_instance_valid(b)):
+			return a == b
+		var cols: Array = _record_columns(a)
+		if cols.is_empty():
+			return a == b # not a generated record — nothing to descend into
+		for col: StringName in cols:
+			if not _values_equal(a.get(col), b.get(col)):
+				return false
+		return true
+	if ta == TYPE_ARRAY:
+		var aa: Array = a
+		var ba: Array = b
+		if aa.size() != ba.size():
+			return false
+		for i: int in aa.size():
+			if not _values_equal(aa[i], ba[i]):
+				return false
+		return true
+	return a == b
+
+
+# Value-hash consistent with [method _values_equal] (equal values hash equal).
+# Nested Resource / Array values hash by contained value, not Object identity.
+static func _value_hash(v: Variant) -> int:
+	var t: int = typeof(v)
+	# null is TYPE_NIL (not TYPE_OBJECT) so it skips to hash(v) below.
+	if t == TYPE_OBJECT and is_instance_valid(v):
+		var cols: Array = _record_columns(v)
+		if cols.is_empty():
+			return hash(v)
+		var h: int = 17
+		for col: StringName in cols:
+			h = h * 31 + _value_hash(v.get(col))
+		return h
+	if t == TYPE_ARRAY:
+		var h: int = 7
+		for e: Variant in (v as Array):
+			h = h * 31 + _value_hash(e)
+		return h
+	return hash(v)
+
+
 func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array[StringName]) -> bool:
 	for prop_name: StringName in props:
-		if a.get(prop_name) != b.get(prop_name):
+		if not _values_equal(a.get(prop_name), b.get(prop_name)):
 			return false
 	return true
 
@@ -229,7 +302,7 @@ func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array[StringNa
 func _row_hash(row: _ModuleTableType, props: Array[StringName]) -> int:
 	var h: int = 0
 	for prop_name: StringName in props:
-		h = h * 31 + hash(row.get(prop_name))
+		h = h * 31 + _value_hash(row.get(prop_name))
 	return h
 
 
@@ -338,7 +411,13 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 	var table_name_lower: StringName = _normalize(table_update.table_name)
 
 	if not _tables.has(table_name_lower):
-		printerr("LocalDatabase: Received update for unknown table '", table_update.table_name, "' (normalized: '", table_name_lower, "')")
+		printerr(
+			"LocalDatabase: Received update for unknown table '",
+			table_update.table_name,
+			"' (normalized: '",
+			table_name_lower,
+			"')",
+		)
 		return
 
 	var pk_field: StringName = _get_primary_key_field(table_name_lower)
@@ -348,9 +427,15 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 	# allocs nothing (shared read-only empty).
 	var insert_listeners: Array = _listener_snapshot(_insert_listeners_by_table, table_name_lower)
 	var update_listeners: Array = _listener_snapshot(_update_listeners_by_table, table_name_lower)
-	var before_delete_listeners: Array = _listener_snapshot(_before_delete_listeners_by_table, table_name_lower)
+	var before_delete_listeners: Array = _listener_snapshot(
+		_before_delete_listeners_by_table,
+		table_name_lower,
+	)
 	var delete_listeners: Array = _listener_snapshot(_delete_listeners_by_table, table_name_lower)
-	var tx_listeners: Array = _listener_snapshot(_transactions_completed_listeners_by_table, table_name_lower)
+	var tx_listeners: Array = _listener_snapshot(
+		_transactions_completed_listeners_by_table,
+		table_name_lower,
+	)
 	var has_insert_listeners: bool = not insert_listeners.is_empty()
 	var has_update_listeners: bool = not update_listeners.is_empty()
 	var has_before_delete_listeners: bool = not before_delete_listeners.is_empty()
@@ -482,7 +567,9 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 	# Update detection (delete+insert of the same pk) only matters when this update has
 	# BOTH inserts and deletes. Pure inserts (subscribe) and pure deletes (rows leaving)
 	# skip the pk-set build entirely. Null PKs are warned in the delete pass below.
-	var detect_updates: bool = not table_update.inserts.is_empty() and not table_update.deletes.is_empty()
+	var detect_updates: bool = (
+		not table_update.inserts.is_empty() and not table_update.deletes.is_empty()
+	)
 	var deleted_pks: Dictionary = { }
 	if detect_updates:
 		for deleted_row: _ModuleTableType in table_update.deletes:
@@ -493,7 +580,10 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 	for inserted_row: _ModuleTableType in table_update.inserts:
 		var pk_value: Variant = inserted_row.get(pk_field)
 		if pk_value == null:
-			push_error("LocalDatabase: Inserted row for table '%s' has null PK '%s'. Skipping." % [table_name_lower, pk_field])
+			push_error(
+				"LocalDatabase: Inserted row for table '%s' has null PK '%s'. Skipping."
+				% [table_name_lower, pk_field]
+			)
 			continue
 		if track_query:
 			qmem[pk_value] = inserted_row
@@ -557,7 +647,10 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 		for deleted_row2: _ModuleTableType in table_update.deletes:
 			var pk_value: Variant = deleted_row2.get(pk_field)
 			if pk_value == null:
-				push_warning("LocalDatabase: Deleted row for table '%s' has null PK '%s'. Skipping." % [table_name_lower, pk_field])
+				push_warning(
+					"LocalDatabase: Deleted row for table '%s' has null PK '%s'. Skipping."
+					% [table_name_lower, pk_field]
+				)
 				continue
 			if detect_updates and not deleted_pks.has(pk_value):
 				continue # consumed as an update above
@@ -593,24 +686,45 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 ## transactions-completed callback per non-empty table. Used to reset the mirror
 ## (e.g. before a fresh subscription after reconnecting).
 func clear_local_db() -> void:
+	# Snapshot the rows, then clear the INNER containers (keeping the outer table keys
+	# that _init pre-populates and apply_table_update's known-table guard relies on —
+	# reassigning the outer dicts to {} would drop those keys and every later PK-table
+	# update would be rejected as "unknown table"), THEN run the delete callbacks. So a
+	# listener that re-enters apply_table_update lands in the freshly-cleared maps
+	# instead of rows we're about to wipe (M4). The snapshot loops invoke no listeners,
+	# so they can't mutate the dicts mid-iteration.
+	var pk_rows: Array = [] # of [table_name, rows]
 	for table_name_lower: StringName in _tables:
-		_emit_clear_for_table(table_name_lower, _tables[table_name_lower].values())
-		_tables[table_name_lower].clear()
+		var inner: Dictionary = _tables[table_name_lower]
+		pk_rows.append([table_name_lower, inner.values()])
+		inner.clear()
+	var pk_less_rows: Array = [] # of [table_name, rows]
 	for table_name_lower: StringName in _pk_less_tables:
-		_emit_clear_for_table(table_name_lower, _pk_less_tables[table_name_lower])
-		_pk_less_tables[table_name_lower].clear()
+		var arr: Array = _pk_less_tables[table_name_lower]
+		pk_less_rows.append([table_name_lower, arr.duplicate()])
+		arr.clear()
 	_ref_counts.clear()
 	_pk_less_counts.clear()
 	_query_rows.clear()
+	for entry: Array in pk_rows:
+		_emit_clear_for_table(entry[0], entry[1])
+	for entry: Array in pk_less_rows:
+		_emit_clear_for_table(entry[0], entry[1])
 
 
 ## Emits delete + transactions-completed callbacks for every row in [param rows].
 func _emit_clear_for_table(table_name_lower: StringName, rows: Array) -> void:
 	if rows.is_empty():
 		return
-	var before_delete_listeners: Array = _listener_snapshot(_before_delete_listeners_by_table, table_name_lower)
+	var before_delete_listeners: Array = _listener_snapshot(
+		_before_delete_listeners_by_table,
+		table_name_lower,
+	)
 	var delete_listeners: Array = _listener_snapshot(_delete_listeners_by_table, table_name_lower)
-	var tx_listeners: Array = _listener_snapshot(_transactions_completed_listeners_by_table, table_name_lower)
+	var tx_listeners: Array = _listener_snapshot(
+		_transactions_completed_listeners_by_table,
+		table_name_lower,
+	)
 	for row: _ModuleTableType in rows:
 		for listener: Callable in before_delete_listeners:
 			listener.call(row)

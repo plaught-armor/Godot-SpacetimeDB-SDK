@@ -11,8 +11,6 @@ extends RefCounted
 signal applied
 ## Emitted when the subscription is ended (unsubscribed or errored).
 signal end
-signal _applied_or_timeout(timeout: bool)
-signal _ended_or_timeout(timeout: bool)
 
 ## Client-assigned query set id.
 var query_id: int = -1
@@ -36,8 +34,6 @@ var ended: bool:
 		return _state == State.ENDED
 var _client: SpacetimeDBClient
 var _state: State = State.PENDING
-var _apply_timer: SceneTreeTimer
-var _end_timer: SceneTreeTimer
 
 
 static func create(
@@ -71,38 +67,39 @@ func wait_for_applied(timeout_sec: float = 5) -> Error:
 		return OK
 	if _state == State.ENDED:
 		return ERR_DOES_NOT_EXIST
-
-	_apply_timer = _client.get_tree().create_timer(timeout_sec)
-	_apply_timer.timeout.connect(_on_applied_timeout)
-
-	var is_timeout: bool = await _applied_or_timeout
-	# Client may have been freed during the await (C5 / H8).
-	if not is_instance_valid(_client):
+	var tree: SceneTree = _client.get_tree()
+	if tree == null:
 		return ERR_DOES_NOT_EXIST
-	_apply_timer = null
-	if is_timeout:
-		return ERR_TIMEOUT
+	# Per-await LOCAL timer + poll. Concurrent awaiters on the same handle each get
+	# their own deadline instead of clobbering a shared timer/broadcast signal (which
+	# let a short-timeout caller resolve a long-timeout caller early).
+	var timer: SceneTreeTimer = tree.create_timer(timeout_sec)
+	while _state == State.PENDING and timer.time_left > 0.0:
+		await tree.process_frame
+		if not is_instance_valid(_client): # client freed mid-await (C5 / H8)
+			return ERR_DOES_NOT_EXIST
+	if _state == State.ACTIVE:
+		return OK
 	if _state == State.ENDED:
 		return ERR_DOES_NOT_EXIST
-	return OK
+	return ERR_TIMEOUT
 
 
 ## Awaits until the subscription ends or [param timeout_sec] elapses.
 func wait_for_end(timeout_sec: float = 5) -> Error:
 	if _state == State.ENDED:
 		return OK
-
-	_end_timer = _client.get_tree().create_timer(timeout_sec)
-	_end_timer.timeout.connect(_on_ended_timeout)
-
-	var is_timeout: bool = await _ended_or_timeout
-	# Client may have been freed during the await (C5 / H8).
-	if not is_instance_valid(_client):
+	var tree: SceneTree = _client.get_tree()
+	if tree == null:
 		return ERR_DOES_NOT_EXIST
-	_end_timer = null
-	if is_timeout:
-		return ERR_TIMEOUT
-	return OK
+	var timer: SceneTreeTimer = tree.create_timer(timeout_sec)
+	while _state != State.ENDED and timer.time_left > 0.0:
+		await tree.process_frame
+		if not is_instance_valid(_client): # client freed mid-await (C5 / H8)
+			return ERR_DOES_NOT_EXIST
+	if _state == State.ENDED:
+		return OK
+	return ERR_TIMEOUT
 
 
 ## Sends an unsubscribe request to the server. Returns [constant ERR_DOES_NOT_EXIST] if already ended.
@@ -126,34 +123,11 @@ func mark_ended() -> void:
 func _on_applied() -> void:
 	# ENDED is terminal: a late/out-of-order applied (e.g. an error ended the
 	# subscription, then a stray SubscribeApplied arrives) must not resurrect it.
-	# Any awaiter was already unblocked by _on_end's _applied_or_timeout emit.
+	# Awaiters observe _state directly (poll loop), so no signal to re-emit here.
 	if _state == State.ENDED:
 		return
 	_state = State.ACTIVE
-	if _apply_timer:
-		_apply_timer.time_left = 0
-		_apply_timer = null
-	_applied_or_timeout.emit(false)
 
 
 func _on_end() -> void:
 	_state = State.ENDED
-	# Cancel apply timer and unblock wait_for_applied() if still waiting
-	if _apply_timer:
-		_apply_timer.time_left = 0
-		_apply_timer = null
-	_applied_or_timeout.emit(false)
-	if _end_timer:
-		_end_timer.time_left = 0
-		_end_timer = null
-	_ended_or_timeout.emit(false)
-
-
-func _on_applied_timeout() -> void:
-	_apply_timer = null
-	_applied_or_timeout.emit(true)
-
-
-func _on_ended_timeout() -> void:
-	_end_timer = null
-	_ended_or_timeout.emit(true)

@@ -37,7 +37,11 @@ func _run() -> int:
 	# alpha: 2 PK rows. beta: 3 PK-less rows. gamma: empty.
 	db._tables[&"alpha"][1] = _ModuleTableType.new()
 	db._tables[&"alpha"][2] = _ModuleTableType.new()
-	db._pk_less_tables[&"beta"] = [_ModuleTableType.new(), _ModuleTableType.new(), _ModuleTableType.new()]
+	db._pk_less_tables[&"beta"] = [
+		_ModuleTableType.new(),
+		_ModuleTableType.new(),
+		_ModuleTableType.new(),
+	]
 
 	db.row_deleted.connect(_on_row_deleted)
 	db.row_transactions_completed.connect(_on_tx_completed)
@@ -55,7 +59,12 @@ func _run() -> int:
 	f += _check_b("alpha got tx_completed", _signal_tx.has(&"alpha"), true)
 	f += _check_b("beta got tx_completed", _signal_tx.has(&"beta"), true)
 	f += _check_b("gamma (empty) emitted nothing", _signal_tx.has(&"gamma"), false)
-	# Storage emptied.
+	# Table keys must SURVIVE the clear — _init pre-populates them and
+	# apply_table_update's known-table guard relies on them; dropping them would make
+	# every post-clear PK-table update be rejected as "unknown table".
+	f += _check_b("alpha table still known after clear", db._tables.has(&"alpha"), true)
+	f += _check_b("gamma table still known after clear", db._tables.has(&"gamma"), true)
+	# Storage emptied (keys present, inner containers empty).
 	f += _check_i("alpha rows after clear", db._tables[&"alpha"].size(), 0)
 	f += _check_i("beta rows after clear", db._pk_less_tables[&"beta"].size(), 0)
 
