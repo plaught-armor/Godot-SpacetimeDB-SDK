@@ -16,7 +16,11 @@ var raw_table_names: Array[StringName] = []
 var debug_mode: bool = false
 
 
-func _init(p_module_name: String, p_schema_path: String = "res://spacetime_bindings/schema", p_debug_mode: bool = false) -> void:
+func _init(
+	p_module_name: String,
+	p_schema_path: String = "res://spacetime_bindings/schema",
+	p_debug_mode: bool = false,
+) -> void:
 	debug_mode = p_debug_mode
 
 	# Load table row schemas and spacetime types
@@ -35,9 +39,13 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 	if path.ends_with("/**"):
 		path = path.left(-3)
 
+	# DirAccess.open returns null when the directory is missing OR inaccessible
+	# (e.g. briefly locked by a concurrent editor reimport). Guard the handle
+	# itself — a static dir_exists_absolute check can pass while open() still
+	# returns null, then list_dir_begin() would crash on the null instance.
 	var dir: DirAccess = DirAccess.open(path)
-	if not DirAccess.dir_exists_absolute(path):
-		printerr("SpacetimeDBSchema: Schema directory does not exist: ", path)
+	if dir == null:
+		printerr("SpacetimeDBSchema: Schema directory missing or inaccessible: ", path)
 		return
 
 	dir.list_dir_begin()
@@ -69,7 +77,13 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 
 		var script_path: String = path.path_join(file_name)
 		if not ResourceLoader.exists(script_path):
-			printerr("SpacetimeDBSchema: Script file not found or inaccessible: ", script_path, " (Original name: ", file_name_raw, ")")
+			printerr(
+				"SpacetimeDBSchema: Script file not found or inaccessible: ",
+				script_path,
+				" (Original name: ",
+				file_name_raw,
+				")",
+			)
 			continue
 
 		var script: GDScript = ResourceLoader.load(script_path, "GDScript") as GDScript
@@ -93,7 +107,10 @@ func _add_table_names(table_names: Array, is_table: bool, script: GDScript, scri
 		var sn: StringName = StringName(table_name)
 		var lower_table_name: StringName = sn.to_lower().replace("_", "")
 		if types.has(lower_table_name) and debug_mode:
-			push_warning("SpacetimeDBSchema: Overwriting schema for table '%s' (from %s)" % [table_name, script_path])
+			push_warning(
+				"SpacetimeDBSchema: Overwriting schema for table '%s' (from %s)"
+				% [table_name, script_path]
+			)
 
 		if is_table:
 			tables[lower_table_name] = script

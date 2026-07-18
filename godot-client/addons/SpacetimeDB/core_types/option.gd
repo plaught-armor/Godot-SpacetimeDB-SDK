@@ -32,7 +32,7 @@ extends Resource
 		else:
 			push_error("Optional data must be an Array.")
 			_internal_data = []
-	get():
+	get ():
 		return _internal_data
 
 var _internal_data: Array = []
@@ -40,14 +40,14 @@ var _internal_data: Array = []
 
 ## Creates an Option containing [param value].
 static func some(value: Variant) -> Option:
-	var result = Option.new()
+	var result: Option = Option.new()
 	result.set_some(value)
 	return result
 
 
 ## Creates an empty Option (None).
 static func none() -> Option:
-	var result = Option.new()
+	var result: Option = Option.new()
 	result.set_none()
 	return result
 

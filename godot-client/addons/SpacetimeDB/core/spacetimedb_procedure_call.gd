@@ -37,9 +37,9 @@ var _client: SpacetimeDBClient
 
 
 static func create(
-		p_client: SpacetimeDBClient,
-		p_request_id: int,
-		p_return_bsatn_type: StringName = &"",
+	p_client: SpacetimeDBClient,
+	p_request_id: int,
+	p_return_bsatn_type: StringName = &"",
 ) -> SpacetimeDBProcedureCall:
 	var call: SpacetimeDBProcedureCall = SpacetimeDBProcedureCall.new()
 	call._client = p_client
@@ -63,8 +63,10 @@ static func fail(p_error: Error) -> SpacetimeDBProcedureCall:
 ## then inspect [member outcome] / [method is_ok] / [method is_error] / [method decode] /
 ## [member return_bytes] / [member error_message]. Distinguishes RETURNED / ERROR /
 ## INTERNAL_ERROR / TIMEOUT / DISCONNECTED instead of an ambiguous empty-array return.
-func wait_for_response(timeout_sec: float = 10) -> SpacetimeDBProcedureCall:
-	if error:
+func wait_for_response(timeout_sec: float = 10.0) -> SpacetimeDBProcedureCall:
+	# fail() handles carry a null _client; short-circuit before awaiting on it.
+	# error != OK covers every fail(err); _client == null also catches fail(OK).
+	if error != OK or _client == null:
 		return self
 	await _client.wait_for_procedure_response(request_id, timeout_sec)
 	if outcome == Outcome.PENDING:
@@ -86,7 +88,9 @@ func decode() -> Variant:
 	# Clear any error left by a prior failed decode(): this instance is never reset
 	# by worker traffic, so a stale error would make every later decode() null.
 	_client._decode_deserializer.clear_error()
-	return _client._decode_deserializer._read_value_from_bsatn_type(spb, _return_bsatn_type, &"procedure_return")
+	return _client \
+			._decode_deserializer \
+			._read_value_from_bsatn_type(spb, _return_bsatn_type, &"procedure_return")
 
 
 ## Returns [code]true[/code] if the procedure returned successfully.
@@ -96,7 +100,10 @@ func is_ok() -> bool:
 
 ## Returns [code]true[/code] if the procedure ended in any error state.
 func is_error() -> bool:
-	return outcome == Outcome.ERROR or outcome == Outcome.INTERNAL_ERROR or outcome == Outcome.DISCONNECTED
+	return (
+		outcome == Outcome.ERROR or outcome == Outcome.INTERNAL_ERROR
+		or outcome == Outcome.DISCONNECTED
+	)
 
 
 ## Returns [code]true[/code] if the call has received a terminal outcome.
