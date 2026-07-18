@@ -1,16 +1,22 @@
-# Regenerates tests/fixtures/wire_snapshot.bin — the real inbound frames that
-# test_wire_fixture_decode.gd replays. Needs a running server with the Blackholio
-# module published. Underscore-prefixed so run_tests.sh skips it, and a scene
-# rather than --script because it needs the generated autoload.
+# Regenerates the wire fixtures that test_wire_fixture_decode.gd replays: real
+# inbound frames from a live Blackholio module, not bytes we authored. Needs a
+# running server with the module published. Underscore-prefixed so run_tests.sh
+# skips it, and a scene rather than --script because it needs the generated
+# autoload.
 #
 #   spacetime start ... && cd blackholio-server && ./publish.sh
 #   cd godot-client && <godot> --headless --path . res://tests/_capture_wire_fixture.tscn
 #
-# Frames are stored length-prefixed, raw (compression NONE), including the leading
-# compression tag byte the client strips at parse time.
+# Writes two fixtures, both length-prefixed raw frames (compression NONE) that
+# still carry the leading compression tag byte the client strips at parse time:
+#
+#   wire_snapshot.bin — the subscription snapshot (SubscribeApplied + rows)
+#   wire_txn.bin      — a transaction update carrying a reducer event, produced by
+#                       calling enter_game while subscribed
 extends Node
 
-const OUT_PATH: String = "res://tests/fixtures/wire_snapshot.bin"
+const SNAPSHOT_PATH: String = "res://tests/fixtures/wire_snapshot.bin"
+const TXN_PATH: String = "res://tests/fixtures/wire_txn.bin"
 
 var _file: FileAccess
 var _count: int = 0
@@ -26,17 +32,50 @@ func _ready() -> void:
 
 
 func _on_connected(_identity: PackedByteArray, _token: String) -> void:
-	_file = FileAccess.open(OUT_PATH, FileAccess.WRITE)
 	SpacetimeDB.Blackholio._connection.message_received.connect(_on_packet)
-	SpacetimeDB.Blackholio.subscribe(["SELECT * FROM config"])
-	await get_tree().create_timer(4.0).timeout
-	_file.close()
-	print("[capture] packets=%d bytes=%d" % [_count, FileAccess.get_file_as_bytes(OUT_PATH).size()])
+
+	# 1. Subscription snapshot. Narrow queries so the fixture stays small; the
+	#    entity filter still yields a row with a real nested DbVector2.
+	_open(SNAPSHOT_PATH)
+	var sub: SpacetimeDBSubscription = SpacetimeDB \
+			.Blackholio \
+			.subscribe([
+				"SELECT * FROM config",
+				"SELECT * FROM player",
+				"SELECT * FROM entity WHERE entity_id = 1",
+			])
+	await sub.wait_for_applied(10.0)
+	await get_tree().create_timer(0.5).timeout
+	_close("snapshot")
+
+	# 2. Transaction update + reducer event, from our own reducer call.
+	_open(TXN_PATH)
+	var call: SpacetimeDBReducerCall = SpacetimeDB.Blackholio.reducers.enter_game("WireFixture")
+	await call.wait_for_response(10.0)
+	await get_tree().create_timer(3.0).timeout
+	_close("txn")
+
 	get_tree().quit()
 
 
+func _open(path: String) -> void:
+	_file = FileAccess.open(path, FileAccess.WRITE)
+	_count = 0
+
+
+func _close(label: String) -> void:
+	var path: String = _file.get_path()
+	_file.close()
+	_file = null
+	print(
+		"[capture] %s: packets=%d bytes=%d"
+		% [label, _count, FileAccess.get_file_as_bytes(path).size()]
+	)
+
+
 func _on_packet(bytes: PackedByteArray) -> void:
-	# length-prefixed frames so the test can replay them in order
+	if _file == null:
+		return
 	_file.store_32(bytes.size())
 	_file.store_buffer(bytes)
 	_count += 1
