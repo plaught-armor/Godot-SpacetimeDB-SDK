@@ -630,6 +630,13 @@ func _read_native_arraylike(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_
 		_set_error("Missing component types in 'bsatn_type' for '%s'" % prop_name, start_pos)
 		return null
 
+	# Deliberately NOT split into a shared "read components" helper that the
+	# type-string path could call to skip re-matching. Measured 4.8.dev
+	# (tests/bench_native_vector.gd, 200k rows x 4 Vector3, 3 runs): the extra
+	# function call costs ~5-6% on THIS path (3123/3148 ms inline vs 3295 ms best
+	# split), which every native-vector row field pays, to save a ~513 ns regex on
+	# the far rarer Array-of-Vector3 path. Keeping the duplicate match is the
+	# cheaper trade. See tests/bench_vec_struct.gd for the other side.
 	var components: Array[Variant] = []
 	for component_type: StringName in components_str.split(","):
 		components.append(_read_value_from_bsatn_type(spb, component_type, prop_name))
@@ -873,15 +880,21 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 	# Native array-like (Vector3, Color, ...) — "vector3[f32,f32,f32]". Reducer and
 	# procedure returns reach this function as a bare type string with no property
 	# to read a Variant type off, so recover it from the name ahead of the brackets.
-	var arraylike_match: RegExMatch = _native_arraylike_regex.search(bsatn_type_str)
-	if arraylike_match:
-		var base_name: StringName = StringName(arraylike_match.get_string("struct"))
-		if NATIVE_ARRAYLIKE_BY_META_NAME.has(base_name):
-			var arraylike_prop: Dictionary = {
-				"name": context_prop_name,
-				"type": NATIVE_ARRAYLIKE_BY_META_NAME[base_name],
-			}
-			return _read_native_arraylike(spb, arraylike_prop, bsatn_type_str)
+	#
+	# Gated on the trailing bracket first: every Vec<T> of a nested struct recurses
+	# through here once per element, and an unconditional regex search costs ~152 ns
+	# against ~18 ns for this check (measured 4.8.dev, tests/bench_arraylike_probe.gd).
+	# Only a component list ends in ']', so this cannot skip a real match.
+	if bsatn_type_str.ends_with("]"):
+		var arraylike_match: RegExMatch = _native_arraylike_regex.search(bsatn_type_str)
+		if arraylike_match:
+			var base_name: StringName = StringName(arraylike_match.get_string("struct"))
+			if NATIVE_ARRAYLIKE_BY_META_NAME.has(base_name):
+				var arraylike_prop: Dictionary = {
+					"name": context_prop_name,
+					"type": NATIVE_ARRAYLIKE_BY_META_NAME[base_name],
+				}
+				return _read_native_arraylike(spb, arraylike_prop, bsatn_type_str)
 
 	# Custom Resource (schema type)
 	var schema_key: StringName = _normalize(bsatn_type_str)

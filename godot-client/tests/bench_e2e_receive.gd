@@ -15,7 +15,7 @@
 #       --script tests/bench_e2e_receive.gd
 extends SceneTree
 
-const N: int = 200000
+const N: int = 100000
 const REPS: int = 5
 const ROW_BYTES: int = 16
 
