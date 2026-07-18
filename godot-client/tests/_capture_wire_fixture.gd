@@ -13,12 +13,14 @@
 #   wire_snapshot.bin — the subscription snapshot (SubscribeApplied + rows)
 #   wire_txn.bin      — a transaction update carrying a reducer event, produced by
 #                       calling enter_game while subscribed
-#   wire_procedure.bin — a value-returning procedure response (probe_vector3)
+#   wire_procedure.bin     — a value-returning procedure response (probe_vector3)
+#   wire_procedure_err.bin — the err arm of the same Result type (probe_error)
 extends Node
 
 const SNAPSHOT_PATH: String = "res://tests/fixtures/wire_snapshot.bin"
 const TXN_PATH: String = "res://tests/fixtures/wire_txn.bin"
 const PROC_PATH: String = "res://tests/fixtures/wire_procedure.bin"
+const PROC_ERR_PATH: String = "res://tests/fixtures/wire_procedure_err.bin"
 
 var _file: FileAccess
 var _count: int = 0
@@ -70,6 +72,14 @@ func _on_connected(_identity: PackedByteArray, _token: String) -> void:
 	await proc.wait_for_response(10.0)
 	await get_tree().create_timer(0.5).timeout
 	_close("procedure")
+
+	# 4. The err arm of the same Result type. Only the ok arm was ever captured,
+	#    and nothing in the suite asserted an err payload at all.
+	_open(PROC_ERR_PATH)
+	var failing: SpacetimeDBProcedureCall = SpacetimeDB.Blackholio.procedures.probe_error()
+	await failing.wait_for_response(10.0)
+	await get_tree().create_timer(0.5).timeout
+	_close("procedure_err")
 
 	get_tree().quit()
 

@@ -22,6 +22,9 @@ const TXN_FIXTURE: String = "res://tests/fixtures/wire_txn.bin"
 const PROC_FIXTURE: String = "res://tests/fixtures/wire_procedure.bin"
 # What blackholio-server's probe_vector3 procedure returns.
 const EXPECTED_VECTOR: Vector3 = Vector3(1.5, -2.25, 3.75)
+const PROC_ERR_FIXTURE: String = "res://tests/fixtures/wire_procedure_err.bin"
+# What blackholio-server's probe_error procedure returns.
+const EXPECTED_ERROR: String = "probe failure"
 # Set by the module's init reducer — the value the server actually holds.
 const EXPECTED_WORLD_SIZE: int = 1000
 
@@ -32,6 +35,7 @@ func _initialize() -> void:
 	var fails: int = _test_real_frames_decode()
 	fails += _test_real_transaction_decodes()
 	fails += _test_real_procedure_return_decodes()
+	fails += _test_real_procedure_error_decodes()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -221,6 +225,60 @@ func _test_real_procedure_return_decodes() -> int:
 	return f
 
 
+# The err arm of the same Result type the ok arm above exercises. Nothing in the
+# suite asserted an err payload at all — the type was fixed and shipped having
+# only ever been checked on its happy path.
+func _test_real_procedure_error_decodes() -> int:
+	var frames: Array[PackedByteArray] = _frames(PROC_ERR_FIXTURE)
+	var f: int = _check_b("err fixture has frames", frames.is_empty(), false)
+	if frames.is_empty():
+		return f
+
+	var deserializer: BSATNDeserializer = BSATNDeserializer.new(
+		SpacetimeDBSchema.new("Blackholio"),
+		false,
+	)
+	var payloads: Array[PackedByteArray] = []
+	for frame: PackedByteArray in frames:
+		for msg: SpacetimeDBServerMessage in deserializer.process_bytes_and_extract_messages(
+			frame.slice(1)
+		):
+			if msg is ProcedureResultData:
+				payloads.append((msg as ProcedureResultData).return_bytes)
+
+	f += _check_b("no decode error on real bytes", deserializer.has_error(), false)
+	f += _check_b("decoded a procedure result", payloads.is_empty(), false)
+	if payloads.is_empty():
+		return f
+
+	var value_deserializer: BSATNDeserializer = BSATNDeserializer.new(
+		SpacetimeDBSchema.new("Blackholio"),
+		false,
+	)
+	var buffer: StreamPeerBuffer = StreamPeerBuffer.new()
+	buffer.big_endian = false
+	buffer.data_array = payloads[0]
+	buffer.seek(0)
+	var decoded: Variant = value_deserializer._read_value_from_bsatn_type(
+		buffer,
+		&"BlackholioResultVector3String",
+		&"procedure_return",
+	)
+	f += _check_b("err payload resolved", decoded != null, true)
+	if decoded == null:
+		printerr("      decode error: %s" % value_deserializer.get_last_error())
+		return f
+	# get_ok()/get_err() are unguarded accessors — both just return `data`. The
+	# discriminator is `value`, so that is what actually distinguishes the arms.
+	f += _check_i(
+		"discriminator selects err",
+		decoded.value,
+		BlackholioResultVector3String.Options.err,
+	)
+	f += _check_s("err message round-trips off the wire", str(decoded.get_err()), EXPECTED_ERROR)
+	return f
+
+
 func _config_rows_in(msg: SpacetimeDBServerMessage) -> Array[Resource]:
 	var out: Array[Resource] = []
 	if msg is not SubscribeAppliedMessage:
@@ -229,6 +287,15 @@ func _config_rows_in(msg: SpacetimeDBServerMessage) -> Array[Resource]:
 		if String(update.table_name) == "config":
 			out.append_array(update.inserts)
 	return out
+
+
+func _check_s(label: String, got: String, want: String) -> int:
+	_total += 1
+	if got == want:
+		print("PASS  %s = '%s'" % [label, got])
+		return 0
+	printerr("FAIL  %s: got '%s' want '%s'" % [label, got, want])
+	return 1
 
 
 func _check_b(label: String, got: bool, want: bool) -> int:

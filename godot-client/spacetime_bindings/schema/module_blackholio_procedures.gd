@@ -7,6 +7,10 @@ var _client: SpacetimeDBClient
 func _init(p_client: SpacetimeDBClient) -> void:
 	_client = p_client
 ## Returns: BlackholioResultVector3String [br]
+func probe_error() -> SpacetimeDBProcedureCall:
+	return _client.call_procedure('probe_error', [], [], &'BlackholioResultVector3String')
+
+## Returns: BlackholioResultVector3String [br]
 func probe_vector_3() -> SpacetimeDBProcedureCall:
 	return _client.call_procedure('probe_vector_3', [], [], &'BlackholioResultVector3String')
 

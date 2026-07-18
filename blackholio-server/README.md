@@ -19,7 +19,7 @@ in-file and recorded in [`NOTICE`](NOTICE) per Apache-2.0 section 4(b):
    spacetimedb = "2.5.0"
    ```
 
-2. A `probe_vector3` procedure in `src/lib.rs`, appended at the end of the file.
+2. `probe_vector3` and `probe_error` procedures in `src/lib.rs`, appended at the end of the file.
    Nothing in the game calls it — it exists so the SDK test suite can capture
    real wire bytes for a value-returning procedure, the one shape stock
    Blackholio does not exercise.

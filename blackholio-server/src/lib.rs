@@ -636,3 +636,10 @@ pub fn probe_vector3(_ctx: &mut spacetimedb::ProcedureContext) -> Result<Vector3
         z: 3.75,
     })
 }
+
+// Same Result type, err arm — so the fixtures cover both variants of one
+// synthesized Result<Vector3, String>, not just the happy path.
+#[spacetimedb::procedure]
+pub fn probe_error(_ctx: &mut spacetimedb::ProcedureContext) -> Result<Vector3, String> {
+    Err("probe failure".to_string())
+}
