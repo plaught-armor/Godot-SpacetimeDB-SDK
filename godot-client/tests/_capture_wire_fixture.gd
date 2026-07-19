@@ -18,6 +18,7 @@
 #   wire_one_off_query.bin — a query_sql / OneOffQueryResponse result
 #   wire_unsubscribe.bin   — an UnsubscribeApplied response
 #   wire_subscription_error.bin — a SubscriptionError for an uncompilable query
+#   wire_procedure_params.bin   — a procedure response computed from its arguments
 extends Node
 
 const SNAPSHOT_PATH: String = "res://tests/fixtures/wire_snapshot.bin"
@@ -27,6 +28,7 @@ const PROC_ERR_PATH: String = "res://tests/fixtures/wire_procedure_err.bin"
 const SQL_PATH: String = "res://tests/fixtures/wire_one_off_query.bin"
 const UNSUB_PATH: String = "res://tests/fixtures/wire_unsubscribe.bin"
 const SUB_ERR_PATH: String = "res://tests/fixtures/wire_subscription_error.bin"
+const PROC_PARAMS_PATH: String = "res://tests/fixtures/wire_procedure_params.bin"
 
 var _file: FileAccess
 var _count: int = 0
@@ -113,6 +115,17 @@ func _on_connected(_identity: PackedByteArray, _token: String) -> void:
 	await bad.wait_for_applied(10.0)
 	await get_tree().create_timer(0.5).timeout
 	_close("subscription_error")
+
+	# 8. Procedure PARAMETERS. The module echoes a value computed from its
+	#    arguments, so the response proves they crossed the wire intact.
+	_open(PROC_PARAMS_PATH)
+	var echoed: SpacetimeDBProcedureCall = SpacetimeDB \
+			.Blackholio \
+			.procedures \
+			.probe_params(Vector3(1.0, 2.0, 3.0), 3, "hello")
+	await echoed.wait_for_response(10.0)
+	await get_tree().create_timer(0.5).timeout
+	_close("procedure_params")
 
 	get_tree().quit()
 

@@ -637,6 +637,26 @@ pub fn probe_vector3(_ctx: &mut spacetimedb::ProcedureContext) -> Result<Vector3
     })
 }
 
+// Takes parameters and echoes a value computed from them, so a test can prove the
+// arguments actually crossed the wire intact rather than merely that the call
+// succeeded. Covers a native array-like param, a scalar, and a string.
+#[spacetimedb::procedure]
+pub fn probe_params(
+    _ctx: &mut spacetimedb::ProcedureContext,
+    v: Vector3,
+    scale: i32,
+    label: String,
+) -> Result<Vector3, String> {
+    if label.is_empty() {
+        return Err("label was empty".to_string());
+    }
+    Ok(Vector3 {
+        x: v.x * scale as f32,
+        y: v.y * scale as f32,
+        z: v.z * scale as f32,
+    })
+}
+
 // Same Result type, err arm — so the fixtures cover both variants of one
 // synthesized Result<Vector3, String>, not just the happy path.
 #[spacetimedb::procedure]

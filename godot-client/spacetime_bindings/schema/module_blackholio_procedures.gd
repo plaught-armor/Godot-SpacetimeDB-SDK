@@ -11,6 +11,13 @@ func probe_error() -> SpacetimeDBProcedureCall:
 	return _client.call_procedure('probe_error', [], [], &'BlackholioResultVector3String')
 
 ## Returns: BlackholioResultVector3String [br]
+## 0. v: Vector3 [br]
+## 1. scale: int [br]
+## 2. label: String [br]
+func probe_params(v: Vector3, scale: int, label: String) -> SpacetimeDBProcedureCall:
+	return _client.call_procedure('probe_params', [v, scale, label], [&'vector3[f32,f32,f32]', &'i32', &'string'], &'BlackholioResultVector3String')
+
+## Returns: BlackholioResultVector3String [br]
 func probe_vector_3() -> SpacetimeDBProcedureCall:
 	return _client.call_procedure('probe_vector_3', [], [], &'BlackholioResultVector3String')
 

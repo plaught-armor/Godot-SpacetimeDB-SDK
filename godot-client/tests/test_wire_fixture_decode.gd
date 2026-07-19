@@ -30,6 +30,10 @@ const UNSUB_FIXTURE: String = "res://tests/fixtures/wire_unsubscribe.bin"
 const SUB_ERR_FIXTURE: String = "res://tests/fixtures/wire_subscription_error.bin"
 # The table the capture subscribes to and then drops.
 const UNSUB_TABLE: String = "does_not_exist"
+const PROC_PARAMS_FIXTURE: String = "res://tests/fixtures/wire_procedure_params.bin"
+# probe_params(Vector3(1, 2, 3), scale = 3, label = "hello") scales its vector
+# argument, so this value is only reachable if all three parameters arrived.
+const EXPECTED_SCALED: Vector3 = Vector3(3.0, 6.0, 9.0)
 # Set by the module's init reducer — the value the server actually holds.
 const EXPECTED_WORLD_SIZE: int = 1000
 
@@ -44,6 +48,7 @@ func _initialize() -> void:
 	fails += _test_real_one_off_query_decodes()
 	fails += _test_real_unsubscribe_decodes()
 	fails += _test_real_subscription_error_decodes()
+	fails += _test_real_procedure_params_decode()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -359,6 +364,51 @@ func _test_real_subscription_error_decodes() -> int:
 	f += _check_b(
 		"error names the missing table",
 		errors[0].error_message.contains(UNSUB_TABLE),
+		true,
+	)
+	return f
+
+
+# Procedure PARAMETERS had no coverage at all, and they take a different codegen
+# path (_param_to_bsatn_type) than the returns fixed in 2.5.0. The module computes
+# its answer from the arguments, so decoding the expected value here proves the
+# arguments serialized correctly — the response is the receipt for the request.
+func _test_real_procedure_params_decode() -> int:
+	var payloads: Array[PackedByteArray] = []
+	for msg: SpacetimeDBServerMessage in _messages_in(PROC_PARAMS_FIXTURE):
+		if msg is ProcedureResultData:
+			payloads.append((msg as ProcedureResultData).return_bytes)
+
+	var f: int = _check_b("decoded a procedure result", payloads.is_empty(), false)
+	if payloads.is_empty():
+		return f
+
+	var value_deserializer: BSATNDeserializer = BSATNDeserializer.new(
+		SpacetimeDBSchema.new("Blackholio"),
+		false,
+	)
+	var buffer: StreamPeerBuffer = StreamPeerBuffer.new()
+	buffer.big_endian = false
+	buffer.data_array = payloads[0]
+	buffer.seek(0)
+	var decoded: Variant = value_deserializer._read_value_from_bsatn_type(
+		buffer,
+		&"BlackholioResultVector3String",
+		&"procedure_return",
+	)
+	f += _check_b("payload resolved", decoded != null, true)
+	if decoded == null:
+		printerr("      decode error: %s" % value_deserializer.get_last_error())
+		return f
+	f += _check_i(
+		"discriminator selects ok",
+		decoded.value,
+		BlackholioResultVector3String.Options.ok,
+	)
+	var scaled: Variant = decoded.get_ok()
+	f += _check_b(
+		"arguments round-tripped (%s)" % [scaled],
+		(scaled is Vector3 and (scaled as Vector3).is_equal_approx(EXPECTED_SCALED)),
 		true,
 	)
 	return f

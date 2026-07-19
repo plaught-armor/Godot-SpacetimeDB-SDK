@@ -60,9 +60,13 @@ Covered by real bytes: a nested struct (`DbVector2` on an entity), a
 synthesized `Result<T, E>` in both arms, and a native array-like payload
 (`vector3[f32,f32,f32]`).
 
+Procedure **parameters** are covered indirectly but strongly: the module's
+`probe_params` computes its result from its arguments, so decoding the expected
+value proves all three (a native array-like, a scalar, a string) crossed the wire
+intact. The response is the receipt for the request.
+
 Not covered by real bytes: `Option` fields, enum/sum columns on a table, btree
-and unique index reads, `Identity`/`u128`/`u256` scalars, and procedure
-**parameters** (only returns are exercised).
+and unique index reads, and `Identity`/`u128`/`u256` scalars.
 
 ## Regenerating the fixtures
 
