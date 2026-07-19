@@ -109,41 +109,176 @@ static func _safe_name(field_name: String) -> String:
 	return field_name
 
 
-## Escapes a GENERATED METHOD name that would override a native one. Godot refuses to
-## load a script whose method overrides a native class's ("overrides a method from
-## native class", and a signature mismatch on top of it), so one such name makes the
-## whole binding unusable. Two ways in: an enum variant named `class` produces
-## `get_class()`, and a reducer or procedure named `set` / `notification` / `connect`
-## produces that name verbatim. [method _safe_name] catches neither — it only knows
-## GDScript reserved words, and these names mostly are not (they are also all legal
-## Rust identifiers, so a module can really export them). Asks ClassDB instead of
-## carrying a hand-written list, so it stays correct across engine versions.
+## Every method and property name a native class already defines, inheritance included.
+## Keyed by class name; built once per class, since ClassDB allocates a fresh list of
+## dictionaries on each call and codegen asks per generated name.
+static var _native_names_cache: Dictionary[StringName, Dictionary] = { }
+
+
+## The set (Dictionary used as a set) of names taken by [param base_class].
 ##
-## [param base_class] is the generated script's base — `Resource` for the enum types
-## (RustEnum), `RefCounted` for the reducer/procedure classes. Inheritance is included,
-## so Object's methods are covered either way.
-static func _safe_method_name(method_name: String, base_class: StringName = &"Resource") -> String:
-	if ClassDB.class_has_method(base_class, StringName(method_name)):
-		return method_name + "_"
-	return method_name
+## Methods come from ClassDB, which reports inherited ones. Properties must come from an
+## INSTANCE instead: [method ClassDB.class_get_property_list] reports neither inherited
+## nor engine-special properties — `Object`'s list comes back empty, so `script`, a real
+## collision, is invisible there. An instance's `get_property_list()` has them.
+static func _native_names(base_class: StringName) -> Dictionary:
+	if _native_names_cache.has(base_class):
+		return _native_names_cache[base_class]
+	var taken: Dictionary = { }
+	for m: Dictionary in ClassDB.class_get_method_list(base_class):
+		taken[String(m.get("name", ""))] = true
+	var probe: Object = ClassDB.instantiate(base_class)
+	if probe == null:
+		push_error(
+			"[SpacetimeDB] codegen could not instantiate %s to read its property names; "
+			% base_class
+			+ "generated names are checked against its methods only"
+		)
+	else:
+		const LABEL_USAGE: int = (
+			PROPERTY_USAGE_CATEGORY | PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP
+		)
+		for p: Dictionary in probe.get_property_list():
+			# Category/group rows are inspector labels, not properties.
+			if int(p.get("usage", 0)) & LABEL_USAGE:
+				continue
+			taken[String(p.get("name", ""))] = true
+		if not (probe is RefCounted):
+			probe.free()
+	_native_names_cache[base_class] = taken
+	return taken
+
+
+## Escapes a GENERATED MEMBER name — method or variable — that a native class already
+## defines. Godot refuses to load such a script ("overrides a method from native class"
+## for a method, `Member "x" redefined` for a variable), so a single colliding name
+## makes the whole binding unusable, taking every other table and reducer in the module
+## with it. [method _safe_name] catches none of these: it only knows GDScript reserved
+## words, and these names mostly are not (`set`, `notification`, `script`,
+## `resource_name`, ...). They are all legal Rust identifiers, so a module can really
+## export them. Every way in that exists today:
+## [codeblock]
+## enum variant `class`      -> func get_class()          overrides Object.get_class
+## reducer/procedure `set`   -> func set(...)             overrides Object.set
+## row column `script`       -> @export var script        redefines Object.script
+## table `script`            -> var script: XTable        same, on the db facade
+## index accessor `resource_name` -> var resource_name    same, on the table wrapper
+## [/codeblock]
+## Methods and properties share one namespace here on purpose: a `var free` collides
+## with the method just as a `func script()` collides with the property. Asks ClassDB
+## rather than carrying a hand-written list, so it stays correct across engine versions.
+##
+## [param base_class] is the generated script's base: `Resource` for the row types
+## (`_ModuleTableType`) and the enum types (`RustEnum`), `RefCounted` for the
+## reducer/procedure/db classes and the table wrappers (`_ModuleTable`).
+static func _safe_member_name(member_name: String, base_class: StringName = &"Resource") -> String:
+	if _native_names(base_class).has(member_name):
+		return member_name + "_"
+	return member_name
 
 
 ## Accessor name for an enum variant's payload (`ok` -> `get_ok`).
 static func _variant_getter_name(variant_name: String) -> String:
-	return _safe_method_name("get_%s" % variant_name.to_snake_case())
+	return _safe_member_name("get_%s" % variant_name.to_snake_case())
 
 
 ## Constructor name for an enum variant (`ok` -> `create_ok`).
 static func _variant_creator_name(variant_name: String) -> String:
-	return _safe_method_name("create_%s" % variant_name.to_snake_case())
+	return _safe_member_name("create_%s" % variant_name.to_snake_case())
 
 
 ## Function name for a reducer or procedure. Reserved-word escape first (so `match`
-## becomes `match_`), then the native-method check on the generated class's own base.
+## becomes `match_`), then the native-member check on the generated class's own base.
 ## The raw wire name is passed separately to call_reducer/call_procedure, so renaming
 ## here is local to the GDScript surface.
 static func _safe_call_name(call_name: String) -> String:
-	return _safe_method_name(_safe_name(call_name), &"RefCounted")
+	return _safe_member_name(_safe_name(call_name), &"RefCounted")
+
+
+## Names codegen itself puts in the generated files, which a column therefore cannot
+## take either. The row type spells `module_name` / `table_names` / `PRIMARY_KEY` /
+## `BSATN_TYPES` / `create`; the table wrapper spells the three typed change signals and
+## their `_emit_*` helpers. Everything else those classes carry is inherited, and
+## [method _column_taken_names] reads that from the bases directly. A plain `var`, never
+## `const` — a const Packed*Array reads back wrong (C1, #88753).
+static var _CODEGEN_OWN_NAMES: PackedStringArray = [
+	"module_name",
+	"table_names",
+	"PRIMARY_KEY",
+	"BSATN_TYPES",
+	"create",
+	"inserted",
+	"updated",
+	"deleted",
+	"_emit_inserted",
+	"_emit_updated",
+	"_emit_deleted",
+]
+
+## Every name a COLUMN must avoid, cached. A column name is spelled in two different
+## classes at once, so it has to clear both: as an `@export var` on the row type
+## (`_ModuleTableType`, a Resource) and — when the column carries an index — as the
+## accessor variable on the table wrapper (`_ModuleTable`, a RefCounted). The two must
+## end up with the SAME spelling, because the index stores it as `_field_name` and looks
+## the row property up by it; escaping one and not the other points the index at a
+## property that does not exist.
+##
+## The SDK bases matter as much as the engine ones here: `count` and `iter` are ordinary
+## column names and ordinary `_ModuleTable` methods, and Godot rejects
+## `The member "count" already exists in parent class _ModuleTable` exactly as it rejects
+## a native override.
+static var _column_taken_cache: Dictionary = { }
+
+
+static func _column_taken_names() -> Dictionary:
+	if not _column_taken_cache.is_empty():
+		return _column_taken_cache
+	var taken: Dictionary = { }
+	taken.merge(_native_names(&"Resource"))
+	taken.merge(_script_names(_ModuleTableType))
+	taken.merge(_script_names(_ModuleTable))
+	for own_name: String in _CODEGEN_OWN_NAMES:
+		taken[own_name] = true
+	taken.make_read_only() # C2a — shared static table, lock after populate
+	_column_taken_cache = taken
+	return taken
+
+
+## Method, property and signal names a GDScript class declares, walking up any GDScript
+## bases it has. The native ancestor at the top of that chain is covered separately by
+## [method _native_names]. Depth-bounded (NASA rule 2).
+static func _script_names(script: Script) -> Dictionary:
+	var taken: Dictionary = { }
+	var current: Script = script
+	for _level: int in 8:
+		if current == null:
+			break
+		for m: Dictionary in current.get_script_method_list():
+			taken[String(m.get("name", ""))] = true
+		for p: Dictionary in current.get_script_property_list():
+			taken[String(p.get("name", ""))] = true
+		for s: Dictionary in current.get_script_signal_list():
+			taken[String(s.get("name", ""))] = true
+		current = current.get_base_script()
+	return taken
+
+
+## Member name for a row COLUMN. Lands on `_ModuleTableType` (a Resource) as an
+## `@export var`, and the same string keys BSATN_TYPES, names the `create()` parameter,
+## and — for an indexed column — names the accessor on the table wrapper and the
+## `_field_name` the index resolves through. Every site that spells a column must call
+## this one, or those drift apart and the column decodes into nothing.
+static func _safe_field_name(field_name: String) -> String:
+	var escaped: String = _safe_name(field_name)
+	if _column_taken_names().has(escaped):
+		return escaped + "_"
+	return escaped
+
+
+## Member name for a generated variable on a RefCounted-based class: a table on the db
+## facade, an index accessor on a table wrapper.
+static func _safe_ref_member_name(member_name: String) -> String:
+	return _safe_member_name(_safe_name(member_name), &"RefCounted")
 
 
 ## Formats a single table name as a BSATN StringName literal.
@@ -610,7 +745,7 @@ func _generate_table_unique_index_gdscript(schema: SpacetimeParsedSchema, unique
 	# _safe_name at source: the class-name (to_pascal_case, unchanged by the suffix)
 	# and _field_name (row-property lookup) both derive from this and must match the
 	# sanitized names the table wrapper emits.
-	var field_name: String = _safe_name(unique_index_def.get("name", ""))
+	var field_name: String = _safe_field_name(unique_index_def.get("name", ""))
 	var original_field_type: String = unique_index_def.get("type", "Variant")
 	var field_type: String = schema.type_map.get(original_field_type, "Variant")
 	var type_def: Dictionary = _get_type_def(schema, table_def.get("type_idx", -1)) if table_def.has("type_idx") else { }
@@ -635,7 +770,7 @@ func _generate_table_unique_index_gdscript(schema: SpacetimeParsedSchema, unique
 func _generate_table_btree_index_gdscript(schema: SpacetimeParsedSchema, btree_index_def: Dictionary, table_def: Dictionary) -> String:
 	var table_name: String = table_def.get("name", "")
 	# _safe_name at source (see the unique-index generator).
-	var field_name: String = _safe_name(btree_index_def.get("name", ""))
+	var field_name: String = _safe_field_name(btree_index_def.get("name", ""))
 	var original_field_type: String = btree_index_def.get("type", "Variant")
 	var field_type: String = schema.type_map.get(original_field_type, "Variant")
 	var type_def: Dictionary = _get_type_def(schema, table_def.get("type_idx", -1)) if table_def.has("type_idx") else { }
@@ -689,14 +824,14 @@ func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictiona
 	# PascalCase class-name part is unaffected by keywords (keywords are lowercase).
 	var unique_index_fields: Dictionary[String, String] = { }
 	for unique_index_def in table_def.get("unique_indexes", []):
-		var field_name: String = _safe_name(unique_index_def.get("name", ""))
+		var field_name: String = _safe_field_name(unique_index_def.get("name", ""))
 		var unique_index_class_name: String = "%s%s%sUniqueIndex" % \
 				[schema.module.to_pascal_case(), table_name.to_pascal_case(), field_name.to_pascal_case()]
 		unique_index_fields[field_name] = unique_index_class_name
 
 	var btree_index_fields: Dictionary[String, String] = { }
 	for btree_index_def in table_def.get("btree_indexes", []):
-		var field_name: String = _safe_name(btree_index_def.get("name", ""))
+		var field_name: String = _safe_field_name(btree_index_def.get("name", ""))
 		var btree_index_class_name: String = "%s%s%sBTreeIndex" % \
 				[schema.module.to_pascal_case(), table_name.to_pascal_case(), field_name.to_pascal_case()]
 		btree_index_fields[field_name] = btree_index_class_name
@@ -847,7 +982,7 @@ func _table_scalar_fields(schema: SpacetimeParsedSchema, type_def: Dictionary) -
 	for field: Dictionary in type_def.get("struct", []):
 		if not field.get("nested_type", []).is_empty():
 			continue
-		var field_name: String = _safe_name(field.get("name", ""))
+		var field_name: String = _safe_field_name(field.get("name", ""))
 		if field_name == "scheduled_at":
 			continue
 		var gd_type: String = schema.type_map.get(field.get("type", "Variant"), "Variant")
@@ -886,7 +1021,7 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 
 	for i in fields.size():
 		var field: Dictionary = fields[i]
-		var field_name: String = _safe_name(field.get("name", ""))
+		var field_name: String = _safe_field_name(field.get("name", ""))
 		var original_type_name: String = field.get("type", "Variant")
 		var field_type = _get_type_def(schema, field.type_idx) if field.has("type_idx") else null
 		var gd_field_type: String = "Variant"
@@ -950,7 +1085,7 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 	if not primary_key_name.is_empty():
 		# _safe_name to match the @export property (fields are sanitized at line ~795);
 		# a PK column named a GDScript keyword would otherwise point at a missing property.
-		out.append("const PRIMARY_KEY: StringName = &\"%s\"\n" % _safe_name(primary_key_name))
+		out.append("const PRIMARY_KEY: StringName = &\"%s\"\n" % _safe_field_name(primary_key_name))
 	if not bsatn_type_entries.is_empty():
 		out.append("const BSATN_TYPES: Dictionary[StringName, StringName] = { %s }\n" % ", ".join(bsatn_type_entries))
 	out.append("\n" + field_lines + "\n" + create_func_documentation_comment)
@@ -1093,14 +1228,14 @@ func _generate_db_gdscript(module_name: String, schema: SpacetimeParsedSchema) -
 	for table_name in tables:
 		# _safe_name the member (a table named a keyword breaks `var <kw>:`); the
 		# preload path below keeps the raw snake_case that names the file on disk.
-		out.append("var %s: %s\n" % [_safe_name(table_name.to_snake_case()), tables[table_name]])
+		out.append("var %s: %s\n" % [_safe_ref_member_name(table_name.to_snake_case()), tables[table_name]])
 
 	out.append("\nfunc _init(p_local_db: LocalDatabase) -> void:\n")
 	for table_name in tables:
 		out.append(
 			"\t%s = preload('%s/tables/%s_%s_table.gd').new(p_local_db)\n"
 			% [
-				_safe_name(table_name.to_snake_case()),
+				_safe_ref_member_name(table_name.to_snake_case()),
 				_schema_path,
 				schema.module.to_snake_case(),
 				table_name.to_snake_case(),

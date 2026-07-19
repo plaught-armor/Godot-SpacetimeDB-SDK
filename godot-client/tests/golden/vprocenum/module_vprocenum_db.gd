@@ -2,9 +2,11 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name VprocenumModuleDb extends RefCounted
 
-const table_names : Array[StringName] = [&"kind_row"]
+const table_names : Array[StringName] = [&"kind_row", &"script"]
 
 var kind_row: VprocenumKindRowTable
+var script_: VprocenumScriptTable
 
 func _init(p_local_db: LocalDatabase) -> void:
 	kind_row = preload('user://golden_gen/vprocenum/tables/vprocenum_kind_row_table.gd').new(p_local_db)
+	script_ = preload('user://golden_gen/vprocenum/tables/vprocenum_script_table.gd').new(p_local_db)

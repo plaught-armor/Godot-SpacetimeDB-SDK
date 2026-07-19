@@ -63,6 +63,38 @@
                                     "algebraic_type": {
                                         "Ref": 0
                                     }
+                                },
+                                {
+                                    "name": {
+                                        "some": "script"
+                                    },
+                                    "algebraic_type": {
+                                        "String": []
+                                    }
+                                },
+                                {
+                                    "name": {
+                                        "some": "count"
+                                    },
+                                    "algebraic_type": {
+                                        "U32": []
+                                    }
+                                },
+                                {
+                                    "name": {
+                                        "some": "resource_name"
+                                    },
+                                    "algebraic_type": {
+                                        "String": []
+                                    }
+                                },
+                                {
+                                    "name": {
+                                        "some": "create"
+                                    },
+                                    "algebraic_type": {
+                                        "U32": []
+                                    }
                                 }
                             ]
                         }
@@ -98,7 +130,47 @@
                     "primary_key": [
                         0
                     ],
-                    "indexes": [],
+                    "indexes": [
+                        {
+                            "source_name": {
+                                "some": "kind_row_script_idx_btree"
+                            },
+                            "accessor_name": {
+                                "some": "script"
+                            },
+                            "algorithm": {
+                                "BTree": [
+                                    2
+                                ]
+                            }
+                        },
+                        {
+                            "source_name": {
+                                "some": "kind_row_count_idx_btree"
+                            },
+                            "accessor_name": {
+                                "some": "count"
+                            },
+                            "algorithm": {
+                                "BTree": [
+                                    3
+                                ]
+                            }
+                        },
+                        {
+                            "source_name": {
+                                "some": "kind_row_resource_name_idx_btree"
+                            },
+                            "accessor_name": {
+                                "some": "resource_name"
+                            },
+                            "algorithm": {
+                                "BTree": [
+                                    4
+                                ]
+                            }
+                        }
+                    ],
                     "constraints": [
                         {
                             "source_name": {
@@ -113,6 +185,24 @@
                             }
                         }
                     ],
+                    "sequences": [],
+                    "table_type": {
+                        "User": []
+                    },
+                    "table_access": {
+                        "Public": []
+                    },
+                    "default_values": [],
+                    "is_event": false
+                },
+                {
+                    "source_name": "script",
+                    "product_type_ref": 1,
+                    "primary_key": [
+                        0
+                    ],
+                    "indexes": [],
+                    "constraints": [],
                     "sequences": [],
                     "table_type": {
                         "User": []
