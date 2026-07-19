@@ -15,12 +15,14 @@
 #                       calling enter_game while subscribed
 #   wire_procedure.bin     — a value-returning procedure response (probe_vector3)
 #   wire_procedure_err.bin — the err arm of the same Result type (probe_error)
+#   wire_one_off_query.bin — a query_sql / OneOffQueryResponse result
 extends Node
 
 const SNAPSHOT_PATH: String = "res://tests/fixtures/wire_snapshot.bin"
 const TXN_PATH: String = "res://tests/fixtures/wire_txn.bin"
 const PROC_PATH: String = "res://tests/fixtures/wire_procedure.bin"
 const PROC_ERR_PATH: String = "res://tests/fixtures/wire_procedure_err.bin"
+const SQL_PATH: String = "res://tests/fixtures/wire_one_off_query.bin"
 
 var _file: FileAccess
 var _count: int = 0
@@ -80,6 +82,15 @@ func _on_connected(_identity: PackedByteArray, _token: String) -> void:
 	await failing.wait_for_response(10.0)
 	await get_tree().create_timer(0.5).timeout
 	_close("procedure_err")
+
+	# 5. One-off query response. query_sql had no test of any kind, and its
+	#    awaiter dropped every result on a signal-arity mismatch.
+	_open(SQL_PATH)
+	var _rows: Array[TableUpdateData] = await SpacetimeDB \
+			.Blackholio \
+			.query_sql("SELECT * FROM config")
+	await get_tree().create_timer(0.5).timeout
+	_close("one_off_query")
 
 	get_tree().quit()
 

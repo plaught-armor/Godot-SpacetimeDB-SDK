@@ -577,7 +577,13 @@ func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdat
 	_stats.record_send(request_id, SpacetimeDBStats.Category.ONE_OFF)
 
 	# Wait for response
-	var result: Variant = await _wait_for_response(request_id, _one_off_query_cache, one_off_query_received, timeout_seconds)
+	var result: Variant = await _wait_for_response(
+		request_id,
+		_one_off_query_cache,
+		one_off_query_received,
+		timeout_seconds,
+		1, # one_off_query_received also carries error_message
+	)
 	if not (result is Array):
 		return []
 	# `result as Array[TableUpdateData]` would be a silent no-op (C14): the value came
@@ -606,7 +612,18 @@ func wait_for_procedure_response(request_id_to_match: int, timeout_seconds: floa
 	return result if result != null else PackedByteArray()
 
 
-func _wait_for_response(request_id: int, cache: Dictionary, sig: Signal, timeout_seconds: float) -> Variant:
+## [param trailing_args_to_drop] is the number of signal arguments past
+## (request_id, payload) that the internal handler does not take — 1 for
+## [signal one_off_query_received], which also carries an error message. Without
+## it the connect arity mismatches, the handler is never invoked, and the caller
+## waits out the full timeout and receives null.
+func _wait_for_response(
+	request_id: int,
+	cache: Dictionary,
+	sig: Signal,
+	timeout_seconds: float,
+	trailing_args_to_drop: int = 0,
+) -> Variant:
 	if cache.has(request_id):
 		var cached: Variant = cache[request_id]
 		cache.erase(request_id)
@@ -629,14 +646,17 @@ func _wait_for_response(request_id: int, cache: Dictionary, sig: Signal, timeout
 		if not done_ref[0]:
 			done_ref[0] = true
 			timer.time_left = 0
-	sig.connect(connection)
+	var handler: Callable = (
+		connection if trailing_args_to_drop == 0 else connection.unbind(trailing_args_to_drop)
+	)
+	sig.connect(handler)
 	_response_wait_aborted.connect(abort)
 	await timer.timeout
 	# The client may have been freed during the wait (disconnect + queue_free).
 	# Touching self's signals/dicts after that crashes (engine bug #72629).
 	if not is_instance_valid(self):
 		return null
-	sig.disconnect(connection)
+	sig.disconnect(handler)
 	_response_wait_aborted.disconnect(abort)
 	if result_container[0] == null:
 		if not done_ref[0]:

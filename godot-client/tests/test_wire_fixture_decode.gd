@@ -25,6 +25,7 @@ const EXPECTED_VECTOR: Vector3 = Vector3(1.5, -2.25, 3.75)
 const PROC_ERR_FIXTURE: String = "res://tests/fixtures/wire_procedure_err.bin"
 # What blackholio-server's probe_error procedure returns.
 const EXPECTED_ERROR: String = "probe failure"
+const SQL_FIXTURE: String = "res://tests/fixtures/wire_one_off_query.bin"
 # Set by the module's init reducer — the value the server actually holds.
 const EXPECTED_WORLD_SIZE: int = 1000
 
@@ -36,6 +37,7 @@ func _initialize() -> void:
 	fails += _test_real_transaction_decodes()
 	fails += _test_real_procedure_return_decodes()
 	fails += _test_real_procedure_error_decodes()
+	fails += _test_real_one_off_query_decodes()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -276,6 +278,47 @@ func _test_real_procedure_error_decodes() -> int:
 		BlackholioResultVector3String.Options.err,
 	)
 	f += _check_s("err message round-trips off the wire", str(decoded.get_err()), EXPECTED_ERROR)
+	return f
+
+
+# query_sql had no test of any kind — not synthetic, not wire — and its awaiter
+# silently dropped every result. These are the real response bytes.
+func _test_real_one_off_query_decodes() -> int:
+	var frames: Array[PackedByteArray] = _frames(SQL_FIXTURE)
+	var f: int = _check_b("one-off query fixture has frames", frames.is_empty(), false)
+	if frames.is_empty():
+		return f
+
+	var deserializer: BSATNDeserializer = BSATNDeserializer.new(
+		SpacetimeDBSchema.new("Blackholio"),
+		false,
+	)
+	var responses: Array[OneOffQueryResponseMessage] = []
+	for frame: PackedByteArray in frames:
+		for msg: SpacetimeDBServerMessage in deserializer.process_bytes_and_extract_messages(
+			frame.slice(1)
+		):
+			if msg is OneOffQueryResponseMessage:
+				responses.append(msg)
+
+	f += _check_b("no decode error on real bytes", deserializer.has_error(), false)
+	f += _check_b("decoded a one-off query response", responses.is_empty(), false)
+	if responses.is_empty():
+		return f
+
+	var response: OneOffQueryResponseMessage = responses[0]
+	f += _check_b("query reported no error", response.is_error, false)
+	var config_rows: Array[Resource] = []
+	for table: TableUpdateData in response.tables:
+		if String(table.table_name) == "config":
+			config_rows.append_array(table.inserts)
+	f += _check_b("returned the config row", config_rows.is_empty(), false)
+	if not config_rows.is_empty():
+		f += _check_i(
+			"world_size matches the server",
+			config_rows[0].world_size,
+			EXPECTED_WORLD_SIZE,
+		)
 	return f
 
 
