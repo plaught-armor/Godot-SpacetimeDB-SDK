@@ -19,6 +19,9 @@
 #   wire_unsubscribe.bin   — an UnsubscribeApplied response
 #   wire_subscription_error.bin — a SubscriptionError for an uncompilable query
 #   wire_procedure_params.bin   — a procedure response computed from its arguments
+#   wire_probe_rows.bin         — a snapshot of the probe table: Option in both
+#                                 arms, an enum column in every variant, and the
+#                                 wide integer widths as table columns
 #   wire_identity_token.bin     — the handshake IdentityToken, captured by hooking
 #                                 the socket before the connection completes. Its
 #                                 JWT is scrubbed in place (see _scrub_token).
@@ -33,6 +36,7 @@ const SQL_PATH: String = "res://tests/fixtures/wire_one_off_query.bin"
 const UNSUB_PATH: String = "res://tests/fixtures/wire_unsubscribe.bin"
 const SUB_ERR_PATH: String = "res://tests/fixtures/wire_subscription_error.bin"
 const PROC_PARAMS_PATH: String = "res://tests/fixtures/wire_procedure_params.bin"
+const PROBE_ROWS_PATH: String = "res://tests/fixtures/wire_probe_rows.bin"
 
 # Where the IdentityToken's token string starts inside the captured file:
 # u32 frame length, compression tag, ServerMessage variant tag, 32-byte identity,
@@ -151,6 +155,20 @@ func _on_connected(_identity: PackedByteArray, _token: String) -> void:
 	await echoed.wait_for_response(10.0)
 	await get_tree().create_timer(0.5).timeout
 	_close("procedure_params")
+
+	# 9. The probe table's rows: Option in both arms, an enum column in each of its
+	#    variants, and the wide integer widths as columns. Stock Blackholio has none
+	#    of those shapes, so until now every test of those decode paths was
+	#    hand-built bytes checked against the same code that wrote them.
+	var seeding: SpacetimeDBReducerCall = SpacetimeDB.Blackholio.reducers.probe_seed()
+	await seeding.wait_for_response(10.0)
+	_open(PROBE_ROWS_PATH)
+	var probe: SpacetimeDBSubscription = SpacetimeDB \
+			.Blackholio \
+			.subscribe(["SELECT * FROM probe_row"])
+	await probe.wait_for_applied(10.0)
+	await get_tree().create_timer(0.5).timeout
+	_close("probe_rows")
 
 	get_tree().quit()
 

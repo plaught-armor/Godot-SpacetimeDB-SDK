@@ -34,6 +34,7 @@ const PROC_PARAMS_FIXTURE: String = "res://tests/fixtures/wire_procedure_params.
 const IDENTITY_FIXTURE: String = "res://tests/fixtures/wire_identity_token.bin"
 const RESUBSCRIBE_FIXTURE: String = "res://tests/fixtures/wire_resubscribe.bin"
 const BROADCAST_FIXTURE: String = "res://tests/fixtures/wire_broadcast_txn.bin"
+const PROBE_ROWS_FIXTURE: String = "res://tests/fixtures/wire_probe_rows.bin"
 # The name the second client gives itself in _live_broadcast_actor.gd.
 const ACTOR_NAME: String = "Bystander"
 # SpacetimeDB identities are 32 bytes (u256), connection ids 16 (u128).
@@ -60,6 +61,7 @@ func _initialize() -> void:
 	fails += _test_real_identity_token_decodes()
 	fails += _test_real_resubscribe_decodes()
 	fails += _test_real_broadcast_decodes()
+	fails += _test_real_probe_rows_decode()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -556,3 +558,148 @@ func _check_i(label: String, got: int, want: int) -> int:
 		return 0
 	printerr("FAIL  %s: got %d want %d" % [label, got, want])
 	return 1
+
+
+# The probe table exists only to carry the column shapes stock Blackholio has
+# none of: Option in both arms, a sum/enum column in each of its variants, and
+# u128/u256/i128 as table columns rather than as the handshake's identity. Every
+# test of those decode paths before this one built its own bytes and checked them
+# against the code that wrote them.
+func _test_real_probe_rows_decode() -> int:
+	var frames: Array[PackedByteArray] = _frames(PROBE_ROWS_FIXTURE)
+	var f: int = _check_b("probe fixture has frames", frames.is_empty(), false)
+	if frames.is_empty():
+		return f
+
+	var deserializer: BSATNDeserializer = BSATNDeserializer.new(
+		SpacetimeDBSchema.new("Blackholio"),
+		false,
+	)
+	var rows: Dictionary[int, Resource] = { }
+	for frame: PackedByteArray in frames:
+		for msg: SpacetimeDBServerMessage in deserializer.process_bytes_and_extract_messages(
+			frame.slice(1)
+		):
+			if msg is not SubscribeAppliedMessage:
+				continue
+			for table: TableUpdateData in (msg as SubscribeAppliedMessage).tables:
+				if String(table.table_name) != "probe_row":
+					continue
+				for row: Resource in table.inserts:
+					rows[int(row.get("id"))] = row
+
+	f += _check_b("no decode error on real bytes", deserializer.has_error(), false)
+	f += _check_i("decoded every seeded probe row", rows.size(), 3)
+	# Assert the ids too, not only the count: every check below indexes by id, and a
+	# reseeded module handing back three rows under different ids would otherwise
+	# turn into a null dereference partway through instead of a labelled failure.
+	var seeded: bool = rows.has(1) and rows.has(2) and rows.has(3)
+	f += _check_b("the rows are ids 1, 2 and 3", seeded, true)
+	if not seeded:
+		return f
+
+	f += _test_probe_options(rows)
+	f += _test_probe_enum_column(rows)
+	f += _test_probe_wide_columns(rows)
+	return f
+
+
+## Option in both arms, including the two values that a "did it decode?" check
+## cannot tell apart from None: an empty string and a zero.
+func _test_probe_options(rows: Dictionary[int, Resource]) -> int:
+	var some_row: Option = rows[1].get("maybe_text")
+	var some_count: Option = rows[1].get("maybe_count")
+	var f: int = _check_b("Some(String) decoded as some", some_row.is_some(), true)
+	f += _check_s("Some(String) payload", String(some_row.unwrap()), "probe")
+	f += _check_b("Some(i32) decoded as some", some_count.is_some(), true)
+	f += _check_i("Some(i32) payload", int(some_count.unwrap()), -7)
+
+	var none_text: Option = rows[2].get("maybe_text")
+	var none_count: Option = rows[2].get("maybe_count")
+	f += _check_b("None(String) decoded as none", none_text.is_none(), true)
+	f += _check_b("None(i32) decoded as none", none_count.is_none(), true)
+
+	# The rows that separate "decoded a value" from "fell back to a default":
+	# Some("") and Some(0) are falsy but present.
+	var empty_text: Option = rows[3].get("maybe_text")
+	var zero_count: Option = rows[3].get("maybe_count")
+	f += _check_b("Some(\"\") is some, not none", empty_text.is_some(), true)
+	f += _check_s("Some(\"\") payload is empty", String(empty_text.unwrap()), "")
+	f += _check_b("Some(0) is some, not none", zero_count.is_some(), true)
+	f += _check_i("Some(0) payload is zero", int(zero_count.unwrap()), 0)
+	return f
+
+
+## The enum column in all three of its variants: one with no payload, one
+## carrying a scalar, one carrying a string.
+func _test_probe_enum_column(rows: Dictionary[int, Resource]) -> int:
+	var unit: BlackholioProbeKind = rows[1].get("kind")
+	var f: int = _check_b("enum column decoded as a RustEnum", unit is RustEnum, true)
+	f += _check_i("unit variant tag", unit.value, BlackholioProbeKind.Options.unit)
+	f += _check_s("unit variant name", BlackholioProbeKind.parse_enum_name(unit.value), "unit")
+	f += _check_b("unit variant carries no payload", unit.data == null, true)
+
+	var scalar: BlackholioProbeKind = rows[2].get("kind")
+	f += _check_i("scalar variant tag", scalar.value, BlackholioProbeKind.Options.scalar)
+	f += _check_i("scalar variant payload", scalar.get_scalar(), -2000000000)
+
+	var text: BlackholioProbeKind = rows[3].get("kind")
+	f += _check_i("text variant tag", text.value, BlackholioProbeKind.Options.text)
+	f += _check_s("text variant payload", text.get_text(), "payload")
+	return f
+
+
+## The wide widths as table columns. The SDK hands them back as bytes in
+## most-significant-first order, having reversed the little-endian wire form, so
+## the expected values read like the hex literals the module was seeded with.
+func _test_probe_wide_columns(rows: Dictionary[int, Resource]) -> int:
+	# Ascending bytes: asymmetric across the whole width, so a read at the wrong
+	# length or the wrong endianness cannot land on the right value by accident.
+	var ascending: PackedByteArray = []
+	ascending.resize(16)
+	for i: int in range(16):
+		ascending[i] = i + 1
+	var widest_ascending: PackedByteArray = []
+	widest_ascending.resize(32)
+	for i: int in range(32):
+		widest_ascending[i] = i + 17
+
+	var f: int = _check_bytes("u128 column", rows[1].get("wide_unsigned"), ascending)
+	f += _check_bytes("u256 column", rows[1].get("widest_unsigned"), widest_ascending)
+
+	# i128::MIN and i128::MAX, and the all-ones ends of the unsigned widths: the
+	# values a sign or width mistake cannot round-trip by accident.
+	var min_i128: PackedByteArray = []
+	min_i128.resize(16)
+	min_i128[0] = 0x80
+	f += _check_bytes("i128 column at MIN", rows[1].get("wide_signed"), min_i128)
+
+	var max_u128: PackedByteArray = []
+	max_u128.resize(16)
+	max_u128.fill(0xFF)
+	f += _check_bytes("u128 column at MAX", rows[2].get("wide_unsigned"), max_u128)
+
+	var max_u256: PackedByteArray = []
+	max_u256.resize(32)
+	max_u256.fill(0xFF)
+	f += _check_bytes("u256 column at MAX", rows[2].get("widest_unsigned"), max_u256)
+
+	var max_i128: PackedByteArray = []
+	max_i128.resize(16)
+	max_i128.fill(0xFF)
+	max_i128[0] = 0x7F
+	f += _check_bytes("i128 column at MAX", rows[2].get("wide_signed"), max_i128)
+
+	# An Identity column, as opposed to the handshake's identity field.
+	var who: PackedByteArray = rows[1].get("who")
+	var zeroed: PackedByteArray = []
+	zeroed.resize(IDENTITY_BYTES)
+	f += _check_i("identity column width", who.size(), IDENTITY_BYTES)
+	f += _check_b("identity column is not zeroed", who == zeroed, false)
+	return f
+
+
+## Compares two byte columns by hex, so a failure prints the bytes rather than
+## "true != false".
+func _check_bytes(label: String, got: PackedByteArray, want: PackedByteArray) -> int:
+	return _check_s(label, got.hex_encode(), want.hex_encode())

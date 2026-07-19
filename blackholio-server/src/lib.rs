@@ -663,3 +663,86 @@ pub fn probe_params(
 pub fn probe_error(_ctx: &mut spacetimedb::ProcedureContext) -> Result<Vector3, String> {
     Err("probe failure".to_string())
 }
+
+// ---------------------------------------------------------------------------
+// LOCAL ADDITION (not present in upstream Blackholio) — see NOTICE.
+//
+// A probe table carrying the column shapes stock Blackholio never uses, so the
+// SDK's fixtures can cover them with real server bytes instead of hand-built
+// ones: Option fields (both arms), a sum/enum column (unit and payload
+// variants), and the wide integer widths as table columns rather than as the
+// handshake's identity. Nothing in the game reads it.
+// ---------------------------------------------------------------------------
+
+#[derive(spacetimedb::SpacetimeType, Debug, Clone)]
+pub enum ProbeKind {
+    Unit,
+    Scalar(i32),
+    Text(String),
+}
+
+#[spacetimedb::table(accessor = probe_row, public)]
+#[derive(Debug, Clone)]
+pub struct ProbeRow {
+    #[primary_key]
+    pub id: i32,
+    pub maybe_text: Option<String>,
+    pub maybe_count: Option<i32>,
+    pub kind: ProbeKind,
+    // Named without digits on purpose: the Rust macro case-converts a field like
+    // `wide_u128` into `wide_u_128` in the schema, which reads like an SDK bug.
+    pub wide_unsigned: u128,
+    pub widest_unsigned: spacetimedb::sats::u256,
+    pub wide_signed: i128,
+    pub who: Identity,
+}
+
+// Seeds one row per shape combination, so a single subscription snapshot covers
+// both Option arms and every enum variant. Idempotent: it clears the table first,
+// so a fixture recapture does not depend on how often this ran.
+#[spacetimedb::reducer]
+pub fn probe_seed(ctx: &ReducerContext) -> Result<(), String> {
+    for row in ctx.db.probe_row().iter() {
+        ctx.db.probe_row().id().delete(&row.id);
+    }
+
+    // Values are deliberately asymmetric across bytes: a width read with the
+    // wrong endianness or the wrong length cannot decode to the right number.
+    ctx.db.probe_row().insert(ProbeRow {
+        id: 1,
+        maybe_text: Some("probe".to_string()),
+        maybe_count: Some(-7),
+        kind: ProbeKind::Unit,
+        wide_unsigned: 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10,
+        widest_unsigned: spacetimedb::sats::u256::from_words(
+            0x1112_1314_1516_1718_191a_1b1c_1d1e_1f20,
+            0x2122_2324_2526_2728_292a_2b2c_2d2e_2f30,
+        ),
+        wide_signed: -170141183460469231731687303715884105728,
+        who: ctx.sender(),
+    });
+
+    ctx.db.probe_row().insert(ProbeRow {
+        id: 2,
+        maybe_text: None,
+        maybe_count: None,
+        kind: ProbeKind::Scalar(-2000000000),
+        wide_unsigned: u128::MAX,
+        widest_unsigned: spacetimedb::sats::u256::MAX,
+        wide_signed: i128::MAX,
+        who: ctx.sender(),
+    });
+
+    ctx.db.probe_row().insert(ProbeRow {
+        id: 3,
+        maybe_text: Some(String::new()),
+        maybe_count: Some(0),
+        kind: ProbeKind::Text("payload".to_string()),
+        wide_unsigned: 0,
+        widest_unsigned: spacetimedb::sats::u256::ZERO,
+        wide_signed: 0,
+        who: ctx.sender(),
+    });
+
+    Ok(())
+}

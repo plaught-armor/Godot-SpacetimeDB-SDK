@@ -10,7 +10,7 @@ Vendored from the SpacetimeDB monorepo, `demo/Blackholio/server-rust`
 (commit `353557cede4dd8cab1dd0a31f93677e175609bda`). Copyright Clockwork Labs,
 Inc; Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
-Upstream gameplay code is unaltered. There are two local additions, both marked
+Upstream gameplay code is unaltered. There are three local additions, all marked
 in-file and recorded in [`NOTICE`](NOTICE) per Apache-2.0 section 4(b):
 
 1. The dependency pin in `Cargo.toml`:
@@ -23,6 +23,11 @@ in-file and recorded in [`NOTICE`](NOTICE) per Apache-2.0 section 4(b):
    Nothing in the game calls it — it exists so the SDK test suite can capture
    real wire bytes for a value-returning procedure, the one shape stock
    Blackholio does not exercise.
+
+3. The `probe_row` table, its `ProbeKind` enum and the `probe_seed` reducer,
+   also appended at the end of `src/lib.rs`. Same reason, for column shapes
+   rather than return values: `Option` fields, a sum/enum column, and
+   `u128`/`u256`/`i128` columns. Nothing in the game reads it.
 
 ## Why vendored instead of cloning upstream
 

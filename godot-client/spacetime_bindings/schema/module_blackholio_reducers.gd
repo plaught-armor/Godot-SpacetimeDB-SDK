@@ -15,6 +15,10 @@ func player_split() -> SpacetimeDBReducerCall:
 	return _client.call_reducer('player_split', [], [], &'')
 
 
+func probe_seed() -> SpacetimeDBReducerCall:
+	return _client.call_reducer('probe_seed', [], [], &'')
+
+
 func respawn() -> SpacetimeDBReducerCall:
 	return _client.call_reducer('respawn', [], [], &'')
 

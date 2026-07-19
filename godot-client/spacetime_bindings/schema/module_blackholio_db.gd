@@ -2,7 +2,7 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name BlackholioModuleDb extends RefCounted
 
-const table_names : Array[StringName] = [&"circle", &"config", &"consume_entity_event", &"entity", &"food", &"player"]
+const table_names : Array[StringName] = [&"circle", &"config", &"consume_entity_event", &"entity", &"food", &"player", &"probe_row"]
 
 var circle: BlackholioCircleTable
 var config: BlackholioConfigTable
@@ -10,6 +10,7 @@ var consume_entity_event: BlackholioConsumeEntityEventTable
 var entity: BlackholioEntityTable
 var food: BlackholioFoodTable
 var player: BlackholioPlayerTable
+var probe_row: BlackholioProbeRowTable
 
 func _init(p_local_db: LocalDatabase) -> void:
 	circle = preload('res://spacetime_bindings/schema/tables/blackholio_circle_table.gd').new(p_local_db)
@@ -18,3 +19,4 @@ func _init(p_local_db: LocalDatabase) -> void:
 	entity = preload('res://spacetime_bindings/schema/tables/blackholio_entity_table.gd').new(p_local_db)
 	food = preload('res://spacetime_bindings/schema/tables/blackholio_food_table.gd').new(p_local_db)
 	player = preload('res://spacetime_bindings/schema/tables/blackholio_player_table.gd').new(p_local_db)
+	probe_row = preload('res://spacetime_bindings/schema/tables/blackholio_probe_row_table.gd').new(p_local_db)
