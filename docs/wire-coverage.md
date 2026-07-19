@@ -23,7 +23,7 @@ table tracks the difference.
 |---|---|---|
 | `SubscribeAppliedMessage` | yes | **yes** — `wire_snapshot.bin` |
 | `ReducerResultMessage` | yes | **yes** — `wire_txn.bin` |
-| `TransactionUpdateMessage` | yes | **partial** — only nested inside a reducer result |
+| `TransactionUpdateMessage` | yes | **yes** — nested (`wire_txn.bin`) and standalone (`wire_broadcast_txn.bin`) |
 | `ProcedureResultData` | yes | **yes** — `wire_procedure.bin`, `wire_procedure_err.bin` |
 | `IdentityTokenMessage` | yes | **yes** — `wire_identity_token.bin` |
 | `OneOffQueryResponseMessage` | yes | **yes** — `wire_one_off_query.bin` |
@@ -51,9 +51,20 @@ signed the capture — so the capture blanks it in place, byte for byte, before 
 fixture is written. Lengths are unchanged, so the frame still decodes exactly as
 the server framed it; only the token's characters are filler.
 
-`TransactionUpdateMessage` is marked partial deliberately: a caller's own row
-changes arrive **inside** the reducer response, so the fixture exercises that
-path but never a standalone broadcast of another client's transaction.
+`TransactionUpdateMessage` has two shapes and needed two fixtures. A caller's own
+row changes arrive **inside** its reducer response; another client's arrive as a
+standalone broadcast. Producing the second means running a second client with its
+own identity, so that is what the broadcast check does — an observer that only
+subscribes, and an actor that connects and calls a reducer:
+
+```sh
+GODOT=<godot> tests/_live_broadcast.sh
+```
+
+It passes: the broadcast decodes and the other client's row lands in the local
+cache. The observer never calls a reducer, so the fixture it captures cannot
+contain a reducer response — which is what the offline test asserts before it
+looks for the row.
 
 ## Client API surface
 
@@ -126,7 +137,6 @@ than half-done.
 
 | Gap | What it needs | Notes |
 |---|---|---|
-| Standalone `TransactionUpdate` | A **second** concurrent client, so this one observes another's row changes | Today the fixture only ever sees a transaction nested inside the caller's own reducer response. The broadcast shape is untested. |
 | `Option` fields, enum/sum columns | Add the shapes to the vendored module and recapture | Both go through decode paths (`_read_option`, RustEnum) that only synthetic tests touch. |
 | Index reads (btree / unique) | A module table with the indexes plus rows to read back | btree shipped in v2.5.0 without ever being live-tested. |
 | `u128` / `u256` **columns** | Module fields of those types | The handshake fixture covers the widths; a row carrying one still goes through the table-decode path untested. `test_u64_roundtrip` and `test_schedule_at_wide_ints` are hand-built bytes. |
@@ -141,6 +151,12 @@ spacetime start --data-dir ~/.local/share/spacetime-blackholio
 cd blackholio-server && ./publish.sh
 cd ../godot-client && <godot> --headless --path . res://tests/_capture_wire_fixture.tscn
 ```
+
+Two fixtures come from the live harnesses rather than that capture —
+`wire_resubscribe.bin` from the reconnect check and `wire_broadcast_txn.bin` from
+the broadcast check — because each needs a situation the capture cannot stage. A
+failed run of either deletes its fixture rather than leaving a plausible-looking
+one behind.
 
 Captured against SpacetimeDB **2.7.0**. Note the `spacetime` CLI reports its own
 version, which may lag the server binary it launches — check the server log line

@@ -165,7 +165,13 @@ func _finish() -> void:
 	if _file != null:
 		_file.close()
 		_file = null
-		print("[live-reconnect] wrote %s" % RESUB_PATH)
+		# A failed run did not capture a recovery, whatever else it captured. Delete
+		# the file rather than leave a plausible-looking artifact to be committed.
+		if _fails > 0:
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(RESUB_PATH))
+			print("[live-reconnect] discarded %s (run failed)" % RESUB_PATH)
+		else:
+			print("[live-reconnect] wrote %s" % RESUB_PATH)
 	if _fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:

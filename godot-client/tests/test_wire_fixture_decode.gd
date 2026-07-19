@@ -33,6 +33,9 @@ const UNSUB_TABLE: String = "does_not_exist"
 const PROC_PARAMS_FIXTURE: String = "res://tests/fixtures/wire_procedure_params.bin"
 const IDENTITY_FIXTURE: String = "res://tests/fixtures/wire_identity_token.bin"
 const RESUBSCRIBE_FIXTURE: String = "res://tests/fixtures/wire_resubscribe.bin"
+const BROADCAST_FIXTURE: String = "res://tests/fixtures/wire_broadcast_txn.bin"
+# The name the second client gives itself in _live_broadcast_actor.gd.
+const ACTOR_NAME: String = "Bystander"
 # SpacetimeDB identities are 32 bytes (u256), connection ids 16 (u128).
 const IDENTITY_BYTES: int = 32
 const CONNECTION_ID_BYTES: int = 16
@@ -56,6 +59,7 @@ func _initialize() -> void:
 	fails += _test_real_procedure_params_decode()
 	fails += _test_real_identity_token_decodes()
 	fails += _test_real_resubscribe_decodes()
+	fails += _test_real_broadcast_decodes()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -467,6 +471,42 @@ func _test_real_resubscribe_decodes() -> int:
 	if rows.is_empty():
 		return f
 	f += _check_i("world_size survives the reconnect", rows[0].world_size, EXPECTED_WORLD_SIZE)
+	return f
+
+
+# A transaction this client did not cause. Every other transaction fixture here is
+# the caller's own, which arrives nested inside a ReducerResult — a different shape
+# on the wire and a different decode path. This one was captured by a client that
+# only subscribed, while a second client with its own identity changed a row.
+func _test_real_broadcast_decodes() -> int:
+	var updates: Array[TransactionUpdateMessage] = []
+	var reducer_results: int = 0
+	for msg: SpacetimeDBServerMessage in _messages_in(BROADCAST_FIXTURE):
+		if msg is TransactionUpdateMessage:
+			updates.append(msg)
+		elif msg is ReducerResultMessage:
+			reducer_results += 1
+
+	# The point is that it stands alone. The capturing client never called a
+	# reducer, so a ReducerResult here would mean the fixture is not what it claims.
+	var f: int = _check_i("no reducer result in the capture", reducer_results, 0)
+	f += _check_b("decoded a standalone TransactionUpdate", updates.is_empty(), false)
+	if updates.is_empty():
+		return f
+
+	var names: PackedStringArray = []
+	for update: TransactionUpdateMessage in updates:
+		for query_set: DatabaseUpdateData in update.query_sets:
+			for table: TableUpdateData in query_set.tables:
+				if String(table.table_name) != "player":
+					continue
+				for row: Resource in table.inserts:
+					names.append(String(row.get("name")))
+	f += _check_b(
+		"carries the other client's player row (%s)" % [names],
+		names.has(ACTOR_NAME),
+		true,
+	)
 	return f
 
 
