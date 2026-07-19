@@ -138,7 +138,7 @@ than half-done.
 | Gap | What it needs | Notes |
 |---|---|---|
 | `Option` fields, enum/sum columns | Add the shapes to the vendored module and recapture | Both go through decode paths (`_read_option`, RustEnum) that only synthetic tests touch. |
-| Index reads (btree / unique) | A module table with the indexes plus rows to read back | btree shipped in v2.5.0 without ever being live-tested. |
+| Index reads (btree / unique) | Only a live check — the module already has both (`circle.player_id` is btree, `player.player_id` is unique) | btree shipped in v2.5.0 without ever being read against a live server. Cheapest of the three, and the only one needing no module change. |
 | `u128` / `u256` **columns** | Module fields of those types | The handshake fixture covers the widths; a row carrying one still goes through the table-decode path untested. `test_u64_roundtrip` and `test_schedule_at_wide_ints` are hand-built bytes. |
 
 ## Regenerating the fixtures
