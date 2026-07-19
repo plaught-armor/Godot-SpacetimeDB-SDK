@@ -4,6 +4,19 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
+### Fixed
+- **A reconnect now uses the options it was given.** `SpacetimeDBConnection`
+  reads its socket-level settings once, in its constructor, and the client
+  builds that object on the first `connect_db` and keeps it — so a later
+  `disconnect_db()` / `connect_db(new_options)` pair silently kept the *first*
+  call's compression preference, buffer sizes and heartbeat interval while the
+  client's own fields reported the new ones. The settings move to
+  `SpacetimeDBConnection.apply_options()`, which the client calls on a
+  reconnect. Monitor registration moves with them: left behind, it would let
+  `monitor_mode` disagree with what is actually registered, and teardown would
+  either leak the monitors or remove names that were never added. Found by
+  capturing a Brotli wire fixture that came back gzip-tagged.
+
 ## [2.5.0] - 2026-07-18
 
 ### Added
