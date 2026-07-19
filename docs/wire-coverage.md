@@ -25,7 +25,7 @@ table tracks the difference.
 | `ReducerResultMessage` | yes | **yes** — `wire_txn.bin` |
 | `TransactionUpdateMessage` | yes | **partial** — only nested inside a reducer result |
 | `ProcedureResultData` | yes | **yes** — `wire_procedure.bin`, `wire_procedure_err.bin` |
-| `IdentityTokenMessage` | yes | no |
+| `IdentityTokenMessage` | yes | **yes** — `wire_identity_token.bin` |
 | `OneOffQueryResponseMessage` | yes | **yes** — `wire_one_off_query.bin` |
 | `SubscriptionErrorMessage` | yes | **yes** — `wire_subscription_error.bin` |
 | `UnsubscribeAppliedMessage` | yes | **yes** — `wire_unsubscribe.bin` |
@@ -38,6 +38,18 @@ shipped-and-broken public API this table has turned up.
 Chasing `unsubscribe` and `SubscriptionError` next found both working correctly —
 worth recording, since a coverage gap means "unverified", not "broken". They are
 captured so a regression on the teardown and error paths surfaces here.
+
+`IdentityTokenMessage` was the last message type with no real bytes, only because
+it arrives mid-handshake — the capture attached its hook in the `connected`
+handler, by which point the frame had already been consumed. Hooking the socket
+immediately after `connect_db` (which builds the connection synchronously, then
+goes async for the token) catches it. It works, and it drags the first real-wire
+bytes for a 32-byte identity and a 16-byte connection id along with it.
+
+That message also carries a live JWT, minted without an expiry by whatever key
+signed the capture — so the capture blanks it in place, byte for byte, before the
+fixture is written. Lengths are unchanged, so the frame still decodes exactly as
+the server framed it; only the token's characters are filler.
 
 `TransactionUpdateMessage` is marked partial deliberately: a caller's own row
 changes arrive **inside** the reducer response, so the fixture exercises that
@@ -65,8 +77,12 @@ Procedure **parameters** are covered indirectly but strongly: the module's
 value proves all three (a native array-like, a scalar, a string) crossed the wire
 intact. The response is the receipt for the request.
 
+The handshake fixture adds an `Identity` (32 bytes) and a connection id (16), so
+those two widths decode off real bytes now.
+
 Not covered by real bytes: `Option` fields, enum/sum columns on a table, btree
-and unique index reads, and `Identity`/`u128`/`u256` scalars.
+and unique index reads, and `u128`/`u256` scalars as **table columns** — the
+handshake proves the widths decode, not that a row carrying one does.
 
 ## Remaining gaps
 
@@ -80,8 +96,7 @@ than half-done.
 | Standalone `TransactionUpdate` | A **second** concurrent client, so this one observes another's row changes | Today the fixture only ever sees a transaction nested inside the caller's own reducer response. The broadcast shape is untested. |
 | `Option` fields, enum/sum columns | Add the shapes to the vendored module and recapture | Both go through decode paths (`_read_option`, RustEnum) that only synthetic tests touch. |
 | Index reads (btree / unique) | A module table with the indexes plus rows to read back | btree shipped in v2.5.0 without ever being live-tested. |
-| `Identity` / `u128` / `u256` scalars | Module fields of those types | Wide-int handling is synthetic-only; `test_u64_roundtrip` and `test_schedule_at_wide_ints` are hand-built bytes. |
-| `IdentityTokenMessage` | Attach the packet hook *before* connecting | It arrives during the handshake, before `_on_connected` runs, so the capture script never sees it. Small harness change. |
+| `u128` / `u256` **columns** | Module fields of those types | The handshake fixture covers the widths; a row carrying one still goes through the table-decode path untested. `test_u64_roundtrip` and `test_schedule_at_wide_ints` are hand-built bytes. |
 
 ## Regenerating the fixtures
 

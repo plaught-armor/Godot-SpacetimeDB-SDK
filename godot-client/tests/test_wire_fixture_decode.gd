@@ -31,6 +31,10 @@ const SUB_ERR_FIXTURE: String = "res://tests/fixtures/wire_subscription_error.bi
 # The table the capture subscribes to and then drops.
 const UNSUB_TABLE: String = "does_not_exist"
 const PROC_PARAMS_FIXTURE: String = "res://tests/fixtures/wire_procedure_params.bin"
+const IDENTITY_FIXTURE: String = "res://tests/fixtures/wire_identity_token.bin"
+# SpacetimeDB identities are 32 bytes (u256), connection ids 16 (u128).
+const IDENTITY_BYTES: int = 32
+const CONNECTION_ID_BYTES: int = 16
 # probe_params(Vector3(1, 2, 3), scale = 3, label = "hello") scales its vector
 # argument, so this value is only reachable if all three parameters arrived.
 const EXPECTED_SCALED: Vector3 = Vector3(3.0, 6.0, 9.0)
@@ -49,6 +53,7 @@ func _initialize() -> void:
 	fails += _test_real_unsubscribe_decodes()
 	fails += _test_real_subscription_error_decodes()
 	fails += _test_real_procedure_params_decode()
+	fails += _test_real_identity_token_decodes()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -411,6 +416,38 @@ func _test_real_procedure_params_decode() -> int:
 		(scaled is Vector3 and (scaled as Vector3).is_equal_approx(EXPECTED_SCALED)),
 		true,
 	)
+	return f
+
+
+# The first message of every session, and the last one to get real-bytes coverage:
+# it arrives mid-handshake, so the capture hook has to be attached before the
+# connection completes rather than in the `connected` handler. It also carries the
+# only wide scalars the suite sees off the wire — a 32-byte identity and a 16-byte
+# connection id, both hand-built bytes everywhere else.
+func _test_real_identity_token_decodes() -> int:
+	var tokens: Array[IdentityTokenMessage] = []
+	for msg: SpacetimeDBServerMessage in _messages_in(IDENTITY_FIXTURE):
+		if msg is IdentityTokenMessage:
+			tokens.append(msg)
+
+	var f: int = _check_b("decoded an IdentityToken", tokens.is_empty(), false)
+	if tokens.is_empty():
+		return f
+
+	var token: IdentityTokenMessage = tokens[0]
+	f += _check_i("identity is a 256-bit value", token.identity.size(), IDENTITY_BYTES)
+	f += _check_i(
+		"connection id is a 128-bit value",
+		token.connection_id.size(),
+		CONNECTION_ID_BYTES,
+	)
+	# The identity is derived, never all-zero; a zeroed buffer is what a decode
+	# that read the right length off the wrong offset would produce.
+	var zeroed: PackedByteArray = []
+	zeroed.resize(IDENTITY_BYTES)
+	f += _check_b("identity is not a zeroed buffer", token.identity == zeroed, false)
+	# Shape only — the value is a per-session credential and changes every capture.
+	f += _check_i("token is a three-part JWT", token.token.split(".").size(), 3)
 	return f
 
 
