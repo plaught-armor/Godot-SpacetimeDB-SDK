@@ -145,6 +145,7 @@ static func _native_names(base_class: StringName) -> Dictionary:
 			taken[String(p.get("name", ""))] = true
 		if not (probe is RefCounted):
 			probe.free()
+	taken.make_read_only() # C2a — shared static table, lock after populate
 	_native_names_cache[base_class] = taken
 	return taken
 
@@ -275,10 +276,20 @@ static func _safe_field_name(field_name: String) -> String:
 	return escaped
 
 
-## Member name for a generated variable on a RefCounted-based class: a table on the db
-## facade, an index accessor on a table wrapper.
+## Names the db facade spells itself, which a TABLE name therefore cannot take: a table
+## named `table_names` would emit `var table_names` next to the `const table_names` the
+## facade already declares, and Godot rejects `Variable "table_names" has the same name as
+## a previously declared constant`. The column-side equivalent is [member
+## _CODEGEN_OWN_NAMES]. A plain `var`, never `const` (C1, #88753).
+static var _DB_FACADE_OWN_NAMES: PackedStringArray = ["table_names"]
+
+
+## Member name for a generated TABLE variable on the db facade (a RefCounted).
 static func _safe_ref_member_name(member_name: String) -> String:
-	return _safe_member_name(_safe_name(member_name), &"RefCounted")
+	var escaped: String = _safe_member_name(_safe_name(member_name), &"RefCounted")
+	if escaped in _DB_FACADE_OWN_NAMES:
+		return escaped + "_"
+	return escaped
 
 
 ## Formats a single table name as a BSATN StringName literal.
