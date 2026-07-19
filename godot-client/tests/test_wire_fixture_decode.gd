@@ -32,6 +32,7 @@ const SUB_ERR_FIXTURE: String = "res://tests/fixtures/wire_subscription_error.bi
 const UNSUB_TABLE: String = "does_not_exist"
 const PROC_PARAMS_FIXTURE: String = "res://tests/fixtures/wire_procedure_params.bin"
 const IDENTITY_FIXTURE: String = "res://tests/fixtures/wire_identity_token.bin"
+const RESUBSCRIBE_FIXTURE: String = "res://tests/fixtures/wire_resubscribe.bin"
 # SpacetimeDB identities are 32 bytes (u256), connection ids 16 (u128).
 const IDENTITY_BYTES: int = 32
 const CONNECTION_ID_BYTES: int = 16
@@ -54,6 +55,7 @@ func _initialize() -> void:
 	fails += _test_real_subscription_error_decodes()
 	fails += _test_real_procedure_params_decode()
 	fails += _test_real_identity_token_decodes()
+	fails += _test_real_resubscribe_decodes()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -448,6 +450,23 @@ func _test_real_identity_token_decodes() -> int:
 	f += _check_b("identity is not a zeroed buffer", token.identity == zeroed, false)
 	# Shape only — the value is a per-session credential and changes every capture.
 	f += _check_i("token is a three-part JWT", token.token.split(".").size(), 3)
+	return f
+
+
+# What the server sends while the client recovers from a dropped socket, captured
+# by _live_reconnect_check.gd. The recovery itself is client state machine
+# behaviour that no fixture can replay — that harness asserts it live — but the
+# snapshot the server replays to a re-subscribing client is wire data, and this is
+# it: the same rows, arriving on a connection the caller never asked to open.
+func _test_real_resubscribe_decodes() -> int:
+	var rows: Array[Resource] = []
+	for msg: SpacetimeDBServerMessage in _messages_in(RESUBSCRIBE_FIXTURE):
+		rows.append_array(_config_rows_in(msg))
+
+	var f: int = _check_b("resubscribe replayed the config row", rows.is_empty(), false)
+	if rows.is_empty():
+		return f
+	f += _check_i("world_size survives the reconnect", rows[0].world_size, EXPECTED_WORLD_SIZE)
 	return f
 
 

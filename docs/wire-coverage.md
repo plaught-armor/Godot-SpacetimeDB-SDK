@@ -64,7 +64,41 @@ path but never a standalone broadcast of another client's transaction.
 | `call_procedure` | **yes** (both `Result` arms) |
 | `unsubscribe` | **yes** |
 | `query_sql` | **yes** |
-| `connect_db` / reconnect + resubscribe | no |
+| `connect_db` | **yes** |
+| reconnect + resubscribe | **yes** — live, `_live_reconnect_check.gd` (both close kinds) |
+
+## Reconnect
+
+Recovery is the one path a fixture cannot prove. What matters is not the bytes
+but what the client does with them: clear the cache, re-subscribe under fresh
+query ids, end the handles the caller was holding, and start accepting reducer
+calls again. So it is covered by a live harness instead — the socket is dropped
+underneath a connected client and the recovery is asserted end to end:
+
+```sh
+cd godot-client && <godot> --headless --path . res://tests/_live_reconnect_check.tscn
+echo $?   # number of failed checks
+```
+
+It passes today: the cache refills, the pre-drop handle reports `ended`, and a
+reducer call succeeds afterwards. It also writes `wire_resubscribe.bin`, so the
+offline suite keeps a replayable copy of the snapshot the server sends a
+re-subscribing client — with any frame carrying a token dropped rather than
+captured and scrubbed.
+
+That run closes the socket cleanly, which is the graceful-close branch. A yanked
+network is a different one: the socket dies with no close handshake (code -1) and
+routes through `_on_connection_error`. Reaching it means really taking the server
+away, so a driver script does exactly that — SIGKILL, wait, restart:
+
+```sh
+GODOT=<godot> tests/_live_abnormal_drop.sh
+```
+
+It restarts the server with the argv it was already running and never passes
+`--delete-data`, so the published module survives. This also passes: the client
+reports the abnormal closure, retries through the downtime, and recovers the same
+way once the server is back.
 
 ## Data shapes
 
@@ -92,7 +126,6 @@ than half-done.
 
 | Gap | What it needs | Notes |
 |---|---|---|
-| Reconnect + resubscribe | Kill the server mid-session, or drop the socket, and capture the recovery | Highest value left: it is stateful, it is what players hit on a flaky network, and `_resubscribe_saved_queries` has only synthetic coverage. Also the path where subscription handles go permanently ENDED. |
 | Standalone `TransactionUpdate` | A **second** concurrent client, so this one observes another's row changes | Today the fixture only ever sees a transaction nested inside the caller's own reducer response. The broadcast shape is untested. |
 | `Option` fields, enum/sum columns | Add the shapes to the vendored module and recapture | Both go through decode paths (`_read_option`, RustEnum) that only synthetic tests touch. |
 | Index reads (btree / unique) | A module table with the indexes plus rows to read back | btree shipped in v2.5.0 without ever being live-tested. |
