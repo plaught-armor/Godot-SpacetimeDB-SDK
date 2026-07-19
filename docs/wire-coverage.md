@@ -125,9 +125,30 @@ intact. The response is the receipt for the request.
 The handshake fixture adds an `Identity` (32 bytes) and a connection id (16), so
 those two widths decode off real bytes now.
 
-Not covered by real bytes: `Option` fields, enum/sum columns on a table, btree
-and unique index reads, and `u128`/`u256` scalars as **table columns** — the
-handshake proves the widths decode, not that a row carrying one does.
+Not covered by real bytes: `Option` fields, enum/sum columns on a table, and
+`u128`/`u256` scalars as **table columns** — the handshake proves the widths
+decode, not that a row carrying one does.
+
+## Index reads
+
+The generated index accessors (`db.<table>.<column>.find()` / `.filter()`) are
+not a wire shape at all: they are caches built from `LocalDatabase`'s
+insert/update/delete callbacks, so no fixture can exercise them and every test
+before this one fed them synthetic rows. The btree index shipped in v2.5.0
+without ever being read against a live server. A live harness covers them:
+
+```sh
+GODOT=<godot> tests/_live_index.sh
+```
+
+Every index read is asserted against a linear `iter()` scan of the same table —
+the scan is the ground truth, the index is what is under test — across insert,
+update and delete, plus the miss cases and each range bound. The driver starts a
+second client first: with one player the btree holds a single key and the range
+accessors return everything or nothing, so the check **fails on purpose** if it
+finds a single-player world rather than reporting a green run that proved
+nothing. It passes today, including through `suicide()` emptying a bucket and
+unregistering its key.
 
 ## Remaining gaps
 
@@ -138,7 +159,6 @@ than half-done.
 | Gap | What it needs | Notes |
 |---|---|---|
 | `Option` fields, enum/sum columns | Add the shapes to the vendored module and recapture | Both go through decode paths (`_read_option`, RustEnum) that only synthetic tests touch. |
-| Index reads (btree / unique) | Only a live check — the module already has both (`circle.player_id` is btree, `player.player_id` is unique) | btree shipped in v2.5.0 without ever being read against a live server. Cheapest of the three, and the only one needing no module change. |
 | `u128` / `u256` **columns** | Module fields of those types | The handshake fixture covers the widths; a row carrying one still goes through the table-decode path untested. `test_u64_roundtrip` and `test_schedule_at_wide_ints` are hand-built bytes. |
 
 ## Regenerating the fixtures
