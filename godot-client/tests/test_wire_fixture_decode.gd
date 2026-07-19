@@ -26,6 +26,10 @@ const PROC_ERR_FIXTURE: String = "res://tests/fixtures/wire_procedure_err.bin"
 # What blackholio-server's probe_error procedure returns.
 const EXPECTED_ERROR: String = "probe failure"
 const SQL_FIXTURE: String = "res://tests/fixtures/wire_one_off_query.bin"
+const UNSUB_FIXTURE: String = "res://tests/fixtures/wire_unsubscribe.bin"
+const SUB_ERR_FIXTURE: String = "res://tests/fixtures/wire_subscription_error.bin"
+# The table the capture subscribes to and then drops.
+const UNSUB_TABLE: String = "does_not_exist"
 # Set by the module's init reducer — the value the server actually holds.
 const EXPECTED_WORLD_SIZE: int = 1000
 
@@ -38,6 +42,8 @@ func _initialize() -> void:
 	fails += _test_real_procedure_return_decodes()
 	fails += _test_real_procedure_error_decodes()
 	fails += _test_real_one_off_query_decodes()
+	fails += _test_real_unsubscribe_decodes()
+	fails += _test_real_subscription_error_decodes()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -320,6 +326,53 @@ func _test_real_one_off_query_decodes() -> int:
 			EXPECTED_WORLD_SIZE,
 		)
 	return f
+
+
+# Both of these work today. They are captured so a silent regression on the
+# teardown and error paths shows up here rather than in someone's game.
+func _test_real_unsubscribe_decodes() -> int:
+	var messages: Array[SpacetimeDBServerMessage] = _messages_in(UNSUB_FIXTURE)
+	var f: int = _check_b("unsubscribe fixture decoded", messages.is_empty(), false)
+	var applied: Array[UnsubscribeAppliedMessage] = []
+	for msg: SpacetimeDBServerMessage in messages:
+		if msg is UnsubscribeAppliedMessage:
+			applied.append(msg)
+	f += _check_b("decoded an UnsubscribeApplied", applied.is_empty(), false)
+	if applied.is_empty():
+		return f
+	f += _check_b("carries a query id", applied[0].query_id != null, true)
+	return f
+
+
+func _test_real_subscription_error_decodes() -> int:
+	var messages: Array[SpacetimeDBServerMessage] = _messages_in(SUB_ERR_FIXTURE)
+	var f: int = _check_b("subscription error fixture decoded", messages.is_empty(), false)
+	var errors: Array[SubscriptionErrorMessage] = []
+	for msg: SpacetimeDBServerMessage in messages:
+		if msg is SubscriptionErrorMessage:
+			errors.append(msg)
+	f += _check_b("decoded a SubscriptionError", errors.is_empty(), false)
+	if errors.is_empty():
+		return f
+	# The server explains itself; assert the table name survives rather than
+	# pinning wording that SpacetimeDB is free to reword.
+	f += _check_b(
+		"error names the missing table",
+		errors[0].error_message.contains(UNSUB_TABLE),
+		true,
+	)
+	return f
+
+
+func _messages_in(fixture: String) -> Array[SpacetimeDBServerMessage]:
+	var out: Array[SpacetimeDBServerMessage] = []
+	var deserializer: BSATNDeserializer = BSATNDeserializer.new(
+		SpacetimeDBSchema.new("Blackholio"),
+		false,
+	)
+	for frame: PackedByteArray in _frames(fixture):
+		out.append_array(deserializer.process_bytes_and_extract_messages(frame.slice(1)))
+	return out
 
 
 func _config_rows_in(msg: SpacetimeDBServerMessage) -> Array[Resource]:

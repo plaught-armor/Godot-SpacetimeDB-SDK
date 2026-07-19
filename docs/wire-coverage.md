@@ -27,13 +27,17 @@ table tracks the difference.
 | `ProcedureResultData` | yes | **yes** — `wire_procedure.bin`, `wire_procedure_err.bin` |
 | `IdentityTokenMessage` | yes | no |
 | `OneOffQueryResponseMessage` | yes | **yes** — `wire_one_off_query.bin` |
-| `SubscriptionErrorMessage` | no | no |
-| `UnsubscribeAppliedMessage` | no | no |
+| `SubscriptionErrorMessage` | yes | **yes** — `wire_subscription_error.bin` |
+| `UnsubscribeAppliedMessage` | yes | **yes** — `wire_unsubscribe.bin` |
 
 Chasing the `query_sql` gap immediately found it broken: its awaiter connected a
 two-argument handler to a three-argument signal, so every call dropped its result
 and returned an empty array. It had no test of any kind. That is the second
 shipped-and-broken public API this table has turned up.
+
+Chasing `unsubscribe` and `SubscriptionError` next found both working correctly —
+worth recording, since a coverage gap means "unverified", not "broken". They are
+captured so a regression on the teardown and error paths surfaces here.
 
 `TransactionUpdateMessage` is marked partial deliberately: a caller's own row
 changes arrive **inside** the reducer response, so the fixture exercises that
@@ -46,7 +50,7 @@ path but never a standalone broadcast of another client's transaction.
 | `subscribe` | **yes** |
 | `call_reducer` | **yes** |
 | `call_procedure` | **yes** (both `Result` arms) |
-| `unsubscribe` | no |
+| `unsubscribe` | **yes** |
 | `query_sql` | **yes** |
 | `connect_db` / reconnect + resubscribe | no |
 

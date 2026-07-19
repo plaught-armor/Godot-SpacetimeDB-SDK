@@ -16,6 +16,8 @@
 #   wire_procedure.bin     — a value-returning procedure response (probe_vector3)
 #   wire_procedure_err.bin — the err arm of the same Result type (probe_error)
 #   wire_one_off_query.bin — a query_sql / OneOffQueryResponse result
+#   wire_unsubscribe.bin   — an UnsubscribeApplied response
+#   wire_subscription_error.bin — a SubscriptionError for an uncompilable query
 extends Node
 
 const SNAPSHOT_PATH: String = "res://tests/fixtures/wire_snapshot.bin"
@@ -23,6 +25,8 @@ const TXN_PATH: String = "res://tests/fixtures/wire_txn.bin"
 const PROC_PATH: String = "res://tests/fixtures/wire_procedure.bin"
 const PROC_ERR_PATH: String = "res://tests/fixtures/wire_procedure_err.bin"
 const SQL_PATH: String = "res://tests/fixtures/wire_one_off_query.bin"
+const UNSUB_PATH: String = "res://tests/fixtures/wire_unsubscribe.bin"
+const SUB_ERR_PATH: String = "res://tests/fixtures/wire_subscription_error.bin"
 
 var _file: FileAccess
 var _count: int = 0
@@ -91,6 +95,24 @@ func _on_connected(_identity: PackedByteArray, _token: String) -> void:
 			.query_sql("SELECT * FROM config")
 	await get_tree().create_timer(0.5).timeout
 	_close("one_off_query")
+
+	# 6. Unsubscribe. Works today; captured so it keeps working.
+	var temp: SpacetimeDBSubscription = SpacetimeDB.Blackholio.subscribe(["SELECT * FROM player"])
+	await temp.wait_for_applied(10.0)
+	_open(UNSUB_PATH)
+	temp.unsubscribe()
+	await temp.wait_for_end(10.0)
+	await get_tree().create_timer(0.5).timeout
+	_close("unsubscribe")
+
+	# 7. Subscription error, from a query the server cannot compile.
+	_open(SUB_ERR_PATH)
+	var bad: SpacetimeDBSubscription = SpacetimeDB \
+			.Blackholio \
+			.subscribe(["SELECT * FROM does_not_exist"])
+	await bad.wait_for_applied(10.0)
+	await get_tree().create_timer(0.5).timeout
+	_close("subscription_error")
 
 	get_tree().quit()
 
