@@ -12,9 +12,14 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   generated `get_class()` — produced a binding that failed to parse, taking
   every other table and reducer in the module down with it. Escaping only
   covered GDScript *keywords*, and these names are not keywords. Such names
-  now generate `set_`, `notification_`, `get_class_` and so on, asking
-  `ClassDB` rather than a hand-written list so it stays correct across engine
-  versions. The wire name is unchanged — `call_reducer('set', ...)` — so only
+  now generate `set_`, `notification_`, `get_class_` and so on. The same applies
+  to names that come from a column, a table or an index accessor rather than a
+  reducer — `script` and `resource_name` are properties on every Resource, and
+  `count` and `iter` are methods on the table wrapper's own base — so those
+  escape too, consistently across the row property, its `BSATN_TYPES` entry, the
+  `create()` parameter and the index that resolves the property by name. The
+  check asks the engine and the SDK base classes what is taken, rather than a
+  hand-written list, so it stays correct across engine versions. The wire name is unchanged — `call_reducer('set', ...)` — so only
   the GDScript surface is renamed, and no working module could have depended
   on the old spelling because it could not load at all.
 

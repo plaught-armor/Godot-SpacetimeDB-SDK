@@ -4,17 +4,29 @@
 class_name VprocenumKindRow extends _ModuleTableType
 
 const module_name : String = "Vprocenum"
-const table_names: Array[StringName] = [&'kind_row']
+const table_names: Array[StringName] = [&'kind_row', &'script']
 const PRIMARY_KEY: StringName = &"id"
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"u64", &"kind": &"VprocenumKind" }
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"u64", &"kind": &"VprocenumKind", &"script_": &"string", &"count_": &"u32", &"resource_name_": &"string", &"create_": &"u32" }
 
 @export var id: int
 @export var kind: VprocenumKind
+@export var script_: String
+@export var count_: int
+@export var resource_name_: String
+@export var create_: int
 
 ## 0. id: int[br]
 ## 1. kind: VprocenumKind[br]
-static func create(p_id: int, p_kind: VprocenumKind) -> VprocenumKindRow:
+## 2. script_: String[br]
+## 3. count_: int[br]
+## 4. resource_name_: String[br]
+## 5. create_: int[br]
+static func create(p_id: int, p_kind: VprocenumKind, p_script_: String, p_count_: int, p_resource_name_: String, p_create_: int) -> VprocenumKindRow:
 	var result: VprocenumKindRow = VprocenumKindRow.new()
 	result.id = p_id
 	result.kind = p_kind
+	result.script_ = p_script_
+	result.count_ = p_count_
+	result.resource_name_ = p_resource_name_
+	result.create_ = p_create_
 	return result
