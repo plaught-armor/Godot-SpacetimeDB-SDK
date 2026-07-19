@@ -26,8 +26,9 @@ in-file and recorded in [`NOTICE`](NOTICE) per Apache-2.0 section 4(b):
 
 3. The `probe_row` table, its `ProbeKind` enum and the `probe_seed` reducer,
    also appended at the end of `src/lib.rs`. Same reason, for column shapes
-   rather than return values: `Option` fields, a sum/enum column, and
-   `u128`/`u256`/`i128` columns. Nothing in the game reads it.
+   rather than return values: `Option` fields, a sum/enum column,
+   `u128`/`u256`/`i128` columns, and container columns (`Vec<i32>`,
+   `Vec<String>`, `Vec<DbVector2>`). Nothing in the game reads it.
 
 ## Why vendored instead of cloning upstream
 

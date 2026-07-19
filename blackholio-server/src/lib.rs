@@ -695,6 +695,11 @@ pub struct ProbeRow {
     pub widest_unsigned: spacetimedb::sats::u256,
     pub wide_signed: i128,
     pub who: Identity,
+    // Container columns: a scalar vec, a string vec, and a vec of structs. The
+    // array-like decode path is covered as a procedure return, never as a column.
+    pub numbers: Vec<i32>,
+    pub words: Vec<String>,
+    pub points: Vec<DbVector2>,
 }
 
 // Seeds one row per shape combination, so a single subscription snapshot covers
@@ -720,6 +725,12 @@ pub fn probe_seed(ctx: &ReducerContext) -> Result<(), String> {
         ),
         wide_signed: -170141183460469231731687303715884105728,
         who: ctx.sender(),
+        numbers: vec![i32::MIN, -1, 0, 1, i32::MAX],
+        words: vec!["alpha".to_string(), String::new(), "omega".to_string()],
+        points: vec![
+            DbVector2 { x: 1.5, y: -2.5 },
+            DbVector2 { x: 0.0, y: 1024.0 },
+        ],
     });
 
     ctx.db.probe_row().insert(ProbeRow {
@@ -731,6 +742,9 @@ pub fn probe_seed(ctx: &ReducerContext) -> Result<(), String> {
         widest_unsigned: spacetimedb::sats::u256::MAX,
         wide_signed: i128::MAX,
         who: ctx.sender(),
+        numbers: Vec::new(),
+        words: Vec::new(),
+        points: Vec::new(),
     });
 
     ctx.db.probe_row().insert(ProbeRow {
@@ -742,6 +756,9 @@ pub fn probe_seed(ctx: &ReducerContext) -> Result<(), String> {
         widest_unsigned: spacetimedb::sats::u256::ZERO,
         wide_signed: 0,
         who: ctx.sender(),
+        numbers: vec![7],
+        words: vec!["solo".to_string()],
+        points: vec![DbVector2 { x: -0.5, y: 0.25 }],
     });
 
     Ok(())

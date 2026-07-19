@@ -127,14 +127,41 @@ those two widths decode off real bytes now.
 
 Covered since the probe table landed: `Option` columns in both arms (including
 `Some("")` and `Some(0)`, the two values a sloppy check cannot tell from `None`),
-a sum/enum column in each of its variants (no payload, a scalar, a string), and
+a sum/enum column in each of its variants (no payload, a scalar, a string),
 `u128`/`u256`/`i128` as **table columns** at their extremes — `MAX`, `MIN`, and
-an asymmetric byte pattern a wrong width or endianness cannot decode by accident.
-Stock Blackholio has none of those shapes, which is why the module carries a
-`probe_row` table that nothing in the game reads.
+an asymmetric byte pattern a wrong width or endianness cannot decode by accident —
+and container columns (`Vec<i32>`, `Vec<String>`, `Vec<DbVector2>`) empty, single
+and multi-element. Stock Blackholio has none of those shapes, which is why the
+module carries a `probe_row` table that nothing in the game reads.
 
-That leaves no column shape this module can express without real-bytes coverage;
-what is still missing is listed under Remaining gaps below.
+## Compression
+
+Every fixture above is captured with compression `NONE` on purpose, so the files
+stay raw BSATN that any test can replay without a decompress step. The cost was
+that the decompressors had only ever seen bytes we produced: `test_decompress`
+round-trips our own gzip, `test_brotli_decompress` decodes a blob from the
+`brotli` CLI. Neither proves the SDK reads what SpacetimeDB emits.
+
+A separate capture fixes that, one connection per preference:
+
+```sh
+cd godot-client && <godot> --headless --path . res://tests/_capture_wire_compressed.tscn
+```
+
+It subscribes to the whole `entity` table because the server only compresses a
+message once it exceeds 1 KiB, and it **discards a fixture that came back
+uncompressed** — a tag-0 capture would look like coverage and assert nothing.
+`wire_snapshot_gzip.bin` and `wire_snapshot_brotli.bin` are asserted offline: the
+tag byte first, then the rows that come back out.
+
+Chasing this found the third shipped bug of the audit. `SpacetimeDBConnection`
+read its socket settings once, in `_init`, and the client builds that object on
+the first `connect_db` and keeps it — so a later `disconnect_db()` /
+`connect_db(new_options)` pair silently kept the first call's compression, buffer
+sizes and heartbeat while the client's own fields showed the new ones. The brotli
+capture came back gzip-tagged, which is how it surfaced. Fixed by
+`SpacetimeDBConnection.apply_options()`, called on reconnect; regression test in
+`test_connection_options_reapply.gd`.
 
 ## Index reads
 
@@ -159,13 +186,11 @@ unregistering its key.
 
 ## Remaining gaps
 
-Every message type and every column shape the module can express is now covered
-by real bytes. What is left is narrower:
-
-| Gap | What it needs | Notes |
-|---|---|---|
-| Server-**compressed** frames | A second capture pass with `CompressionPreference.GZIP` / `BROTLI` | Every fixture is captured with compression `NONE` on purpose, so the files stay replayable BSATN. The decompressors are tested (`test_decompress`, `test_brotli_decompress`) but against a gzip round trip and a `brotli` CLI blob — never against a frame SpacetimeDB itself compressed. |
-| Container columns (`Vec<T>`, `Vec<Struct>`) | Columns of those types on the probe table | A native array-like is covered as a procedure *return* (`vector3`), not as a table column. |
+None ranked. Every server message type, every column shape this module can
+express, and both compression tags are now covered by bytes a real server sent.
+What would extend the coverage further needs a new capability rather than a
+missing test: a module shape SpacetimeDB gains later, or a second server version
+to capture against so the fixtures pin a range rather than a point.
 
 ## Regenerating the fixtures
 

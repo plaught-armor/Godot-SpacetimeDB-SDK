@@ -76,11 +76,27 @@ var _post_stall_polls: int = 0
 
 
 func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
-	_options = options
 	_db_name = db_name
-	if options.monitor_mode:
-		_register_monitors()
+	apply_options(options)
+	set_physics_process(false) # Don't process until connect is called
 
+
+## Applies the settings from [param options]. Called from [method _init] and again
+## whenever the client reconnects with a fresh options object: the connection
+## outlives a disconnect_db()/connect_db() pair, so without this the second call's
+## compression, buffer sizes and heartbeat would silently stay at whatever the
+## first call asked for.
+func apply_options(options: SpacetimeDBConnectionOptions) -> void:
+	# Monitor registration is a side effect on the Performance singleton, so it
+	# follows the options rather than the constructor: leaving it behind would make
+	# _options.monitor_mode disagree with what is actually registered, and predelete
+	# would then either leak the monitors or remove names that were never added.
+	var was_monitoring: bool = _options != null and _options.monitor_mode
+	if was_monitoring and not options.monitor_mode:
+		_unregister_monitors()
+	elif not was_monitoring and options.monitor_mode:
+		_register_monitors()
+	_options = options
 	_websocket.inbound_buffer_size = options.inbound_buffer_size
 	_websocket.outbound_buffer_size = options.outbound_buffer_size
 	# Keepalive: peer pings every interval and closes (code -1) if a pong is missed,
@@ -89,7 +105,6 @@ func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
 	_stall_threshold_ms = int(options.heartbeat_interval_seconds * 1000.0)
 	set_compression_preference(options.compression)
 	self._debug_mode = options.debug_mode
-	set_physics_process(false) # Don't process until connect is called
 
 
 func _physics_process(_delta: float) -> void:
@@ -100,7 +115,10 @@ func _physics_process(_delta: float) -> void:
 	if state == WebSocketPeer.STATE_OPEN:
 		if not _is_connected:
 			negotiated_protocol = _websocket.get_selected_protocol()
-			_print_log("SpacetimeDBConnection: Connection established (protocol: %s)." % negotiated_protocol)
+			_print_log(
+				"SpacetimeDBConnection: Connection established (protocol: %s)."
+				% negotiated_protocol
+			)
 			_is_connected = true
 			_connection_requested = false
 			connected.emit()
@@ -137,14 +155,22 @@ func _physics_process(_delta: float) -> void:
 		if _is_connected or _connection_requested: # Only report if we were connected or trying
 			if code == -1: # Abnormal closure
 				if _post_stall_polls > 0: # heartbeat tripped by a local stall, not a network drop
-					push_warning("SpacetimeDBConnection: abnormal close right after a main-thread stall — stall-induced, fast reconnect")
+					push_warning(
+						"SpacetimeDBConnection: abnormal close right after a main-thread stall — stall-induced, fast reconnect"
+					)
 					_post_stall_polls = 0
 					connection_stalled.emit(code)
 				else:
-					printerr("SpacetimeDBConnection: connection_error %d, abnormal closure. Reason: %s" % [code, reason])
+					printerr(
+						"SpacetimeDBConnection: connection_error %d, abnormal closure. Reason: %s"
+						% [code, reason]
+					)
 					connection_error.emit(code, "Abnormal closure: %s" % reason)
 			else:
-				_print_log("SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)" % [code, reason])
+				_print_log(
+					"SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)"
+					% [code, reason]
+				)
 				disconnected.emit() # Normal closure signal
 		_is_connected = false
 		_connection_requested = false
@@ -319,7 +345,10 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		ws_url_base = "wss://" + ws_url_base.substr(8)
 	elif ws_url_base.begins_with("http://"):
 		ws_url_base = "ws://" + ws_url_base.substr(7)
-	ws_url_base = ws_url_base.path_join("/" + version + "/database").path_join(database_name).path_join("subscribe")
+	ws_url_base = ws_url_base \
+			.path_join("/" + version + "/database") \
+			.path_join(database_name) \
+			.path_join("subscribe")
 
 	# --- Add Query Parameters ---
 	# Start with connection_id

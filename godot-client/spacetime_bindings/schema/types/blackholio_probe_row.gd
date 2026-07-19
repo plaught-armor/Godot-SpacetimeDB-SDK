@@ -6,7 +6,7 @@ class_name BlackholioProbeRow extends _ModuleTableType
 const module_name : String = "Blackholio"
 const table_names: Array[StringName] = [&'probe_row']
 const PRIMARY_KEY: StringName = &"id"
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"i32", &"maybe_text": &"string", &"maybe_count": &"i32", &"kind": &"BlackholioProbeKind", &"wide_unsigned": &"u128", &"widest_unsigned": &"u256", &"wide_signed": &"i128", &"who": &"identity" }
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"i32", &"maybe_text": &"string", &"maybe_count": &"i32", &"kind": &"BlackholioProbeKind", &"wide_unsigned": &"u128", &"widest_unsigned": &"u256", &"wide_signed": &"i128", &"who": &"identity", &"numbers": &"i32", &"words": &"string", &"points": &"BlackholioDbVector2" }
 
 @export var id: int
 @export var maybe_text: Option ## Option of String
@@ -16,6 +16,9 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"i32", &"maybe
 @export var widest_unsigned: PackedByteArray
 @export var wide_signed: PackedByteArray
 @export var who: PackedByteArray
+@export var numbers: Array[int] ## Array of int
+@export var words: Array[String] ## Array of String
+@export var points: Array[BlackholioDbVector2] ## Array of BlackholioDbVector2
 
 ## 0. id: int[br]
 ## 1. maybe_text: Option of String[br]
@@ -25,7 +28,10 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"i32", &"maybe
 ## 5. widest_unsigned: PackedByteArray[br]
 ## 6. wide_signed: PackedByteArray[br]
 ## 7. who: PackedByteArray[br]
-static func create(p_id: int, p_maybe_text: Option, p_maybe_count: Option, p_kind: BlackholioProbeKind, p_wide_unsigned: PackedByteArray, p_widest_unsigned: PackedByteArray, p_wide_signed: PackedByteArray, p_who: PackedByteArray) -> BlackholioProbeRow:
+## 8. numbers: Array of int[br]
+## 9. words: Array of String[br]
+## 10. points: Array of BlackholioDbVector2[br]
+static func create(p_id: int, p_maybe_text: Option, p_maybe_count: Option, p_kind: BlackholioProbeKind, p_wide_unsigned: PackedByteArray, p_widest_unsigned: PackedByteArray, p_wide_signed: PackedByteArray, p_who: PackedByteArray, p_numbers: Array[int], p_words: Array[String], p_points: Array[BlackholioDbVector2]) -> BlackholioProbeRow:
 	var result: BlackholioProbeRow = BlackholioProbeRow.new()
 	result.id = p_id
 	result.maybe_text = p_maybe_text
@@ -35,4 +41,7 @@ static func create(p_id: int, p_maybe_text: Option, p_maybe_count: Option, p_kin
 	result.widest_unsigned = p_widest_unsigned
 	result.wide_signed = p_wide_signed
 	result.who = p_who
+	result.numbers = p_numbers
+	result.words = p_words
+	result.points = p_points
 	return result

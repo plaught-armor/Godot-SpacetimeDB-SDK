@@ -20,7 +20,8 @@ Local changes to the upstream source (Apache-2.0 section 4(b)):
      code was altered or removed.
   3. src/lib.rs — added the `probe_row` table, its `ProbeKind` enum and the
      `probe_seed` reducer, carrying the column shapes stock Blackholio has none
-     of (Option fields, a sum/enum column, u128/u256/i128 columns). Used only by
+     of (Option fields, a sum/enum column, u128/u256/i128 columns, and Vec
+     columns). Used only by
      the SDK's wire-fixture tests. Marked in-file. No upstream code was altered
      or removed.
 

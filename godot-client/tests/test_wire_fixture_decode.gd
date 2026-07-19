@@ -35,6 +35,11 @@ const IDENTITY_FIXTURE: String = "res://tests/fixtures/wire_identity_token.bin"
 const RESUBSCRIBE_FIXTURE: String = "res://tests/fixtures/wire_resubscribe.bin"
 const BROADCAST_FIXTURE: String = "res://tests/fixtures/wire_broadcast_txn.bin"
 const PROBE_ROWS_FIXTURE: String = "res://tests/fixtures/wire_probe_rows.bin"
+const GZIP_FIXTURE: String = "res://tests/fixtures/wire_snapshot_gzip.bin"
+const BROTLI_FIXTURE: String = "res://tests/fixtures/wire_snapshot_brotli.bin"
+# Compression tags as the server writes them (ws_common::SERVER_MSG_COMPRESSION_TAG_*).
+const TAG_BROTLI: int = 1
+const TAG_GZIP: int = 2
 # The name the second client gives itself in _live_broadcast_actor.gd.
 const ACTOR_NAME: String = "Bystander"
 # SpacetimeDB identities are 32 bytes (u256), connection ids 16 (u128).
@@ -62,6 +67,7 @@ func _initialize() -> void:
 	fails += _test_real_resubscribe_decodes()
 	fails += _test_real_broadcast_decodes()
 	fails += _test_real_probe_rows_decode()
+	fails += _test_real_compressed_frames_decode()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -601,6 +607,7 @@ func _test_real_probe_rows_decode() -> int:
 	f += _test_probe_options(rows)
 	f += _test_probe_enum_column(rows)
 	f += _test_probe_wide_columns(rows)
+	f += _test_probe_container_columns(rows)
 	return f
 
 
@@ -699,7 +706,93 @@ func _test_probe_wide_columns(rows: Dictionary[int, Resource]) -> int:
 	return f
 
 
+## Container columns: a scalar array, a string array, and an array of structs.
+## The array-like decode path was covered as a procedure return, never as a
+## column, and an empty array is where a decoder that silently defaults looks
+## exactly like one that works.
+func _test_probe_container_columns(rows: Dictionary[int, Resource]) -> int:
+	var numbers: Array[int] = rows[1].get("numbers")
+	var f: int = _check_i("i32 array length", numbers.size(), 5)
+	f += _check_s("i32 array contents", str(numbers), str([-2147483648, -1, 0, 1, 2147483647]))
+
+	var words: Array[String] = rows[1].get("words")
+	f += _check_i("string array length", words.size(), 3)
+	f += _check_s("string array contents", str(words), str(["alpha", "", "omega"]))
+
+	# An array of a nested struct — two decode paths at once (array framing plus
+	# the element's own product type).
+	var points: Array[BlackholioDbVector2] = rows[1].get("points")
+	f += _check_i("struct array length", points.size(), 2)
+	if points.size() == 2:
+		f += _check_b("struct array element type", points[0] is BlackholioDbVector2, true)
+		f += _check_s(
+			"struct array contents",
+			"%.2f,%.2f %.2f,%.2f" % [points[0].x, points[0].y, points[1].x, points[1].y],
+			"1.50,-2.50 0.00,1024.00",
+		)
+
+	# Empty arrays, from the row seeded with none of any of them.
+	f += _check_i("empty i32 array", (rows[2].get("numbers") as Array).size(), 0)
+	f += _check_i("empty string array", (rows[2].get("words") as Array).size(), 0)
+	f += _check_i("empty struct array", (rows[2].get("points") as Array).size(), 0)
+
+	# A single-element array is the length prefix a framing bug most often gets
+	# wrong in the other direction.
+	f += _check_i("single-element i32 array", (rows[3].get("numbers") as Array).size(), 1)
+	f += _check_s("single-element string array", str(rows[3].get("words")), str(["solo"]))
+	return f
+
+
 ## Compares two byte columns by hex, so a failure prints the bytes rather than
 ## "true != false".
 func _check_bytes(label: String, got: PackedByteArray, want: PackedByteArray) -> int:
 	return _check_s(label, got.hex_encode(), want.hex_encode())
+
+
+# Frames the SERVER compressed. Every other fixture is captured with compression
+# NONE so it stays replayable BSATN, which left the decompressors tested only
+# against our own gzip round trip and a `brotli` CLI blob — the codec, never the
+# SDK's reading of what SpacetimeDB emits.
+func _test_real_compressed_frames_decode() -> int:
+	var f: int = _test_compressed_fixture(GZIP_FIXTURE, TAG_GZIP, "gzip")
+	f += _test_compressed_fixture(BROTLI_FIXTURE, TAG_BROTLI, "brotli")
+	return f
+
+
+func _test_compressed_fixture(path: String, tag: int, label: String) -> int:
+	var frames: Array[PackedByteArray] = _frames(path)
+	var f: int = _check_b("%s fixture has frames" % label, frames.is_empty(), false)
+	if frames.is_empty():
+		return f
+
+	# The tag is the assertion that matters most: a server that decided the payload
+	# was too small to compress would hand back tag 0, and the rest of this test
+	# would pass while proving nothing about the decompress path.
+	f += _check_i("%s frame carries its compression tag" % label, frames[0][0], tag)
+
+	var deserializer: BSATNDeserializer = BSATNDeserializer.new(
+		SpacetimeDBSchema.new("Blackholio"),
+		false,
+	)
+	var rows: int = 0
+	for frame: PackedByteArray in frames:
+		var payload: PackedByteArray = frame.slice(1)
+		if frame[0] == TAG_GZIP:
+			payload = DataDecompressor.decompress_packet(payload)
+		elif frame[0] == TAG_BROTLI:
+			payload = DataDecompressor.decompress_brotli(payload)
+		f += _check_b("%s payload decompressed" % label, payload.is_empty(), false)
+		for msg: SpacetimeDBServerMessage in deserializer.process_bytes_and_extract_messages(
+			payload
+		):
+			if msg is not SubscribeAppliedMessage:
+				continue
+			for table: TableUpdateData in (msg as SubscribeAppliedMessage).tables:
+				if String(table.table_name) == "entity":
+					rows += table.inserts.size()
+
+	f += _check_b("no decode error after %s decompression" % label, deserializer.has_error(), false)
+	# The server only compresses above 1 KiB, so a fixture that decoded to a handful
+	# of rows is not the message this test thinks it is.
+	f += _check_b("%s snapshot carries the entity table (%d rows)" % [label, rows], rows > 0, true)
+	return f
