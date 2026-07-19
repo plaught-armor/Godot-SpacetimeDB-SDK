@@ -66,6 +66,24 @@ func _initialize() -> void:
 	e2.direction = BlackholioDbVector2.create(0.0, 0.0)
 	f += _check_b("one null nested → unequal", LocalDatabase._values_equal(e1, e2), false)
 
+	# _rows_equal compares primitive columns inline instead of delegating every
+	# column to _values_equal (perf). The two paths must never diverge, so lock
+	# them together over the same fixtures: a future refactor that drops the
+	# typeof check or mishandles a column type fails here, not in production.
+	var db: LocalDatabase = LocalDatabase.new(SpacetimeDBSchema.new("x"))
+	var cols: Array[StringName] = []
+	cols.assign(LocalDatabase._record_columns(a))
+	f += _check_b("column list is non-empty", cols.is_empty(), false)
+	for pair: Array in [[a, b], [a, c], [a, d], [e1, e2]]:
+		var lhs: BlackholioCircle = pair[0]
+		var rhs: BlackholioCircle = pair[1]
+		f += _check_b(
+			"_rows_equal agrees with _values_equal (%d vs %d)" % [lhs.entity_id, rhs.entity_id],
+			db._rows_equal(lhs, rhs, cols),
+			LocalDatabase._values_equal(lhs, rhs),
+		)
+	db.free()
+
 	if f == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:

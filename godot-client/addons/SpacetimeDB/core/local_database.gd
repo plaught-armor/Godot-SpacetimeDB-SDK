@@ -21,6 +21,18 @@ var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = 
 ## has no listeners — avoids allocating an empty Array per snapshot on the common
 ## no-listener path. Read-only so a stray mutation fails loud (C2a).
 static var _EMPTY_LISTENERS: Array = []
+## Column-name list per generated record [Script], cached from its BSATN_TYPES const.
+## [method Script.get_script_constant_map] allocates a fresh Dictionary and `.keys()`
+## a fresh Array on every call, and [method _values_equal] needs that list once per
+## nested column per row compared — uncached, it dominated nested-row change
+## detection. Keyed by [Script] (process-lived, bounded by the generated record
+## count). Entries are read-only so a caller cannot mutate the shared list (C2a).
+## Reached only from the main-thread [method apply_table_update] path — NOT
+## synchronized. Moving row equality or row hashing onto the deserializer worker
+## needs either a mutex here or a per-thread cache.
+static var _record_columns_cache: Dictionary[Script, Array] = { }
+## Shared read-only empty column list for objects that are not generated records.
+static var _EMPTY_COLUMNS: Array = []
 var _pk_less_tables: Dictionary[StringName, Array] = { } ## Array[_ModuleTableType]
 var _row_property_cache: Dictionary[StringName, Array] = { } ## Array[StringName] — storage props per table
 ## Per-table refcount of cached PK rows: table -> { pk -> int }. A row shared by N
@@ -53,6 +65,8 @@ signal row_transactions_completed(table_name: StringName)
 static func _static_init() -> void:
 	if not _EMPTY_LISTENERS.is_read_only():
 		_EMPTY_LISTENERS.make_read_only()
+	if not _EMPTY_COLUMNS.is_read_only():
+		_EMPTY_COLUMNS.make_read_only()
 
 
 func _init(p_schema: SpacetimeDBSchema) -> void:
@@ -229,11 +243,23 @@ func _get_row_properties(table_name_lower: StringName) -> Array[StringName]:
 static func _record_columns(obj: Object) -> Array:
 	var script: Script = obj.get_script()
 	if script == null:
-		return []
+		return _EMPTY_COLUMNS
+	if _record_columns_cache.has(script):
+		return _record_columns_cache[script]
+	return _build_record_columns(script)
+
+
+# Cache miss path for [method _record_columns] — reads BSATN_TYPES off the script
+# once, freezes the list, and stores it (including the empty result, so a
+# non-record script costs one constant-map read for the process, not one per row).
+static func _build_record_columns(script: Script) -> Array:
+	var cols: Array = _EMPTY_COLUMNS
 	var bt: Variant = script.get_script_constant_map().get(&"BSATN_TYPES", null)
 	if bt is Dictionary:
-		return bt.keys()
-	return []
+		cols = (bt as Dictionary).keys()
+		cols.make_read_only()
+	_record_columns_cache[script] = cols
+	return cols
 
 
 # Value-equality that descends into nested Resource columns (product/sum-type
@@ -242,7 +268,11 @@ static func _record_columns(obj: Object) -> Array:
 # compare reports two structurally-equal rows unequal — firing spurious row_updated
 # on the PK path and missing dedup on the PK-less path. Columns come from the
 # record's BSATN_TYPES; primitives / Packed*Array short-circuit on the final
-# `a == b`, so the common all-primitive row pays no extra cost.
+# `a == b`. That short-circuit is not free: value equality costs ~1.6x an identity
+# compare on an all-primitive row and ~2.9x on a nested one (tests/bench_rows_equal.gd).
+# It is the price of not firing spurious row_updated, not a no-op — which is why
+# [method _rows_equal] compares primitive columns inline and only calls this for
+# the Object / Array columns that actually need the walk.
 static func _values_equal(a: Variant, b: Variant) -> bool:
 	var ta: int = typeof(a)
 	if ta != typeof(b):
@@ -294,7 +324,19 @@ static func _value_hash(v: Variant) -> int:
 
 func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array[StringName]) -> bool:
 	for prop_name: StringName in props:
-		if not _values_equal(a.get(prop_name), b.get(prop_name)):
+		# Primitive columns (the majority of every row) compare inline — the
+		# per-field [method _values_equal] call is itself the dominant cost of an
+		# all-primitive row. Only Object/Array columns need the recursive walk.
+		# Semantics stay identical: differing types are unequal, no `==` coercion.
+		var av: Variant = a.get(prop_name)
+		var bv: Variant = b.get(prop_name)
+		var ta: int = typeof(av)
+		if ta != typeof(bv):
+			return false
+		if ta == TYPE_OBJECT or ta == TYPE_ARRAY:
+			if not _values_equal(av, bv):
+				return false
+		elif av != bv:
 			return false
 	return true
 
