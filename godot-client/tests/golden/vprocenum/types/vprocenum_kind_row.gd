@@ -4,7 +4,7 @@
 class_name VprocenumKindRow extends _ModuleTableType
 
 const module_name : String = "Vprocenum"
-const table_names: Array[StringName] = [&'kind_row', &'script']
+const table_names: Array[StringName] = [&'kind_row', &'script', &'table_names']
 const PRIMARY_KEY: StringName = &"id"
 const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"u64", &"kind": &"VprocenumKind", &"script_": &"string", &"count_": &"u32", &"resource_name_": &"string", &"create_": &"u32" }
 

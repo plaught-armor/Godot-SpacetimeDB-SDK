@@ -212,6 +212,24 @@
                     },
                     "default_values": [],
                     "is_event": false
+                },
+                {
+                    "source_name": "table_names",
+                    "product_type_ref": 1,
+                    "primary_key": [
+                        0
+                    ],
+                    "indexes": [],
+                    "constraints": [],
+                    "sequences": [],
+                    "table_type": {
+                        "User": []
+                    },
+                    "table_access": {
+                        "Public": []
+                    },
+                    "default_values": [],
+                    "is_event": false
                 }
             ]
         },
