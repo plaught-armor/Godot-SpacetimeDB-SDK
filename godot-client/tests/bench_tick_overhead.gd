@@ -28,9 +28,14 @@ func _initialize() -> void:
 		var pct_of_sec: float = idle_ns * hz / 1e9 * 100.0
 		print("  %3d Hz : %6.1f us/sec  (%.5f%% of one core)" % [hz, per_sec_us, pct_of_sec])
 	print("")
+	# Per-row costs are NOT measured here — they come from bench_apply_profile.gd and
+	# are restated so the tick-invariance point lands with numbers attached. They were
+	# stale once (the pre-value-equality update figures outlived a change to
+	# LocalDatabase._rows_equal); re-run bench_apply_profile and update both these
+	# lines and docs/performance.md together whenever the apply path changes.
 	print("apply headroom is tick-INVARIANT (rows/sec of pure main-thread apply):")
-	print("  insert  ~500 ns/row -> ~2.00M rows/sec")
-	print("  update ~1850 ns/row -> ~0.54M rows/sec")
-	print("  delete  ~580 ns/row -> ~1.72M rows/sec")
+	print("  insert  ~570 ns/row -> ~1.75M rows/sec   (bench_apply_profile.gd, prim row)")
+	print("  update ~2410 ns/row -> ~0.41M rows/sec   (~3830 ns/row nested -> ~0.26M)")
+	print("  delete  ~650 ns/row -> ~1.54M rows/sec")
 	print("  (AIMD caps the per-tick slice; flood -> latency, spread over ticks)")
 	quit()
