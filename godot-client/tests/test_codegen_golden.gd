@@ -24,7 +24,9 @@ extends SceneTree
 
 # PackedStringArray (S6), not Array[String]. A plain var, not `const`: a const
 # Packed*Array reports a byte-count size and reads back wrong (C1 — never const one).
-var _fixtures: PackedStringArray = ["vtypes", "vsum", "vtypes2", "vbtree", "vreserved"]
+var _fixtures: PackedStringArray = [
+	"vtypes", "vsum", "vtypes2", "vbtree", "vreserved", "vprocenum"
+]
 # Committed test inputs. NOT spacetime_bindings/codegen_debug/ — that dir is
 # gitignored (transient codegen dumps), so fixtures there are absent on a clean
 # clone. These live with the test and codegen never writes here.

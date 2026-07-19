@@ -109,6 +109,43 @@ static func _safe_name(field_name: String) -> String:
 	return field_name
 
 
+## Escapes a GENERATED METHOD name that would override a native one. Godot refuses to
+## load a script whose method overrides a native class's ("overrides a method from
+## native class", and a signature mismatch on top of it), so one such name makes the
+## whole binding unusable. Two ways in: an enum variant named `class` produces
+## `get_class()`, and a reducer or procedure named `set` / `notification` / `connect`
+## produces that name verbatim. [method _safe_name] catches neither — it only knows
+## GDScript reserved words, and these names mostly are not (they are also all legal
+## Rust identifiers, so a module can really export them). Asks ClassDB instead of
+## carrying a hand-written list, so it stays correct across engine versions.
+##
+## [param base_class] is the generated script's base — `Resource` for the enum types
+## (RustEnum), `RefCounted` for the reducer/procedure classes. Inheritance is included,
+## so Object's methods are covered either way.
+static func _safe_method_name(method_name: String, base_class: StringName = &"Resource") -> String:
+	if ClassDB.class_has_method(base_class, StringName(method_name)):
+		return method_name + "_"
+	return method_name
+
+
+## Accessor name for an enum variant's payload (`ok` -> `get_ok`).
+static func _variant_getter_name(variant_name: String) -> String:
+	return _safe_method_name("get_%s" % variant_name.to_snake_case())
+
+
+## Constructor name for an enum variant (`ok` -> `create_ok`).
+static func _variant_creator_name(variant_name: String) -> String:
+	return _safe_method_name("create_%s" % variant_name.to_snake_case())
+
+
+## Function name for a reducer or procedure. Reserved-word escape first (so `match`
+## becomes `match_`), then the native-method check on the generated class's own base.
+## The raw wire name is passed separately to call_reducer/call_procedure, so renaming
+## here is local to the GDScript surface.
+static func _safe_call_name(call_name: String) -> String:
+	return _safe_method_name(_safe_name(call_name), &"RefCounted")
+
+
 ## Formats a single table name as a BSATN StringName literal.
 static func _format_table_name_literal(x: String) -> String:
 	return "&'%s'" % x
@@ -976,16 +1013,16 @@ func _generate_enum_gdscript(schema: SpacetimeParsedSchema, type_def: Dictionary
 							[" of ".join(nested_type)],
 				)
 			get_funcs.append(
-				"func get_%s() -> %s:\n" % [variant_name.to_snake_case(), variant_gd_type] +
+				"func %s() -> %s:\n" % [_variant_getter_name(variant_name), variant_gd_type] +
 				"\treturn data\n\n",
 			)
 			create_funcs.append(
-				"static func create_%s(_data: %s) -> %s:\n" % [variant_name.to_snake_case(), variant_gd_type, _class_name] +
+				"static func %s(_data: %s) -> %s:\n" % [_variant_creator_name(variant_name), variant_gd_type, _class_name] +
 				"\treturn create(Options.%s, _data)\n\n" % [_safe_name(variant_name)],
 			)
 		else:
 			create_funcs.append(
-				"static func create_%s() -> %s:\n" % [variant_name.to_snake_case(), _class_name] +
+				"static func %s() -> %s:\n" % [_variant_creator_name(variant_name), _class_name] +
 				"\treturn create(Options.%s)\n\n" % [_safe_name(variant_name)],
 			)
 
@@ -1174,10 +1211,11 @@ func _generate_reducers_gdscript(module_name: String, schema: SpacetimeParsedSch
 
 		out.append("\n".join(description_comment) + "\n")
 		var reducer_name: String = reducer.get("name", "")
-		# Sanitize the GDScript function name (a reducer named a keyword breaks parse);
-		# the call_reducer() string keeps the raw wire name.
+		# Sanitize the GDScript function name (a reducer named a keyword — or named
+		# after a native method, like `set` — breaks parse); the call_reducer() string
+		# keeps the raw wire name.
 		out.append(
-			"func %s(%s) -> SpacetimeDBReducerCall:\n" % [_safe_name(reducer_name), params_str] +
+			"func %s(%s) -> SpacetimeDBReducerCall:\n" % [_safe_call_name(reducer_name), params_str] +
 			"\treturn _client.call_reducer('%s', [%s], [%s], &'%s')\n\n" %
 			[reducer_name, param_names_str, param_bsatn_types_str, ret_bsatn_type],
 		)
@@ -1253,10 +1291,11 @@ func _generate_procedures_gdscript(_module_name: String, schema: SpacetimeParsed
 
 		out.append("\n".join(description_comment) + "\n")
 		var proc_name: String = proc.get("name", "")
-		# Sanitize the GDScript function name (a procedure named a keyword breaks parse);
-		# the call_procedure() string keeps the raw wire name.
+		# Sanitize the GDScript function name (a procedure named a keyword — or named
+		# after a native method, like `notification` — breaks parse); the
+		# call_procedure() string keeps the raw wire name.
 		out.append(
-			"func %s(%s) -> SpacetimeDBProcedureCall:\n" % [_safe_name(proc_name), params_str] +
+			"func %s(%s) -> SpacetimeDBProcedureCall:\n" % [_safe_call_name(proc_name), params_str] +
 			"\treturn _client.call_procedure('%s', [%s], [%s], &'%s')\n\n" %
 			[proc_name, param_names_str, param_bsatn_types_str, ret_bsatn_type],
 		)

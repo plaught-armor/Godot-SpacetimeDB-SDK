@@ -1,0 +1,249 @@
+{
+    "sections": [
+        {
+            "Typespace": {
+                "types": [
+                    {
+                        "Sum": {
+                            "variants": [
+                                {
+                                    "name": {
+                                        "some": "func"
+                                    },
+                                    "algebraic_type": {
+                                        "U32": []
+                                    }
+                                },
+                                {
+                                    "name": {
+                                        "some": "class"
+                                    },
+                                    "algebraic_type": {
+                                        "String": []
+                                    }
+                                },
+                                {
+                                    "name": {
+                                        "some": "signal"
+                                    },
+                                    "algebraic_type": {
+                                        "Product": {
+                                            "elements": []
+                                        }
+                                    }
+                                },
+                                {
+                                    "name": {
+                                        "some": "var"
+                                    },
+                                    "algebraic_type": {
+                                        "Product": {
+                                            "elements": []
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "Product": {
+                            "elements": [
+                                {
+                                    "name": {
+                                        "some": "id"
+                                    },
+                                    "algebraic_type": {
+                                        "U64": []
+                                    }
+                                },
+                                {
+                                    "name": {
+                                        "some": "kind"
+                                    },
+                                    "algebraic_type": {
+                                        "Ref": 0
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "Types": [
+                {
+                    "source_name": {
+                        "scope": [],
+                        "source_name": "Kind"
+                    },
+                    "ty": 0,
+                    "custom_ordering": true
+                },
+                {
+                    "source_name": {
+                        "scope": [],
+                        "source_name": "KindRow"
+                    },
+                    "ty": 1,
+                    "custom_ordering": true
+                }
+            ]
+        },
+        {
+            "Tables": [
+                {
+                    "source_name": "kind_row",
+                    "product_type_ref": 1,
+                    "primary_key": [
+                        0
+                    ],
+                    "indexes": [],
+                    "constraints": [
+                        {
+                            "source_name": {
+                                "some": "kind_row_id_key"
+                            },
+                            "data": {
+                                "Unique": {
+                                    "columns": [
+                                        0
+                                    ]
+                                }
+                            }
+                        }
+                    ],
+                    "sequences": [],
+                    "table_type": {
+                        "User": []
+                    },
+                    "table_access": {
+                        "Public": []
+                    },
+                    "default_values": [],
+                    "is_event": false
+                }
+            ]
+        },
+        {
+            "Procedures": [
+                {
+                    "source_name": "class",
+                    "params": {
+                        "elements": [
+                            {
+                                "name": {
+                                    "some": "func"
+                                },
+                                "algebraic_type": {
+                                    "U32": []
+                                }
+                            },
+                            {
+                                "name": {
+                                    "some": "signal"
+                                },
+                                "algebraic_type": {
+                                    "String": []
+                                }
+                            }
+                        ]
+                    },
+                    "visibility": {
+                        "ClientCallable": []
+                    },
+                    "return_type": {
+                        "Sum": {
+                            "variants": [
+                                {
+                                    "name": {
+                                        "some": "ok"
+                                    },
+                                    "algebraic_type": {
+                                        "U32": []
+                                    }
+                                },
+                                {
+                                    "name": {
+                                        "some": "err"
+                                    },
+                                    "algebraic_type": {
+                                        "String": []
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "source_name": "match",
+                    "params": {
+                        "elements": []
+                    },
+                    "visibility": {
+                        "ClientCallable": []
+                    },
+                    "return_type": {
+                        "Product": {
+                            "elements": []
+                        }
+                    }
+                },
+                {
+                    "source_name": "notification",
+                    "params": {
+                        "elements": [
+                            {
+                                "name": {
+                                    "some": "what"
+                                },
+                                "algebraic_type": {
+                                    "I32": []
+                                }
+                            }
+                        ]
+                    },
+                    "visibility": {
+                        "ClientCallable": []
+                    },
+                    "return_type": {
+                        "Product": {
+                            "elements": []
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "Reducers": [
+                {
+                    "source_name": "set",
+                    "params": {
+                        "elements": [
+                            {
+                                "name": {
+                                    "some": "value"
+                                },
+                                "algebraic_type": {
+                                    "U32": []
+                                }
+                            }
+                        ]
+                    },
+                    "lifecycle": {
+                        "some": null
+                    }
+                },
+                {
+                    "source_name": "connect_row",
+                    "params": {
+                        "elements": []
+                    },
+                    "lifecycle": {
+                        "some": null
+                    }
+                }
+            ]
+        }
+    ]
+}

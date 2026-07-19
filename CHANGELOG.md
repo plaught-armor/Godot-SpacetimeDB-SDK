@@ -5,6 +5,19 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 ## [Unreleased]
 
 ### Fixed
+- **A name that collides with a built-in method no longer breaks the whole
+  binding.** Godot refuses to load a script whose method overrides a native
+  one, so a module exporting a reducer or procedure named `set`,
+  `notification` or `connect` — or an enum variant named `class`, which
+  generated `get_class()` — produced a binding that failed to parse, taking
+  every other table and reducer in the module down with it. Escaping only
+  covered GDScript *keywords*, and these names are not keywords. Such names
+  now generate `set_`, `notification_`, `get_class_` and so on, asking
+  `ClassDB` rather than a hand-written list so it stays correct across engine
+  versions. The wire name is unchanged — `call_reducer('set', ...)` — so only
+  the GDScript surface is renamed, and no working module could have depended
+  on the old spelling because it could not load at all.
+
 - **A reconnect now uses the options it was given.** `SpacetimeDBConnection`
   reads its socket-level settings once, in its constructor, and the client
   builds that object on the first `connect_db` and keeps it — so a later
