@@ -157,17 +157,25 @@ static func _native_names(base_class: StringName) -> Dictionary:
 ## with it. [method _safe_name] catches none of these: it only knows GDScript reserved
 ## words, and these names mostly are not (`set`, `notification`, `script`,
 ## `resource_name`, ...). They are all legal Rust identifiers, so a module can really
-## export them. Every way in that exists today:
+## export them. This function covers the ENGINE half of that; the schema-name callers
+## below layer on the two halves it cannot see — the SDK base classes
+## ([method _column_taken_names]) and the names codegen itself emits
+## ([member _CODEGEN_OWN_NAMES], [member _DB_FACADE_OWN_NAMES]). Every way in known
+## today, and which layer catches it:
 ## [codeblock]
-## enum variant `class`      -> func get_class()          overrides Object.get_class
-## reducer/procedure `set`   -> func set(...)             overrides Object.set
-## row column `script`       -> @export var script        redefines Object.script
-## table `script`            -> var script: XTable        same, on the db facade
-## index accessor `resource_name` -> var resource_name    same, on the table wrapper
+## enum variant `class`     -> func get_class()      Object.get_class      engine
+## reducer/procedure `set`  -> func set(...)         Object.set            engine
+## row column `script`      -> @export var script    Object.script         engine
+## table `script`           -> var script: XTable    same, on the facade   engine
+## row column `count`       -> var count: XIndex     _ModuleTable.count    SDK base
+## row column `create`      -> @export var create    its own create()      codegen
+## table `table_names`      -> var table_names       its own const         codegen
 ## [/codeblock]
 ## Methods and properties share one namespace here on purpose: a `var free` collides
-## with the method just as a `func script()` collides with the property. Asks ClassDB
-## rather than carrying a hand-written list, so it stays correct across engine versions.
+## with the method just as a `func script()` collides with the property. The engine half
+## asks ClassDB rather than carrying a hand-written list, so it stays correct across
+## engine versions; the codegen half is a list because it describes this file's own
+## output, and [code]tests/test_codegen_golden.gd[/code] fails if it drifts.
 ##
 ## [param base_class] is the generated script's base: `Resource` for the row types
 ## (`_ModuleTableType`) and the enum types (`RustEnum`), `RefCounted` for the
