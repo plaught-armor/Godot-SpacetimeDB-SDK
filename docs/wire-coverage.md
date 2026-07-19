@@ -68,6 +68,21 @@ intact. The response is the receipt for the request.
 Not covered by real bytes: `Option` fields, enum/sum columns on a table, btree
 and unique index reads, and `Identity`/`u128`/`u256` scalars.
 
+## Remaining gaps
+
+Ranked by value. Each needs the capture harness or the test module to gain a
+capability first — none is a one-liner, which is why they are written down rather
+than half-done.
+
+| Gap | What it needs | Notes |
+|---|---|---|
+| Reconnect + resubscribe | Kill the server mid-session, or drop the socket, and capture the recovery | Highest value left: it is stateful, it is what players hit on a flaky network, and `_resubscribe_saved_queries` has only synthetic coverage. Also the path where subscription handles go permanently ENDED. |
+| Standalone `TransactionUpdate` | A **second** concurrent client, so this one observes another's row changes | Today the fixture only ever sees a transaction nested inside the caller's own reducer response. The broadcast shape is untested. |
+| `Option` fields, enum/sum columns | Add the shapes to the vendored module and recapture | Both go through decode paths (`_read_option`, RustEnum) that only synthetic tests touch. |
+| Index reads (btree / unique) | A module table with the indexes plus rows to read back | btree shipped in v2.5.0 without ever being live-tested. |
+| `Identity` / `u128` / `u256` scalars | Module fields of those types | Wide-int handling is synthetic-only; `test_u64_roundtrip` and `test_schedule_at_wide_ints` are hand-built bytes. |
+| `IdentityTokenMessage` | Attach the packet hook *before* connecting | It arrives during the handshake, before `_on_connected` runs, so the capture script never sees it. Small harness change. |
+
 ## Regenerating the fixtures
 
 The fixtures pin what one server version sends. They will not catch a wire
