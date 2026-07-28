@@ -2,9 +2,18 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
-## [Unreleased]
+## [2.6.0] - 2026-07-28
 
 ### Fixed
+- **`query_sql()` now returns its results.** It returned an empty array for
+  every query. `_wait_for_response` connects a two-argument handler,
+  `(request_id, payload)`, to whichever response signal it is awaiting, but
+  `one_off_query_received` also carries `error_message` — Godot refused the
+  call on the arity mismatch, so the handler never ran, the caller waited out
+  its full timeout and the result was discarded. Call sites now declare how
+  many trailing signal arguments the handler does not take, and the handler is
+  connected with `Callable.unbind`. Verified against a live server.
+
 - **A name that collides with a built-in method no longer breaks the whole
   binding.** Godot refuses to load a script whose method overrides a native
   one, so a module exporting a reducer or procedure named `set`,
@@ -34,6 +43,20 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   `monitor_mode` disagree with what is actually registered, and teardown would
   either leak the monitors or remove names that were never added. Found by
   capturing a Brotli wire fixture that came back gzip-tagged.
+
+### Performance
+- **Cheaper row-change detection.** Change detection is value-based, which is
+  what makes it correct — rows arrive as a fresh `.new()` with no interning, so
+  identity compares fired spurious `row_updated` — but that left `_rows_equal`
+  as the majority of update cost: ~50% of a primitive-row update and ~70% of a
+  nested one. Two behaviour-neutral cuts: `_record_columns` memoizes each
+  `Script`'s `BSATN_TYPES` column list, which was re-deriving through
+  `get_script_constant_map().keys()` — two allocations — once per nested column
+  per row compared; and `_rows_equal` compares primitive columns inline, calling
+  `_values_equal` only for the `Object`/`Array` columns that need the recursive
+  walk. Semantics are unchanged: differing types stay unequal, no `==` coercion,
+  and `_row_hash` stays consistent with equality. Nested-row update 4340 →
+  3830 ns/row, primitive 2690 → 2410 (`bench_apply_profile`, N=100k best-of-7).
 
 ## [2.5.0] - 2026-07-18
 

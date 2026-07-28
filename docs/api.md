@@ -130,7 +130,8 @@ It is recommended you use the auto-generated reducer methods rather than calling
 
 ```gdscript
 class SpacetimeDBClient:
-    async func wait_for_reducer_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> TransactionUpdateMessage
+    # Coroutine — call with await.
+    func wait_for_reducer_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> TransactionUpdateMessage
 ```
 
 | Name            | Description                                                       |
@@ -146,7 +147,8 @@ Waits for the reducer call response and returns the received `TransactionUpdateM
 
 ```gdscript
 class SpacetimeDBClient:
-    async func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdateData]
+    # Coroutine — call with await.
+    func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdateData]
 ```
 
 | Name            | Description                                                       |
@@ -158,7 +160,7 @@ Executes a single SQL query without creating a subscription. Returns an array of
 
 ```gdscript
 var results: Array[TableUpdateData] = await SpacetimeDB.MyModule.query_sql("SELECT * FROM player WHERE level > 10")
-for table in results:
+for table: TableUpdateData in results:
     print("Table: %s, rows: %d" % [table.table_name, table.inserts.size()])
 ```
 
@@ -184,7 +186,8 @@ Call a procedure with `call_procedure()`, which returns a [`SpacetimeDBProcedure
 
 ```gdscript
 class SpacetimeDBClient:
-    async func wait_for_procedure_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> PackedByteArray
+    # Coroutine — call with await.
+    func wait_for_procedure_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> PackedByteArray
 ```
 
 | Name            | Description                                                       |
@@ -797,7 +800,8 @@ Returns `ERR_DOES_NOT_EXIST` if the subscription has already ended.
 
 ```gdscript
 class SpacetimeDBSubscription:
-    async func wait_for_applied(timeout_sec: float = 5) -> Error
+    # Coroutine — call with await.
+    func wait_for_applied(timeout_sec: float = 5) -> Error
 ```
 
 | Name | Description |
@@ -815,7 +819,8 @@ Returns:
 
 ```gdscript
 class SpacetimeDBSubscription:
-    async func wait_for_end(timeout_sec: float = 5) -> Error
+    # Coroutine — call with await.
+    func wait_for_end(timeout_sec: float = 5) -> Error
 ```
 
 | Name | Description |
@@ -946,7 +951,8 @@ class SpacetimeDBReducerCall:
 
 ```gdscript
 class SpacetimeDBReducerCall:
-    async func wait_for_response(timeout_sec: float = 10) -> SpacetimeDBReducerCall
+    # Coroutine — call with await.
+    func wait_for_response(timeout_sec: float = 10) -> SpacetimeDBReducerCall
 ```
 
 | Name        | Description                                                       |
@@ -1026,7 +1032,8 @@ The raw BSATN-encoded return value from the procedure. Use `decode()` to get the
 
 ```gdscript
 class SpacetimeDBProcedureCall:
-    async func wait_for_response(timeout_sec: float = 10) -> SpacetimeDBProcedureCall
+    # Coroutine — call with await.
+    func wait_for_response(timeout_sec: float = 10) -> SpacetimeDBProcedureCall
 ```
 
 | Name        | Description                                                       |
