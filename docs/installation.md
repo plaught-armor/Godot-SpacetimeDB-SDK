@@ -4,7 +4,7 @@ The SDK provides the necessary tools to integrate your Godot Engine project with
 
 ## Install from the Godot Asset Store (recommended)
 
-The SDK is published on the [Godot Asset Store](https://store.godotengine.org/asset/plaught-armor/spacetimedb-sdk/) as **SpacetimeDB Godot SDK** (Godot 4.4+).
+The SDK is published on the [Godot Asset Store](https://store.godotengine.org/asset/plaught-armor/spacetimedb-sdk/) as **SpacetimeDB Godot SDK** (Godot 4.6+).
 
 From inside the editor:
 

@@ -2,10 +2,10 @@
 
 ## Prerequisites
 
-> Requires **SpacetimeDB 2.2.0+** (v3 BSATN protocol, schema v10). Tested with `Godot 4.4.1-stable` to `Godot 4.7-stable`.
+> Requires **SpacetimeDB 2.2.0+** (v3 BSATN protocol, schema v10) and **Godot 4.6+**. Tested with Godot `4.6-stable`, `4.7-stable` and `4.8.dev`.
 
 -   A SpacetimeDB server running version `2.2.0` or later
--   A Godot 4.4.1+ project
+-   A Godot 4.6+ project
 -   [Install the SpacetimeDB SDK addon](installation.md)
 -   [Generate module bindings](codegen.md)
 
