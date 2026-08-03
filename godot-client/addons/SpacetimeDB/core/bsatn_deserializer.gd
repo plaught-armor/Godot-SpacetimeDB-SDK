@@ -63,7 +63,6 @@ var _deserialization_plan_cache: Dictionary[Script, Array] = { }
 var _pending_data: PackedByteArray = []
 var _schema: SpacetimeDBSchema
 var _native_arraylike_regex: RegEx = RegEx.new()
-var _normalized_name_cache: Dictionary[StringName, StringName] = { }
 
 
 func _init(p_schema: SpacetimeDBSchema, p_debug_mode: bool = false) -> void:
@@ -71,14 +70,6 @@ func _init(p_schema: SpacetimeDBSchema, p_debug_mode: bool = false) -> void:
 	_schema = p_schema
 	_native_arraylike_regex.compile("^(?<struct>.+)\\[(?<components>.*)\\]$")
 
-
-func _normalize(name: StringName) -> StringName:
-	var cached: StringName = _normalized_name_cache.get(name, &"")
-	if not cached.is_empty():
-		return cached
-	var normalized: StringName = name.to_lower().replace("_", "")
-	_normalized_name_cache[name] = normalized
-	return normalized
 
 #--- Error Handling ---
 
@@ -587,7 +578,7 @@ func _read_array(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_str: String
 	else:
 		if not bsatn_type_str.is_empty():
 			element_reader = _get_primitive_reader_from_bsatn_type(bsatn_type_str)
-			if not element_reader.is_valid() and _schema.types.has(_normalize(bsatn_type_str)):
+			if not element_reader.is_valid() and _schema.get_type_by_class(bsatn_type_str) != null:
 				element_reader = _read_nested_resource.bind(element_prop_sim)
 		if not element_reader.is_valid():
 			element_reader = _get_reader_callable_for_property(element_prop_sim, &"")
@@ -678,8 +669,9 @@ func _read_nested_resource(spb: StreamPeerBuffer, prop: Dictionary) -> Object:
 		)
 		return null
 
-	var key: StringName = _normalize(nested_class_name)
-	var script: GDScript = _schema.get_type(key)
+	# By declared class name, not the normalized key: `FooBar` and `Foobar` are two
+	# different classes that normalize to the same string.
+	var script: GDScript = _schema.get_type_by_class(nested_class_name)
 	var nested_instance: Object
 
 	if script:
@@ -726,7 +718,7 @@ func _hoistable_nested_script(prop: Dictionary, reader_callable: Callable) -> GD
 		return null
 	if _schema == null or prop.type != TYPE_OBJECT or prop.class_name.is_empty() or prop.class_name == &"Option":
 		return null
-	var script: GDScript = _schema.get_type(_normalize(prop.class_name))
+	var script: GDScript = _schema.get_type_by_class(prop.class_name)
 	if script == null:
 		return null
 	if script.get_script_constant_map().has(&"ENUM_OPTIONS"):
@@ -820,7 +812,7 @@ func _get_reader_callable_for_property(prop: Dictionary, bsatn_type_str: StringN
 	var reader: Callable = Callable()
 	if not bsatn_type_str.is_empty():
 		reader = _get_primitive_reader_from_bsatn_type(bsatn_type_str)
-		if not reader.is_valid() and _schema.types.has(_normalize(bsatn_type_str)):
+		if not reader.is_valid() and _schema.get_type_by_class(bsatn_type_str) != null:
 			reader = _read_nested_resource.bind(prop)
 		elif not reader.is_valid() and debug_mode:
 			push_warning("Unknown BSATN_TYPES entry '%s' for property '%s'. Falling back to Variant.Type." % [bsatn_type_str, prop.name])
@@ -896,18 +888,30 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 				}
 				return _read_native_arraylike(spb, arraylike_prop, bsatn_type_str)
 
-	# Custom Resource (schema type)
-	var schema_key: StringName = _normalize(bsatn_type_str)
-	if _schema.types.has(schema_key):
-		var script: GDScript = _schema.get_type(schema_key)
-		if script and script.can_instantiate():
+	# Custom Resource (schema type). BSATN_TYPES names it by class name, so resolve by
+	# that rather than the normalized key.
+	var script: GDScript = _schema.get_type_by_class(bsatn_type_str)
+	if script != null:
+		if script.can_instantiate():
 			var nested_instance: Object = script.new()
 			if not _populate_resource_from_bytes(nested_instance, spb):
 				if not has_error():
-					_set_error("Failed to populate nested resource of type '%s' (schema key '%s') for context '%s'" % [bsatn_type_str, schema_key, context_prop_name], start_pos)
+					_set_error(
+						(
+							"Failed to populate nested resource of type '%s' for context '%s'"
+							% [bsatn_type_str, context_prop_name]
+						),
+						start_pos,
+					)
 				return null
 			return nested_instance
-		_set_error("Cannot instantiate schema for BSATN type '%s' (schema key '%s', context: '%s'). Script valid: %s, Can instantiate: %s" % [bsatn_type_str, schema_key, context_prop_name, script != null, script.can_instantiate() if script else "N/A"], start_pos)
+		_set_error(
+			(
+				"Cannot instantiate schema for BSATN type '%s' (context: '%s')"
+				% [bsatn_type_str, context_prop_name]
+			),
+			start_pos,
+		)
 		return null
 
 	_set_error("Unsupported BSATN type '%s' for deserialization (context: '%s'). No primitive, vec, or custom schema found." % [bsatn_type_str, context_prop_name], start_pos)

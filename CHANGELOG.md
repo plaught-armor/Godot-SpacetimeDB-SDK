@@ -33,6 +33,22 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **Two nested column types whose class names differ only in case or underscore
+  placement no longer collide.** The other half of the same lossy key: a module
+  with types `FooBar` and `Foobar` generates `VnestFooBar` and `VnestFoobar`,
+  which both normalize to `vnestfoobar`, so the second to load displaced the
+  first and a column typed as one decoded as the other — right field count, wrong
+  type, no error. A nested column names its type by the exact `class_name`
+  spelling (a `BSATN_TYPES` entry reads `&"shape": &"VsumShape"`, and an
+  `@export var`'s class-name hint is the same string) and Godot already enforces
+  those are unique project-wide, so the registry now keys types by
+  `Script.get_global_name()` and resolves nested columns through
+  `SpacetimeDBSchema.get_type_by_class()`. That accepts the lowercased spelling
+  too, since the deserialization plan lowercases every `BSATN_TYPES` value so a
+  hand-written `"U32"` still finds a primitive reader — and when two class names
+  differ only in case, the lowercased lookup now returns null and says so instead
+  of picking whichever loaded last.
+
 - **Two tables whose names differ only by an underscore no longer collide.**
   The schema registry keyed everything by `name.to_lower().replace("_", "")` —
   the strip is what lets a nested column typed `VsumShape` find the
