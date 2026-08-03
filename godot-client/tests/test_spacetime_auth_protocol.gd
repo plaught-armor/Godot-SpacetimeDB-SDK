@@ -149,6 +149,29 @@ func _initialize() -> void:
 		"grant_type=steam",
 	)
 
+	# --- redact: a field name is a literal, never a pattern ---
+	# An unbalanced bracket makes an unescaped pattern fail to compile, and
+	# RegEx.sub on a failed RegEx returns "" — the whole body would vanish from
+	# the log instead of one value inside it.
+	var broken_field: PackedStringArray = ["tick(et"]
+	f += _check(
+		"redact keeps the body when a field name has a metacharacter",
+		SpacetimeAuthProtocol.redact("grant_type=steam", broken_field),
+		"grant_type=steam",
+	)
+	f += _check(
+		"redact still scrubs a field name with a metacharacter",
+		SpacetimeAuthProtocol.redact("tick(et=xyz&grant_type=steam", broken_field),
+		"tick(et=<redacted>&grant_type=steam",
+	)
+	# `.` as a pattern would match any one-character field name and redact the
+	# wrong value; as a literal it matches nothing here.
+	f += _check(
+		"redact does not treat a dot as a wildcard",
+		SpacetimeAuthProtocol.redact("ab=secret", [".b"]),
+		"ab=secret",
+	)
+
 	# --- SpacetimeAuthResult default + failure ---
 	var res: SpacetimeAuthResult = SpacetimeAuthResult.new()
 	f += _check("fresh result successful", res.is_successful(), true)
