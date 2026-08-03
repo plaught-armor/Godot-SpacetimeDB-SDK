@@ -300,6 +300,88 @@ static func _safe_ref_member_name(member_name: String) -> String:
 	return escaped
 
 
+## Keywords that introduce a top-level member, in match order. The two-word forms come
+## first so `static var x` is consumed there and never reaches the bare `var` row, which
+## would otherwise read the member name as `var`. A plain `var`, never `const` — a const
+## Packed*Array reads back wrong (C1, #88753).
+static var _MEMBER_KEYWORDS: PackedStringArray = [
+	"static var",
+	"static func",
+	"var",
+	"func",
+	"const",
+	"signal",
+	"enum",
+]
+
+
+## Every top-level member a generated script declares, in emission order.
+##
+## The escapes above each guarantee the name they produce is free on the BASE class;
+## none of them can see a SIBLING that escaped to the same string. A module with a
+## reducer `set` and a reducer `set_` sends both through [method _safe_call_name] and
+## gets `set_` twice — as does a column pair `count` / `count_`, or a table pair
+## `table_names` / `table_names_`. Godot then refuses to load that script
+## ("already exists in this class"), which kills every table and reducer in the module,
+## and the parse error names neither of the two schema names that caused it.
+## [method find_duplicate_members] turns that into a codegen-time error instead.
+##
+## Reads the emitted text rather than re-deriving names from the schema, so it covers
+## every escape path — including ones added later — without a second list to keep in
+## sync. Only column 0 counts: an indented `var` is a local, and a member declared
+## inside a nested `class` block lives in that class's own namespace.
+static func _declared_members(source: String) -> PackedStringArray:
+	var names: PackedStringArray = []
+	for raw_line: String in source.split("\n"):
+		if raw_line.is_empty() or raw_line.begins_with("\t") or raw_line.begins_with(" "):
+			continue
+		var line: String = raw_line
+		# Annotations sit ahead of the keyword: `@export var x`, `@onready var y`.
+		for _annotation: int in 4:
+			if not line.begins_with("@"):
+				break
+			var cut: int = line.find(" ")
+			if cut < 0:
+				break
+			line = line.substr(cut + 1)
+		var member: String = _member_name_of(line)
+		if not member.is_empty():
+			names.append(member)
+	return names
+
+
+## The member a single top-level line declares, or `""` when the line declares nothing
+## (a comment, `extends`, `class_name`, a bare statement).
+static func _member_name_of(line: String) -> String:
+	for keyword: String in _MEMBER_KEYWORDS:
+		if not line.begins_with("%s " % keyword):
+			continue
+		var rest: String = line.substr(keyword.length() + 1).strip_edges()
+		# The name ends at whatever follows it: `x: T`, `f(a)`, `c = 1`, `s(a, b)`.
+		var cut: int = rest.length()
+		for terminator: String in [" ", ":", "(", "=", ","]:
+			var at: int = rest.find(terminator)
+			if at >= 0 and at < cut:
+				cut = at
+		return rest.substr(0, cut)
+	return ""
+
+
+## Names declared more than once at the top level of [param source], in first-seen
+## order. Empty means the script's own surface is self-consistent — it says nothing
+## about collisions with the base class, which [method _safe_member_name] and friends
+## handle at emission time.
+static func find_duplicate_members(source: String) -> PackedStringArray:
+	var seen: Dictionary[String, int] = { }
+	var duplicates: PackedStringArray = []
+	for member: String in _declared_members(source):
+		var count: int = seen.get(member, 0) + 1
+		seen[member] = count
+		if count == 2:
+			duplicates.append(member)
+	return duplicates
+
+
 ## Formats a single table name as a BSATN StringName literal.
 static func _format_table_name_literal(x: String) -> String:
 	return "&'%s'" % x

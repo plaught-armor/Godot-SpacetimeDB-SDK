@@ -21,6 +21,22 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   covered by `tests/test_resume_reconnect.gd`.
 
 ### Fixed
+- **Codegen now fails loudly when two module names escape to one GDScript
+  identifier.** Every name escape guarantees its result is free on the *base*
+  class, but none of them could see a *sibling* that escaped to the same string:
+  a module with a reducer `set` (escaped to `set_`, because `Object.set` is
+  taken) alongside a reducer literally named `set_` emitted `func set_()` twice.
+  Godot then refuses the script — `Parse Error: Function "set_" has the same name
+  as a previously declared function` — and since a module's reducers share one
+  class, every reducer in the module went down with it, at load time, from a
+  message naming neither of the two module names. The generated output is now
+  scanned for duplicate top-level members and the run fails with the file and the
+  identifier. Deliberately not auto-renamed: which of `set` / `set_` gets the
+  mangled spelling is the module author's call. Same shape covers column pairs
+  (`count` / `count_`) and table pairs (`table_names` / `table_names_`). New
+  `tests/test_member_collision_gate.gd` plus a `vcollide` fixture that reproduces
+  it through the real generator.
+
 - **Cancelling a reconnection now detaches a zero-delay backoff timer too.**
   `_cancel_reconnection()` only disconnected the pending timer when it still had
   time left, so a zero-delay one — previously only produced by the stall-induced

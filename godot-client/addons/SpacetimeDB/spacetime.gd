@@ -225,6 +225,10 @@ static func generate_schema(
 	codegen._plugin_config = config
 	var generated_files: Array[String] = codegen.generate_bindings()
 
+	if not _check_member_collisions(PackedStringArray(generated_files)):
+		print_err("Code generation failed!")
+		return false
+
 	_cleanup_unused_classes(BINDINGS_SCHEMA_PATH, generated_files)
 	_check_uid_collisions(BINDINGS_SCHEMA_PATH)
 
@@ -313,3 +317,44 @@ static func _check_uid_collisions(dir_path: String) -> void:
 			print_err("UID collision (%s): %s <-> %s" % [text, seen[id], path])
 		else:
 			seen[id] = path
+
+
+## Fails the run when a generated script declares the same member twice.
+##
+## Two schema names that differ only by a trailing underscore — a reducer `set` (which
+## escapes to `set_`, because `Object.set` is taken) alongside a reducer literally named
+## `set_` — land on one GDScript identifier. Godot refuses to load that script, and
+## since the binding is one class per module, the whole module goes with it. The engine's
+## message names the identifier but neither of the two schema names, and it only appears
+## at load, far from the codegen run that caused it. Reported here instead, with the file.
+##
+## Deliberately fails the codegen rather than renaming one side: any automatic
+## disambiguation picks a winner silently, and which of `set` / `set_` gets the mangled
+## spelling is the module author's call, not ours.
+static func _check_member_collisions(generated_files: PackedStringArray) -> bool:
+	var ok: bool = true
+	for path: String in generated_files:
+		if not path.ends_with(".gd"):
+			continue
+		var source: String = FileAccess.get_file_as_string(path)
+		if source.is_empty():
+			# Empty is never legitimate here — codegen wrote every one of these files
+			# moments ago, so this is a read that failed.
+			print_err(
+				"could not read back %s: %s" % [path, error_string(FileAccess.get_open_error())]
+			)
+			ok = false
+			continue
+		for member: String in SpacetimeCodegen.find_duplicate_members(source):
+			print_err(
+				(
+					"%s declares `%s` more than once. Two names in the module escape to "
+					+ "the same GDScript identifier — most often a name and the same name "
+					+ "with a trailing underscore, where the first was escaped because the "
+					+ "bare spelling is taken by Godot or by the SDK base class. Rename one "
+					+ "of them in your module."
+				)
+				% [path, member]
+			)
+			ok = false
+	return ok
