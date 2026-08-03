@@ -296,6 +296,41 @@ func send_bytes(bytes: PackedByteArray) -> Error:
 	return err
 
 
+## The [code]?...[/code] query string for the subscribe endpoint. Pure, so the wire
+## spelling of every connection knob is testable without a socket.
+##
+## [param confirmed_reads] is always written out, even at its default. The server picks
+## its own default for a v3 connection that omits the parameter ([code]confirmed[/code]
+## is an [code]Option<bool>[/code] there), and the Rust and C# SDKs do omit it — sending
+## it means this SDK's consistency guarantee is decided here rather than by the server
+## build a game happens to connect to.
+##
+## The [code]token[/code] parameter is NOT added here: it is only used on Web, where the
+## handshake cannot carry an Authorization header, and appending it is the caller's job.
+static func build_query_params(
+	connection_id: String,
+	compression: CompressionPreference,
+	confirmed_reads: bool,
+	light_mode: bool,
+) -> String:
+	var compression_str: String
+	if compression == CompressionPreference.NONE:
+		compression_str = "None" # matches the server's Compression enum spelling
+	elif compression == CompressionPreference.BROTLI:
+		compression_str = "Brotli"
+	elif compression == CompressionPreference.GZIP:
+		compression_str = "Gzip"
+	else:
+		compression_str = "None" # unreachable; the server rejects an unknown value
+
+	var query_params: String = "?connection_id=%s" % connection_id
+	query_params += "&compression=%s" % compression_str
+	query_params += "&confirmed=%s" % ("true" if confirmed_reads else "false")
+	if light_mode:
+		query_params += "&light=true"
+	return query_params
+
+
 ## Initiates a WebSocket connection to the SpacetimeDB [param database_name]
 ## at [param base_url] using the given [param connection_id].
 func connect_to_database(base_url: String, database_name: String, connection_id: String) -> void:
@@ -350,26 +385,12 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 			.path_join(database_name) \
 			.path_join("subscribe")
 
-	# --- Add Query Parameters ---
-	# Start with connection_id
-	var query_params: String = "?connection_id=%s" % connection_id
-	# Add compression preference
-	# Convert enum value to string for the URL parameter
-	var compression_str: String
-
-	if preferred_compression == CompressionPreference.NONE:
-		compression_str = "None" # Use string "None" as seen in C# enum
-	elif preferred_compression == CompressionPreference.BROTLI:
-		compression_str = "Brotli"
-	elif preferred_compression == CompressionPreference.GZIP:
-		compression_str = "Gzip"
-	else:
-		compression_str = "None" # Fallback
-
-	query_params += "&compression=%s" % compression_str
-	query_params += "&confirmed=%s" % ("true" if _options.confirmed_reads else "false")
-	if _options.light_mode:
-		query_params += "&light=true"
+	var query_params: String = build_query_params(
+		connection_id,
+		preferred_compression,
+		_options.confirmed_reads,
+		_options.light_mode,
+	)
 
 	if OS.get_name() == "Web":
 		query_params += "&token=%s" % _token
