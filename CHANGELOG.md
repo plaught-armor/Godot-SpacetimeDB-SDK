@@ -33,6 +33,17 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A redacted field name is treated as a literal, not as a regular
+  expression.** `SpacetimeAuthProtocol.redact()` interpolated each name from
+  `SpacetimeAuth.redact_fields` straight into a pattern, so a name carrying a
+  regex metacharacter either matched the wrong span — `.b` redacting the value of
+  `ab` — or failed to compile, and `RegEx.sub()` on a RegEx that failed to
+  compile returns an empty `String`, which wiped the entire error body the call
+  was meant to scrub one value out of. Names are now escaped before
+  interpolation, and the matched name is written back through a capture group
+  rather than interpolated into the replacement, where `$` and `\` would read as
+  backreferences.
+
 - **A `RowReceiver` that leaves the scene tree and comes back receives rows
   again.** `_exit_tree()` unsubscribes the receiver's four listeners from the
   local database, but `_ready()` — which starts the subscription — runs once per

@@ -6,6 +6,10 @@ extends RefCounted
 ## unit-testable without a live HTTP endpoint. The [SpacetimeAuth] node keeps
 ## only the thin [HTTPRequest] glue + the await/retry loop that these feed.
 
+## Characters that carry meaning inside a RegEx pattern, and so have to be
+## escaped for one to match itself. See [method _escape_regex_literal].
+const _REGEX_METACHARACTERS: String = "\\^$.|?*+()[]{}"
+
 # Maps HTTPRequest.RESULT_* to a readable name for diagnostics (D7 condition
 # table over a value-only match — P2/D7b). `.get(rc, ...)` because `rc` is an
 # untrusted transport int, not a known-closed key. static var + make_read_only
@@ -108,10 +112,29 @@ static func classify(
 static func redact(body: String, fields: PackedStringArray) -> String:
 	var redacted: String = body
 	for field: String in fields:
+		# The field name is captured and written back through $1 rather than
+		# interpolated into the replacement, where `$` and `\` would read as
+		# backreferences.
+		var pattern_field: String = _escape_regex_literal(field)
 		var json_re: RegEx = RegEx.new()
-		json_re.compile('"%s"\\s*:\\s*"[^"]*"' % field)
-		redacted = json_re.sub(redacted, '"%s": "<redacted>"' % field, true)
+		json_re.compile('"(%s)"\\s*:\\s*"[^"]*"' % pattern_field)
+		redacted = json_re.sub(redacted, '"$1": "<redacted>"', true)
 		var form_re: RegEx = RegEx.new()
-		form_re.compile("%s=[^&]*" % field)
-		redacted = form_re.sub(redacted, "%s=<redacted>" % field, true)
+		form_re.compile("(%s)=[^&]*" % pattern_field)
+		redacted = form_re.sub(redacted, "$1=<redacted>", true)
 	return redacted
+
+
+## Quote [param text] for use as a literal inside a RegEx pattern. A field name
+## is a plain string out of configuration, not a pattern: interpolated raw, one
+## carrying a metacharacter either matches the wrong span (a `.` matching any
+## field name) or fails to compile — and [method RegEx.sub] on a RegEx that
+## failed to compile returns an empty [String], which would silently erase the
+## whole body it was asked to scrub rather than one value inside it.
+static func _escape_regex_literal(text: String) -> String:
+	var escaped: String = ""
+	for character: String in text:
+		if _REGEX_METACHARACTERS.contains(character):
+			escaped += "\\"
+		escaped += character
+	return escaped
