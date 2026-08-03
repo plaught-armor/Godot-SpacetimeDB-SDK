@@ -33,9 +33,14 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   scanned for duplicate top-level members and the run fails with the file and the
   identifier. Deliberately not auto-renamed: which of `set` / `set_` gets the
   mangled spelling is the module author's call. Same shape covers column pairs
-  (`count` / `count_`) and table pairs (`table_names` / `table_names_`). New
+  (`count` / `count_`), table pairs (`table_names` / `table_names_`), and the
+  autoload, whose member names come straight from the configured module aliases
+  via `to_pascal_case()` with no escape applied — so aliases `my_module` and
+  `myModule` both produced `var MyModule`. New
   `tests/test_member_collision_gate.gd` plus a `vcollide` fixture that reproduces
-  it through the real generator.
+  it through the real generator, and the autoload now has golden coverage of its
+  own (it is emitted per project rather than per schema, so no fixture reached
+  it before).
 
 - **Cancelling a reconnection now detaches a zero-delay backoff timer too.**
   `_cancel_reconnection()` only disconnected the pending timer when it still had

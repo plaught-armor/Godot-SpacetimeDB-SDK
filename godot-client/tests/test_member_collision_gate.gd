@@ -29,6 +29,7 @@ func _initialize() -> void:
 	var f: int = 0
 	f += _test_scan()
 	f += _test_generated_collision()
+	f += _test_autoload_alias_collision()
 	f += _test_clean_module()
 
 	if f == 0:
@@ -119,6 +120,28 @@ func _test_generated_collision() -> int:
 	f += _check("vcollide: the reducers file is the one flagged", flagged.has(reducers), true)
 	if flagged.has(reducers):
 		f += _check("vcollide: `set_` is the duplicate", flagged[reducers].has("set_"), true)
+	return f
+
+
+## The autoload is emitted from the configured module ALIASES, PascalCased with no
+## escape applied — so two aliases that differ only in how they are spelled
+## (`my_module` / `myModule`) both become `var MyModule`. Nothing in the alias-handling
+## path can catch that; the scan over the emitted file is what does.
+func _test_autoload_alias_collision() -> int:
+	var f: int = 0
+	var codegen: SpacetimeCodegen = SpacetimeCodegen.new("%s/autoload" % TMP_ROOT)
+
+	var colliding: Array[String] = ["myModule", "my_module"]
+	var dups: PackedStringArray = SpacetimeCodegen.find_duplicate_members(
+		codegen._generate_autoload_gdscript(colliding)
+	)
+	f += _check("autoload: colliding aliases flagged", dups.has("MyModule"), true)
+
+	var distinct: Array[String] = ["blackholio", "my_module"]
+	var clean: PackedStringArray = SpacetimeCodegen.find_duplicate_members(
+		codegen._generate_autoload_gdscript(distinct)
+	)
+	f += _check("autoload: distinct aliases clean", clean.is_empty(), true)
 	return f
 
 
