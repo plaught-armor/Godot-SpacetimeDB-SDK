@@ -18,7 +18,7 @@ its failure count (`0` means everything passed). Run the whole suite with:
 
 ```sh
 cd godot-client
-./run_tests.sh                       # run every test_*.gd
+./run_tests.sh                       # run every test_*.gd and test_*.tscn
 ./run_tests.sh test_row_parse        # run one (name with or without .gd)
 GODOT_BIN=/path/to/godot ./run_tests.sh
 VERBOSE=1 ./run_tests.sh             # stream each test's full output
@@ -26,6 +26,12 @@ VERBOSE=1 ./run_tests.sh             # stream each test's full output
 
 The runner launches one Godot process per test so a crash in one test cannot
 take down the others. It exits `0` when every test passes and `1` if any fail.
+
+A test may also be a `test_*.tscn` scene whose root node self-asserts in
+`_ready` and calls `get_tree().quit(failures)`. Use that form only when the code
+under test names an autoload singleton — those identifiers do not resolve under
+`--script`, so such a script fails to compile there. The runner boots a scene
+test as a normal main loop and reads the same exit code.
 
 ## Pre-push gate
 
