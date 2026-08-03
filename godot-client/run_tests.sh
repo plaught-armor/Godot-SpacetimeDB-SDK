@@ -15,6 +15,9 @@
 set -u
 
 GODOT_BIN="${GODOT_BIN:-/mnt/based_backup/Repos/godot/bin/godot.linuxbsd.editor.x86_64}"
+# Per-test wall-clock ceiling. The slowest test in the suite runs in a few
+# seconds; anything near this is stuck, not slow.
+TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TESTS_DIR="tests"
 
@@ -37,14 +40,23 @@ if [ ! -f "$class_cache" ] || \
 	"$GODOT_BIN" --headless --path . --import >/dev/null 2>&1 || true
 fi
 
-# Select tests: a name arg runs one, else every test_*.gd.
+# Select tests: a name arg runs one, else every test_*.gd and test_*.tscn.
+# A .tscn test boots a normal main loop instead of --script, which is the only
+# way a test can touch code naming an autoload singleton (row_receiver.gd does):
+# under --script those identifiers do not resolve and the script fails to
+# compile. Its root node self-asserts in _ready and calls get_tree().quit(fails).
 tests=()
 if [ "$#" -gt 0 ]; then
 	name="${1%.gd}"
-	tests+=("$TESTS_DIR/$name.gd")
+	name="${name%.tscn}"
+	if [ -f "$TESTS_DIR/$name.tscn" ]; then
+		tests+=("$TESTS_DIR/$name.tscn")
+	else
+		tests+=("$TESTS_DIR/$name.gd")
+	fi
 else
-	for t in "$TESTS_DIR"/test_*.gd; do
-		tests+=("$t")
+	for t in "$TESTS_DIR"/test_*.gd "$TESTS_DIR"/test_*.tscn; do
+		[ -f "$t" ] && tests+=("$t")
 	done
 fi
 
@@ -63,8 +75,17 @@ for t in "${tests[@]}"; do
 		continue
 	fi
 	total=$((total + 1))
-	"$GODOT_BIN" --headless --path . --script "$t" >"$log" 2>&1
+	# A scene test quits itself; one whose script failed to load never does, and
+	# Godot would sit in an empty main loop forever. Bound every run so a broken
+	# test fails the suite instead of hanging it.
+	case "$t" in
+		*.tscn) timeout "$TEST_TIMEOUT" "$GODOT_BIN" --headless --path . "$t" >"$log" 2>&1 ;;
+		*) timeout "$TEST_TIMEOUT" "$GODOT_BIN" --headless --path . --script "$t" >"$log" 2>&1 ;;
+	esac
 	code=$?
+	if [ "$code" -eq 124 ]; then
+		echo "timed out after ${TEST_TIMEOUT}s" >>"$log"
+	fi
 	summary="$(grep -E "ALL PASS|FAIL" "$log" | tail -1)"
 	if [ "$code" -eq 0 ]; then
 		printf 'PASS  %-34s %s\n' "$base" "$summary"

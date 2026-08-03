@@ -3,6 +3,11 @@
 class_name RowReceiver
 extends Node
 
+## Emitted per inserted row. On subscribing, the rows already in the local
+## database are replayed through this signal — and the receiver subscribes on
+## every entry into the tree, so a re-parented or pooled receiver replays them
+## again. A handler that spawns something per row should key it by primary key
+## rather than assume one emission per row per session.
 signal insert(row: _ModuleTableType)
 signal update(prev: _ModuleTableType, row: _ModuleTableType)
 signal delete(row: _ModuleTableType)
@@ -16,6 +21,13 @@ var selected_table_name: StringName:
 	set = set_selected_table_name
 var _derived_table_names: Array[StringName] = []
 var _current_db_instance: LocalDatabase = null
+## Bumped every time the node leaves the tree. The subscription path awaits (for
+## the database, for the parent, for the current rows), and a receiver can leave
+## and re-enter the tree while one of those awaits is suspended — which arms a
+## second subscription pass. Each pass carries the generation it started under
+## and drops itself at the next resume point if a newer entry has taken over, so
+## only one pass ever reaches the row replay in [method _subscribe_to_table].
+var _entry_generation: int = 0
 
 
 func _ready() -> void:
@@ -26,23 +38,40 @@ func _ready() -> void:
 		push_error("The table_to_receive is not set on %s" % get_path())
 		return
 
-	call_deferred(&"_init_subscription")
+	# The generation is captured HERE, not inside the deferred call: a receiver
+	# that leaves and re-enters before the queue is flushed has two passes on it,
+	# and a pass that read the generation when it started running would read the
+	# post-exit value and consider itself current. Captured at queue time, the
+	# older pass carries the older generation and retires itself below.
+	_init_subscription.call_deferred(_entry_generation)
 
 
-func _init_subscription() -> void:
+func _init_subscription(generation: int) -> void:
+	if generation != _entry_generation:
+		return
 	var db: LocalDatabase = await _get_db(true)
 	if not is_instance_valid(self) or not is_inside_tree():
+		return
+	if generation != _entry_generation:
 		return
 	# _get_db can return null (unresolved module / db never initialized);
 	# _subscribe_to_table dereferences db, so bail before handing it a null.
 	if not is_instance_valid(db):
 		push_error("[RowReceiver] could not resolve local database for %s" % get_path())
 		return
-	_subscribe_to_table(db, selected_table_name)
+	_subscribe_to_table(db, selected_table_name, generation)
 
 
 func _exit_tree() -> void:
 	_unsubscribe_from_table(selected_table_name)
+	# _ready runs once per node, not once per tree entry, so without this a
+	# receiver that leaves the tree and comes back (a pooled node, a re-parented
+	# actor, a scene swapped out and back in) stays unsubscribed for good — with
+	# no error to show for it. request_ready re-arms _ready for the next entry;
+	# the generation bump retires any subscription pass still suspended on an
+	# await, so the new entry is the only one that replays rows and subscribes.
+	_entry_generation += 1
+	request_ready()
 
 
 func _get_property_list() -> Array[Dictionary]:
@@ -153,7 +182,7 @@ func _get_db(wait_for_init: bool = false) -> LocalDatabase:
 	return _current_db_instance
 
 
-func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName) -> void:
+func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName, generation: int) -> void:
 	if Engine.is_editor_hint() or table_name_sn.is_empty():
 		return
 
@@ -164,10 +193,14 @@ func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName) -> void:
 		await get_parent().ready
 		if not is_instance_valid(self) or not is_inside_tree():
 			return
+		if generation != _entry_generation:
+			return
 
 	# Emit data that was inserted before we subscribed
 	var existing_data: Array[_ModuleTableType] = await get_table_data()
 	if not is_instance_valid(self) or not is_inside_tree():
+		return
+	if generation != _entry_generation:
 		return
 	if not existing_data.is_empty():
 		for row: _ModuleTableType in existing_data:
@@ -188,6 +221,12 @@ func _unsubscribe_from_table(table_name_sn: StringName) -> void:
 
 	_print_log("Unsubscribing from table: %s" % table_name_sn)
 
+	# Assumption: this reaches the unsubscribe calls below without suspending —
+	# _exit_tree calls it without awaiting, and _get_db only awaits on its
+	# wait_for_init branch, which this call does not take. Should _get_db ever
+	# gain an await on this path, the removal would land after a new entry has
+	# re-subscribed and would strip that entry's listeners; the generation check
+	# _subscribe_to_table uses would have to be mirrored here.
 	var db: LocalDatabase = await _get_db()
 	if not is_instance_valid(db):
 		return

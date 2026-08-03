@@ -33,6 +33,31 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A `RowReceiver` that leaves the scene tree and comes back receives rows
+  again.** `_exit_tree()` unsubscribes the receiver's four listeners from the
+  local database, but `_ready()` — which starts the subscription — runs once per
+  node, not once per tree entry, so a receiver that was re-parented, pooled, or
+  sat in a scene swapped out and back in stayed unsubscribed for the rest of its
+  life: no rows, no signals, and no error to point at it. `_exit_tree()` now
+  calls `request_ready()`, so the next entry re-subscribes. Re-subscribing is
+  idempotent — the database ignores a listener it already holds — so a receiver
+  cycled repeatedly still ends up with exactly one of each. A receiver that
+  cycles *while* its subscription pass is suspended (waiting for the database at
+  boot, or for the current rows) arms a second pass, and both would have replayed
+  every existing row through `insert`; each pass now carries the tree-entry
+  generation it was queued under and retires itself — on entry and at every
+  resume point — once a newer entry has taken over. The generation is captured
+  when the pass is queued rather than when it starts running, because the case a
+  pool actually hits has nothing suspended at all: with the database already
+  resolved, a remove-then-add with no frame in between simply queues two passes
+  that both run at the next flush. The replay itself is unchanged and now documented
+  on the `insert` signal: entering the tree replays the rows already present, so
+  a handler that spawns per row should key by primary key. Covered by
+  `tests/test_row_receiver_reparent.tscn`, the first scene-form test: the
+  receiver names the `SpacetimeDB` autoload, whose identifier does not resolve
+  under the runner's `--script` mode, and `run_tests.sh` now runs `test_*.tscn`
+  as a normal main loop for that case.
+
 - **Two nested column types whose class names differ only in case or underscore
   placement no longer collide.** The other half of the same lossy key: a module
   with types `FooBar` and `Foobar` generates `VnestFooBar` and `VnestFoobar`,
