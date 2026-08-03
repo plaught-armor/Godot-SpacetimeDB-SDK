@@ -714,6 +714,7 @@ class SpacetimeDBConnectionOptions:
     var reconnect_max_delay: float = 30.0      # seconds (cap)
     var reconnect_backoff_multiplier: float = 2.0
     var reconnect_jitter_fraction: float = 0.5 # 0.0–1.0
+    var reconnect_on_app_resume: bool = true
 ```
 
 | Name | Description |
@@ -724,6 +725,7 @@ class SpacetimeDBConnectionOptions:
 | `reconnect_max_delay` | Maximum delay between reconnection attempts, in seconds. |
 | `reconnect_backoff_multiplier` | Multiplier applied to the delay after each failed attempt. |
 | `reconnect_jitter_fraction` | Random jitter applied to each delay (0.0 = none, 1.0 = full delay range). Prevents thundering herd on reconnect. |
+| `reconnect_on_app_resume` | When `true` (default), regaining application focus fires a reconnect attempt that is still waiting out its backoff. A backgrounded app's frame loop is throttled (web tab) or stopped (suspended mobile app), which stalls the `SceneTreeTimer` the backoff runs on, so a drop that happens off-screen would otherwise sit unreconnected well after the player is back. The attempt is re-scheduled under its own number, so `max_reconnect_attempts` still bounds the cycle. |
 
 ## `SpacetimeDBSubscription` class
 
