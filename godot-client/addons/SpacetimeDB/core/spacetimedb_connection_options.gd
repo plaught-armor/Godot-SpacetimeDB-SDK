@@ -30,8 +30,18 @@ var monitor_mode: bool = false
 var light_mode: bool = false
 ## If [code]true[/code], the server waits for each transaction to be durably
 ## committed before sending its update (read-after-commit). Higher latency, stronger
-## durability. Default [code]false[/code] matches SpacetimeDB's default.
-var confirmed_reads: bool = false
+## durability.
+##
+## Default [code]true[/code], which is what the server applies to a v3 connection that
+## does not ask ([code]DEFAULT_CONFIRMED_READS[/code], unchanged across every supported server —
+## 2.2.0 through 2.7.1). The Rust and C# SDKs send the parameter only when the caller
+## sets it, so this default is also what they effectively connect with; this SDK always
+## sends it, so a future change to the server's default cannot silently move the
+## consistency guarantee under an existing game. Set [code]false[/code] to trade
+## durability for latency: updates then arrive as soon as the transaction commits in
+## memory, which means a crash before that write is durable can retract rows the client
+## already showed.
+var confirmed_reads: bool = true
 ## Maximum size in bytes of the WebSocket inbound buffer (default 2 MB).
 var inbound_buffer_size: int = 1024 * 1024 * 2
 ## Maximum size in bytes of the WebSocket outbound buffer (default 2 MB).

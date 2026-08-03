@@ -130,6 +130,19 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   letting that case through.
 
 ### Changed
+- **Confirmed reads are on by default**, matching the server and the other SDKs.
+  `SpacetimeDBConnectionOptions.confirmed_reads` defaulted to `false` and was
+  documented as matching SpacetimeDB's default — it did not. The server treats the
+  `confirmed` query parameter as optional and applies `DEFAULT_CONFIRMED_READS`
+  (`true`) to any v2/v3 connection that omits it, on every supported server version
+  (2.2.0 through 2.7.1), and the Rust and C# SDKs only send the parameter when the
+  caller sets it. This SDK sends it on every connect, so it was actively opting out
+  of read-after-commit: a Godot client could display rows from a transaction that
+  was not yet durable, where a Rust or C# client against the same module would not.
+  The default is now `true`; passing `false` keeps the old lower-latency behavior.
+  The query string is built by a pure
+  `SpacetimeDBConnection.build_query_params()`, covered by
+  `tests/test_subscribe_query_params.gd`.
 - Verified the SDK end-to-end against **SpacetimeDB 2.7.1**; the tested range is
   now `2.2.0`–`2.7.1`. No code change was needed — the client-facing wire format
   is byte-identical to 2.7.0 (2.7.1 touched metrics, an MCP route, and HTTP

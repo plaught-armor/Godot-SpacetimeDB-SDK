@@ -584,12 +584,21 @@ needed to keep the cache current, reducing bandwidth.
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
-    var confirmed_reads: bool = false
+    var confirmed_reads: bool = true
 ```
 
 When `true`, the server waits for each transaction to be durably committed before
-sending its update (read-after-commit). Higher latency, stronger durability. The
-default `false` matches SpacetimeDB's default.
+sending its update (read-after-commit). Higher latency, stronger durability.
+
+The default is `true` because that is what the server applies to a v3 connection
+that does not ask, on every supported server version (2.2.0 through 2.7.1). The
+Rust and C# SDKs send the parameter only when the caller sets it, so this is the
+guarantee they connect with too. This SDK always sends the value, so a change to
+the server's default cannot move an existing game's consistency guarantee.
+
+Set `false` to trade durability for latency: updates then arrive as soon as the
+transaction commits in memory, so a crash before that write reaches disk can
+retract rows the client already displayed.
 
 #### `threading` property
 
