@@ -1242,8 +1242,10 @@ func _read_table_update_instance(spb: StreamPeerBuffer, resource: TableUpdateDat
 	if has_error():
 		return false
 
-	var table_name_lower: StringName = _normalize(resource.table_name)
-	var row_schema_script: GDScript = _schema.get_type(table_name_lower)
+	# get_table, not get_type: the type key strips underscores, so `user_data` rows
+	# would decode against a `userdata` row type if the module declared both.
+	var table_name_lower: StringName = resource.table_name.to_lower()
+	var row_schema_script: GDScript = _schema.get_table(table_name_lower)
 
 	var rows_count: int = read_u32_le(spb)
 	if has_error():
@@ -1326,8 +1328,8 @@ func _read_subscripton_applied_message(spb: StreamPeerBuffer) -> SubscribeApplie
 		var table_update: TableUpdateData = TableUpdateData.new()
 		table_update.table_name = table_name
 
-		var table_name_lower: StringName = _normalize(table_name)
-		var row_schema_script: GDScript = _schema.get_type(table_name_lower)
+		var table_name_lower: StringName = table_name.to_lower()
+		var row_schema_script: GDScript = _schema.get_table(table_name_lower)
 
 		if row_schema_script:
 			var inserts: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name)
@@ -1412,8 +1414,8 @@ func _read_unsubscribe_applied_message(spb: StreamPeerBuffer) -> UnsubscribeAppl
 				return null
 			var table_update: TableUpdateData = TableUpdateData.new()
 			table_update.table_name = table_name
-			var table_name_lower: StringName = _normalize(table_name)
-			var row_schema_script: GDScript = _schema.get_type(table_name_lower)
+			var table_name_lower: StringName = table_name.to_lower()
+			var row_schema_script: GDScript = _schema.get_table(table_name_lower)
 			if row_schema_script:
 				var rows: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name)
 				if has_error():
@@ -1484,8 +1486,8 @@ func _read_one_off_query_result_message(spb: StreamPeerBuffer) -> OneOffQueryRes
 				return null
 			var table_update: TableUpdateData = TableUpdateData.new()
 			table_update.table_name = table_name
-			var table_name_lower: StringName = _normalize(table_name)
-			var row_schema_script: GDScript = _schema.get_type(table_name_lower)
+			var table_name_lower: StringName = table_name.to_lower()
+			var row_schema_script: GDScript = _schema.get_table(table_name_lower)
 			if row_schema_script:
 				var inserts: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name)
 				if has_error():

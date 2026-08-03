@@ -193,17 +193,16 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 	if _primary_key_cache.has(table_name_lower):
 		return _primary_key_cache[table_name_lower]
 
-	# schema.types is still keyed with underscore-stripped names for Rust/filename compat
-	var schema_key: StringName = table_name_lower.replace("_", "")
-	if not _schema.types.has(schema_key):
+	# Exact wire name, not the underscore-stripped type key: `user_data` and `userdata`
+	# are both legal table names and collapse onto one entry in schema.types.
+	var schema: GDScript = _schema.get_table(table_name_lower)
+	if schema == null:
 		printerr(
 			"LocalDatabase: No schema found for table '",
 			table_name_lower,
 			"' to determine PK.",
 		)
 		return &""
-
-	var schema: GDScript = _schema.get_type(schema_key)
 	var constants: Dictionary = schema.get_script_constant_map()
 	if constants.has(&"PRIMARY_KEY"):
 		var pk_field: StringName = constants[&"PRIMARY_KEY"]
@@ -225,10 +224,10 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 func _get_row_properties(table_name_lower: StringName) -> Array[StringName]:
 	if _row_property_cache.has(table_name_lower):
 		return _row_property_cache[table_name_lower]
-	var schema_key: StringName = table_name_lower.replace("_", "")
-	if not _schema.types.has(schema_key):
+	# Exact wire name — see _get_primary_key_field.
+	var schema: GDScript = _schema.get_table(table_name_lower)
+	if schema == null:
 		return []
-	var schema: GDScript = _schema.get_type(schema_key)
 	var props: Array[StringName] = []
 	for prop: Dictionary in schema.get_script_property_list():
 		if prop.usage & PROPERTY_USAGE_STORAGE:
