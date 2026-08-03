@@ -43,6 +43,13 @@ var light_mode: bool = false
 ## already showed.
 var confirmed_reads: bool = true
 ## Maximum size in bytes of the WebSocket inbound buffer (default 2 MB).
+##
+## Also the largest message this client can receive at all: Godot passes this to
+## wslay as the maximum receivable message length, so a bigger one closes the socket
+## with 1009 instead of being delivered (see
+## [constant SpacetimeDBConnection.CLOSE_MESSAGE_TOO_BIG]). The server's own limit is
+## 32 MiB, so raise this — or enable [member compression] — for a subscription whose
+## initial payload runs large.
 var inbound_buffer_size: int = 1024 * 1024 * 2
 ## Maximum size in bytes of the WebSocket outbound buffer (default 2 MB).
 var outbound_buffer_size: int = 1024 * 1024 * 2

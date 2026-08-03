@@ -42,6 +42,15 @@ enum CompressionPreference {
 ## sub-protocol (servers below 2.2.0) is no longer offered — see the 2.0 changelog.
 const BSATN_PROTOCOL_V3 = "v3.bsatn.spacetimedb"
 
+## WebSocket close code 1009. Godot hands [member WebSocketPeer.inbound_buffer_size]
+## to wslay as the maximum receivable message length, so a server message larger than
+## that buffer is never delivered: wslay stops reading and closes the socket itself
+## with this code and the reason "Message too big". The server's own ceiling is 32 MiB
+## (`WebSocketConfig::max_message_size` in `crates/client-api`), well above this
+## client's default buffer, so a large enough subscription or transaction update is a
+## message the server considers perfectly legal and this client cannot receive.
+const CLOSE_MESSAGE_TOO_BIG: int = 1009
+
 var version: String = "v1"
 ## Sub-protocol the server selected during the handshake (e.g. "v3.bsatn.spacetimedb").
 var negotiated_protocol: String = ""
@@ -167,10 +176,21 @@ func _physics_process(_delta: float) -> void:
 					)
 					connection_error.emit(code, "Abnormal closure: %s" % reason)
 			else:
-				_print_log(
-					"SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)"
-					% [code, reason]
-				)
+				# Some close codes are a configuration failure the game cannot work out
+				# from the number: they get pushed as errors, because debug_mode (which
+				# gates _print_log) is off by default and a silent close that repeats
+				# every reconnect is the worst way to learn about one. Reconnect is NOT
+				# suppressed for them — a 1009 raised by one oversized transaction
+				# update is survivable, and only the caller knows whether its
+				# subscription is the kind that will reproduce it.
+				var diagnostic: String = close_diagnostic(code, _options.inbound_buffer_size)
+				if diagnostic.is_empty():
+					_print_log(
+						"SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)"
+						% [code, reason]
+					)
+				else:
+					push_error(diagnostic)
 				disconnected.emit() # Normal closure signal
 		_is_connected = false
 		_connection_requested = false
@@ -294,6 +314,29 @@ func send_bytes(bytes: PackedByteArray) -> Error:
 		total_messages.emit(_total_messages_sent, _total_messages_received)
 		total_bytes.emit(_total_bytes_sent, _total_bytes_received)
 	return err
+
+
+## The operator-facing explanation for a close code that a game cannot diagnose from
+## the code alone, or [code]""[/code] for one that needs no explanation. Pure, so
+## which codes carry a diagnostic is testable without a socket, and so the number the
+## game is actually running with appears in the text rather than the default.
+static func close_diagnostic(code: int, inbound_buffer_size: int) -> String:
+	if code != CLOSE_MESSAGE_TOO_BIG:
+		return ""
+	return (
+		(
+			"SpacetimeDBConnection: the server sent a message larger than "
+			+ "inbound_buffer_size (%d bytes), so the socket was closed with 1009 "
+			+ "(Message too big) before the message could be read. If auto-reconnect "
+			+ "is on, the resubscribe that follows will meet the same message again "
+			+ "unless one of these changes: raise "
+			+ "SpacetimeDBConnectionOptions.inbound_buffer_size (the server allows "
+			+ "itself up to 32 MiB per message), turn on "
+			+ "SpacetimeDBConnectionOptions.compression so large payloads arrive "
+			+ "compressed, or narrow the subscription that produced it."
+		)
+		% inbound_buffer_size
+	)
 
 
 ## The [code]?...[/code] query string for the subscribe endpoint. Pure, so the wire
