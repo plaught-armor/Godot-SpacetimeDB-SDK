@@ -82,6 +82,7 @@ func _initialize() -> void:
 
 	for module: String in _fixtures:
 		_run_module(module, regen)
+	_run_autoload(regen)
 
 	if regen:
 		print("REGEN done — review `git diff %s` before committing" % GOLDEN_DIR)
@@ -149,6 +150,49 @@ func _run_module(module: String, regen: bool) -> void:
 	# above only sees generated files, so a dropped file would otherwise PASS).
 	if not regen:
 		_check_orphans(module, generated_rels)
+
+
+## The autoload is the one generated file no fixture covers: it is emitted per PROJECT
+## from the configured module aliases, not from any schema, so `_run_module` never sees
+## it. It is also the only generated file whose member names come straight from
+## `to_pascal_case()` with no escape applied — two aliases that PascalCase to the same
+## identifier (`my_module` and `myModule`) would declare `var MyModule` twice — so the
+## duplicate-member scan runs over it here as well as in the codegen path.
+##
+## The alias list is fixed rather than taken from `_fixtures`: it exists to pin the
+## snake_case -> PascalCase conversion and the emission order, and tying it to the fixture
+## set would rewrite this golden every time a fixture is added.
+## Typed `Array[String]` rather than a packed array because that is what the generator
+## takes; a plain `var`, never `const`, for the same C1 reason as `_fixtures` above.
+var AUTOLOAD_MODULES: Array[String] = ["blackholio", "my_module", "vtypes"]
+const AUTOLOAD_REL: String = "spacetime_autoload.gd"
+
+
+func _run_autoload(regen: bool) -> void:
+	var tmp: String = "%s/autoload" % TMP_ROOT
+	_reset_dir(tmp)
+
+	# No _plugin_config: unlike _generate_gdscript_from_schema, the autoload generator
+	# reads only its module list and _schema_path.
+	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
+	var got: String = codegen._generate_autoload_gdscript(AUTOLOAD_MODULES)
+
+	_check_native_collisions("autoload", AUTOLOAD_REL, got)
+
+	_total += 1
+	var duplicates: PackedStringArray = SpacetimeCodegen.find_duplicate_members(got)
+	if duplicates.is_empty():
+		print("PASS  autoload/%s no duplicate members" % AUTOLOAD_REL)
+	else:
+		_fails += 1
+		printerr("FAIL  autoload/%s declares %s twice" % [AUTOLOAD_REL, duplicates])
+
+	var golden_path: String = "%s/autoload/%s" % [GOLDEN_DIR, AUTOLOAD_REL]
+	if regen:
+		DirAccess.make_dir_recursive_absolute(golden_path.get_base_dir())
+		_write(golden_path, got)
+		return
+	_compare("autoload", AUTOLOAD_REL, golden_path, got)
 
 
 func _compare(module: String, rel: String, golden_path: String, got: String) -> void:
