@@ -33,6 +33,20 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **Two tables whose names differ only by an underscore no longer collide.**
+  The schema registry keyed everything by `name.to_lower().replace("_", "")` —
+  the strip is what lets a nested column typed `VsumShape` find the
+  `vsum_shape.gd` that declares it, but it is lossy, and `user_data` / `userdata`
+  are both legal SpacetimeDB table names that collapse onto one entry. The second
+  to load silently displaced the first, so its rows decoded against the wrong row
+  type and `_get_primary_key_field` returned the wrong column — every insert for
+  that table looked like an update of a row that did not exist. Tables are now
+  keyed by their exact wire name (lowercased, not stripped) and resolved through
+  a new `SpacetimeDBSchema.get_table()`, which answers only from that map — a
+  miss stays a miss rather than falling back to the lossy key and guessing.
+  Types keep the lossy key, since class-name matching needs it, but a genuine
+  collision there now warns unconditionally instead of only under `debug_mode`.
+
 - **Codegen now fails loudly when two module names escape to one GDScript
   identifier.** Every name escape guarantees its result is free on the *base*
   class, but none of them could see a *sibling* that escaped to the same string:

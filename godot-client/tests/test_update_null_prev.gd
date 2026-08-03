@@ -32,7 +32,11 @@ func _initialize() -> void:
 func _run() -> int:
 	var schema: SpacetimeDBSchema = SpacetimeDBSchema.new("test_mod", "res://__no_schema__", false)
 	schema.raw_table_names = [&"tbl"]
+	# A table lives in both maps, exactly as _add_table_names writes it: `types` under
+	# the normalized key for nested-column resolution, `tables` under the exact wire
+	# name for everything that starts from a table name (row type, primary key).
 	schema.types[&"tbl"] = PkRow
+	schema.tables[&"tbl"] = PkRow
 	var db: LocalDatabase = LocalDatabase.new(schema)
 	db._tables[&"tbl"] = { }
 	db.subscribe_to_inserts(&"tbl", _on_insert)
