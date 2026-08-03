@@ -292,6 +292,15 @@ func connect_db(
 	self.one_time_token = options.one_time_token
 	self.save_token = options.save_token
 	if not options.token.is_empty():
+		# Checked before it is stored, not only where it is used: an unusable token kept
+		# in _token survives this call, and a later drop would then spend the whole
+		# auto-reconnect budget re-refusing it, one attempt at a time, when the real
+		# answer is that the caller handed over a token nothing can connect with.
+		var opt_token_reason: String = SpacetimeDBConnection.token_reject_reason(options.token)
+		if not opt_token_reason.is_empty():
+			push_error("SpacetimeDBClient: refusing options.token — %s." % opt_token_reason)
+			connection_error.emit(ERR_UNAUTHORIZED, "Auth token rejected: %s" % opt_token_reason)
+			return
 		self._token = options.token
 	self.debug_mode = options.debug_mode
 	self.use_threading = options.threading
@@ -825,6 +834,18 @@ func _generate_connection_id() -> String:
 
 
 func _on_token_received(received_token: String) -> void:
+	# Every token this client connects with funnels through here — one set in the
+	# options, one read back from token_save_path, and one issued by the REST identity
+	# endpoint — and none of the three is necessarily the game's own text. A token
+	# carrying a CR or LF would split the `Authorization: Bearer ...` handshake header
+	# and turn whatever follows into further request headers, so it is refused here,
+	# before it can be stored, written to disk, or connected with.
+	var reject_reason: String = SpacetimeDBConnection.token_reject_reason(received_token)
+	if not reject_reason.is_empty():
+		push_error("SpacetimeDBClient: refusing the auth token — %s." % reject_reason)
+		connection_error.emit(ERR_UNAUTHORIZED, "Auth token rejected: %s" % reject_reason)
+		return
+
 	print_log("SpacetimeDBClient: Token acquired.")
 	self._token = received_token
 	if save_token:
@@ -1316,7 +1337,26 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			return
 		_identity = message.identity
 		if not _token and message.token:
-			_token = message.token
+			# Checked like every other token source: this one is kept and spliced into
+			# the handshake header of the NEXT reconnect, so a control character in it
+			# would inject headers into a later request rather than this one.
+			var token_reason: String = SpacetimeDBConnection.token_reject_reason(message.token)
+			if token_reason.is_empty():
+				_token = message.token
+			else:
+				# Reported, not just logged: this session keeps working on the socket the
+				# server already accepted, but _token stays unset, so the reconnect that
+				# needs it will bail. The game has to hear that now, while it can still
+				# fetch a usable token, rather than at the first drop.
+				push_error(
+					"SpacetimeDBClient: refusing the token from the IdentityToken message — %s."
+					% token_reason
+				)
+				connection_error.emit(
+					ERR_UNAUTHORIZED,
+					"IdentityToken rejected: %s (a later reconnect will have no token)"
+					% token_reason,
+				)
 		_connection_id = message.connection_id
 		self.connected.emit(_identity, _token)
 

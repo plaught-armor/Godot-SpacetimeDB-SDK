@@ -33,6 +33,32 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **An auth token can no longer inject headers into the WebSocket handshake.** The
+  token is spliced into an `Authorization: Bearer <token>` entry in
+  `WebSocketPeer.handshake_headers`, and Godot writes those out verbatim
+  (`request += handshake_headers[i] + "\r\n"` in `wsl_peer.cpp`) with no validation of
+  its own, so a CR or LF inside the token ended that header line and turned everything
+  after it into further request headers. Verified against a local socket: a token of
+  `abc\r\nX-Injected: yes` produced an `X-Injected` header and truncated the credential
+  to `abc`. The token is not always the game's own text — `SpacetimeAuth` returns one
+  parsed out of a third-party OIDC host's JSON response, the client reloads one from
+  `token_save_path` on disk, and the server supplies one in its IdentityToken message —
+  and only `SpacetimeDBRestAPI.set_token()` checked for this, which is not the path a
+  game connects through. A token carrying any control character (below `0x20`, or DEL)
+  is now refused at the client chokepoint before it is stored, written to disk, or
+  connected with, reported as `connection_error` with `ERR_UNAUTHORIZED` and a reason
+  naming the byte and its index; `SpacetimeDBConnection.set_token()` refuses one too,
+  and the empty-token connect arm it lands in now says so rather than returning under a
+  `print_log`. On Web, where the token goes into the URL instead of a header, it is
+  percent-encoded. The check is the pure
+  `SpacetimeDBConnection.token_reject_reason()`, and it is the SDK's only definition of
+  an unusable token: `connect_db()` applies it before storing `options.token` (an
+  unusable one kept there would otherwise spend a whole auto-reconnect budget being
+  re-refused one attempt at a time), `SpacetimeDBRestAPI.set_token()` now defers to it
+  instead of its own narrower CR/LF check, and a refused IdentityToken raises
+  `connection_error` rather than only a log line, since that session keeps working but
+  its reconnect would have no token. Covered by `tests/test_token_header_safety.gd`.
+
 - **A reconnect no longer strands rows that were deleted while the client was away.**
   `_prepare_for_reconnect()` wiped the local cache with
   `LocalDatabase.clear_all_tables()`, which empties the storage and reports nothing.

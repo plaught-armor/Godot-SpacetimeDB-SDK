@@ -65,10 +65,14 @@ func print_log(log_message: String) -> void:
 
 
 func set_token(token: String) -> void:
-	# Reject CR/LF (and other control chars) that would enable header injection
-	# once the token is spliced into the Authorization header.
-	if token.contains("\r") or token.contains("\n"):
-		push_error("SpacetimeDBRestAPI: token contains control characters; ignoring.")
+	# One definition of an unusable token for the whole SDK: this used to check CR/LF
+	# only, which let a tab or a DEL through here while the WebSocket path refused it.
+	# Cleared rather than left alone on refusal, so a later call_reducer cannot go out
+	# under a credential this call was told not to accept.
+	var reason: String = SpacetimeDBConnection.token_reject_reason(token)
+	if not reason.is_empty():
+		push_error("SpacetimeDBRestAPI: refusing the auth token — %s." % reason)
+		self._token = ""
 		return
 	self._token = token
 

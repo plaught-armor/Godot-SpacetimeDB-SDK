@@ -295,7 +295,38 @@ func get_received_packets() -> int:
 	return _total_messages_received
 
 
+## Why [param token] cannot be spliced into the handshake, or [code]""[/code] when it
+## can. Pure, so the check is testable without a socket.
+##
+## The token reaches the wire as an [code]Authorization: Bearer <token>[/code] entry in
+## [member WebSocketPeer.handshake_headers], and Godot writes those out verbatim —
+## [code]request += handshake_headers[i] + "\r\n"[/code] in [code]wsl_peer.cpp[/code],
+## with no validation of its own. A CR or LF inside the token therefore ends the header
+## line early and everything after it becomes further request headers (verified against
+## a local socket: a token of [code]abc\r\nX-Injected: yes[/code] produces an
+## [code]X-Injected[/code] header, and truncates the credential to [code]abc[/code]).
+## Tokens are not always the game's own: [SpacetimeAuth] returns one parsed from a
+## third-party OIDC host's JSON, the client can read one from a file on disk, and the
+## server supplies one in its IdentityToken message.
+static func token_reject_reason(token: String) -> String:
+	if token.is_empty():
+		return "it is empty"
+	for i: int in token.length():
+		var c: int = token.unicode_at(i)
+		if c < 0x20 or c == 0x7F:
+			return "it contains a control character (0x%02X at index %d)" % [c, i]
+	return ""
+
+
 func set_token(token: String) -> void:
+	var reason: String = token_reject_reason(token)
+	if not reason.is_empty():
+		# Dropped rather than sanitized: a token this SDK had to edit is not the token
+		# the issuer signed, and connecting with a mangled credential would fail at the
+		# server with a less useful message than this one.
+		push_error("SpacetimeDBConnection: refusing the auth token — %s." % reason)
+		self._token = ""
+		return
 	self._token = token
 
 
@@ -406,7 +437,11 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		_websocket.heartbeat_interval = _options.heartbeat_interval_seconds
 
 	if _token.is_empty():
-		_print_log("SpacetimeDBConnection: Cannot connect without auth token.")
+		# Loud, and reported: the caller asked for a connection that is not going to
+		# happen, and this arm is also where a token set_token refused lands, which
+		# print_log would have hidden outside debug_mode.
+		printerr("SpacetimeDBConnection: Cannot connect without auth token.")
+		connection_error.emit(ERR_UNAUTHORIZED, "No auth token")
 		return
 
 	if connection_id.is_empty():
@@ -436,7 +471,10 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 	)
 
 	if OS.get_name() == "Web":
-		query_params += "&token=%s" % _token
+		# Percent-encoded: this one goes into a URL, where an unescaped `&` or `#` in the
+		# token would end the parameter and rewrite the rest of the query string. A JWT is
+		# base64url and survives encoding unchanged apart from any `=` padding.
+		query_params += "&token=%s" % _token.uri_encode()
 	else:
 		var auth_header: String = "Authorization: Bearer %s" % _token
 		_websocket.handshake_headers = [auth_header]

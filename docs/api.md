@@ -655,6 +655,15 @@ class SpacetimeDBConnectionOptions:
 
 An explicit auth token to use for the connection. `save_token` controls whether it is persisted to disk.
 
+A token carrying a control character (CR, LF, tab, DEL, any byte below `0x20`) is refused
+rather than connected with: it reaches the wire inside the `Authorization: Bearer ...`
+WebSocket handshake header, which Godot writes out verbatim, so a CR or LF in it would end
+that header line and turn the rest into further request headers. The refusal is reported as
+`connection_error` with `ERR_UNAUTHORIZED` and names the offending byte and its index. This
+applies to every token source — this property, one reloaded from `token_save_path`, one from
+the REST identity endpoint, a `SpacetimeAuth` `id_token`, and the one in the server's
+IdentityToken message. Normal tokens (JWTs, opaque base64url strings) are unaffected.
+
 #### `debug_mode` property
 
 ```gdscript
