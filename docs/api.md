@@ -661,7 +661,16 @@ class SpacetimeDBConnectionOptions:
     var inbound_buffer_size: int = 1024 * 1024 * 2
 ```
 
-The maximum size of the inbound buffer.
+The maximum size of the inbound buffer, and with it the largest message this client
+can receive at all. Godot passes the value to wslay as the maximum receivable
+message length, so a larger message is never delivered: the socket is closed with
+WebSocket code `1009` ("Message too big") instead. The server allows itself 32 MiB
+per message, so a subscription whose initial payload runs past 2 MB needs a bigger
+buffer here, `compression` enabled so the payload arrives compressed, or a narrower
+query. The SDK pushes an error naming all three when a 1009 close happens, and warns
+that the resubscribe after an auto-reconnect will meet the same message. The
+reconnect still runs: one oversized transaction update is survivable, and only your
+game knows whether its subscription reproduces the payload.
 
 #### `outbound_buffer_size` property
 

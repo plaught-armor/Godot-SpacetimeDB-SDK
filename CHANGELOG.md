@@ -33,6 +33,26 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A message too big for the inbound buffer now says so.** Godot hands
+  `WebSocketPeer.inbound_buffer_size` to wslay as the maximum receivable message
+  length, so a server message larger than that buffer is never delivered — wslay
+  stops reading and closes the socket itself with code `1009`. The server allows
+  itself 32 MiB per message, sixteen times this SDK's 2 MB default, so an ordinary
+  subscription with a large initial payload can produce a message the server
+  considers legal and this client cannot receive. That close arrived as an
+  unremarkable non-abnormal closure: it went to `disconnected`, auto-reconnect
+  resubscribed the same queries, the same oversized message closed the socket
+  again, and the only trace was a `print_log` line that is silent unless
+  `debug_mode` is on. A 1009 close now pushes an error naming the buffer the game
+  is actually running with and the three ways out — raise `inbound_buffer_size`,
+  enable `compression` so the payload arrives compressed, or narrow the
+  subscription — and warns that the resubscribe will meet the same message. The
+  reconnect itself is deliberately left alone: a 1009 raised by one oversized
+  transaction update is survivable, and only the caller knows whether its
+  subscription is the kind that reproduces it. Which close codes carry a
+  diagnostic is a pure `SpacetimeDBConnection.close_diagnostic()`, covered by
+  `tests/test_message_too_big.gd`.
+
 - **A dropped packet no longer looks like a clean parse.** When
   `BSATNDeserializer.process_bytes_and_extract_messages()` hits a malformed
   message it discards the whole buffered stream, and
