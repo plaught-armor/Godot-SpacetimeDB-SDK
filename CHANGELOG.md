@@ -20,6 +20,18 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   it off. The decision is a pure `SpacetimeDBClient.should_resume_reconnect()`,
   covered by `tests/test_resume_reconnect.gd`.
 
+- **A failed `decode()` is now distinguishable from nothing to decode.**
+  `SpacetimeDBReducerCall.decode()` and `SpacetimeDBProcedureCall.decode()`
+  return `null` for three different reasons — a unit reducer, no declared return
+  type, and bytes that failed to parse — and a caller could not tell the last one
+  from the rest, so a truncated or
+  mistyped return payload read exactly like a reducer that returned nothing. Both
+  handles gain `has_return_value()`, `has_decode_error()` and
+  `decode_error_message`; a failed decode also raises a Godot error rather than
+  passing silently. The deserializer's error state is captured per handle, so one
+  failed decode can no longer leave a stale error that makes the next handle's
+  decode look broken.
+
 ### Fixed
 - **Codegen now fails loudly when two module names escape to one GDScript
   identifier.** Every name escape guarantees its result is free on the *base*

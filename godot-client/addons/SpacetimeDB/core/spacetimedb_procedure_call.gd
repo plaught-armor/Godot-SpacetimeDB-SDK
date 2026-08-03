@@ -32,6 +32,9 @@ var outcome: Outcome = Outcome.PENDING
 var error_message: String = ""
 ## BSATN-encoded return value (populated on [constant Outcome.RETURNED]).
 var return_bytes: PackedByteArray
+## Why the most recent [method decode] returned [code]null[/code], or [code]""[/code]
+## when it did not fail. Reset at the start of every [method decode].
+var decode_error_message: String = ""
 var _return_bsatn_type: StringName = &""
 var _client: SpacetimeDBClient
 
@@ -77,8 +80,16 @@ func wait_for_response(timeout_sec: float = 10.0) -> SpacetimeDBProcedureCall:
 
 ## Decodes [member return_bytes] using the BSATN type provided at call time.[br]
 ## Returns [code]null[/code] if the bytes are empty or no type was specified.
+## [br][br]
+## A [code]null[/code] is ambiguous on its own — no bytes, no declared type, and a
+## failed decode all produce it. Pair it with [method has_return_value] and
+## [method has_decode_error] to tell them apart; a failed decode also raises a Godot
+## error rather than passing silently. (An [code]opt_[/code] return is not one of the
+## ambiguous cases: it decodes to an [Option] whose [method Option.is_none] is true,
+## never to a bare [code]null[/code].)
 func decode() -> Variant:
-	if return_bytes.is_empty() or _return_bsatn_type.is_empty():
+	decode_error_message = ""
+	if not has_return_value():
 		return null
 	var spb: StreamPeerBuffer = StreamPeerBuffer.new()
 	spb.data_array = return_bytes
@@ -87,10 +98,39 @@ func decode() -> Variant:
 	# Main-thread decoder, not the worker's _deserializer (thread-race, see client).
 	# Clear any error left by a prior failed decode(): this instance is never reset
 	# by worker traffic, so a stale error would make every later decode() null.
-	_client._decode_deserializer.clear_error()
-	return _client \
-			._decode_deserializer \
-			._read_value_from_bsatn_type(spb, _return_bsatn_type, &"procedure_return")
+	var deserializer: BSATNDeserializer = _client._decode_deserializer
+	deserializer.clear_error()
+	var value: Variant = deserializer._read_value_from_bsatn_type(
+		spb,
+		_return_bsatn_type,
+		&"procedure_return",
+	)
+	if deserializer.has_error():
+		# get_last_error() clears the deserializer; this handle keeps the message so a
+		# caller can still ask what went wrong after the fact.
+		decode_error_message = deserializer.get_last_error()
+		# Second report on purpose: the deserializer already printerr'd the bare message,
+		# but only this one carries the request id and the declared type, and push_error
+		# is what puts it in the editor's error list rather than just the output log.
+		push_error(
+			"SpacetimeDBProcedureCall.decode() failed for request %d (type %s): %s"
+			% [request_id, _return_bsatn_type, decode_error_message]
+		)
+		return null
+	return value
+
+
+## Whether [method decode] has anything to decode: the server sent return bytes AND a
+## return type was supplied at call time. [code]false[/code] for a procedure with no
+## declared return type and for every non-[constant Outcome.RETURNED] outcome.
+func has_return_value() -> bool:
+	return _client != null and not return_bytes.is_empty() and not _return_bsatn_type.is_empty()
+
+
+## Whether the most recent [method decode] failed to parse the bytes the server sent —
+## as opposed to there being nothing to decode. See [member decode_error_message].
+func has_decode_error() -> bool:
+	return not decode_error_message.is_empty()
 
 
 ## Returns [code]true[/code] if the procedure returned successfully.
