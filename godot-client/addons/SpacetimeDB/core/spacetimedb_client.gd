@@ -1104,6 +1104,12 @@ func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
 			return PackedByteArray()
 	elif compression == 2:
 		payload = DataDecompressor.decompress_packet(payload)
+		if payload.is_empty():
+			# Gzip failures used to come back as whatever had inflated before the
+			# break; they return empty now, same as Brotli, so they get the same
+			# one-line "this frame is gone" report rather than a silent no-op parse.
+			printerr("SpacetimeDBClient: Gzip decompression failed, dropping frame.")
+			return PackedByteArray()
 	else:
 		printerr("SpacetimeDBClient: Unknown compression tag %d, dropping frame." % compression)
 		return PackedByteArray()

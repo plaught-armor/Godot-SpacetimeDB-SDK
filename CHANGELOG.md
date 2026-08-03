@@ -33,6 +33,37 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A truncated Brotli frame no longer hangs the client.**
+  `DataDecompressor.decompress_brotli()` used
+  `PackedByteArray.decompress_dynamic()`, which never returns on a Brotli stream it
+  cannot finish. Godot's growth loop (`core/io/compression.cpp`) ends on
+  `BROTLI_DECODER_RESULT_SUCCESS` or on passing the size cap; a truncated stream
+  reaches neither, because Brotli keeps answering `NEEDS_MORE_INPUT` with no input
+  left, so the total output stops growing, the cap is never passed, and the buffer
+  grows by 64 KiB — copying all of it each round — until the process dies. Measured
+  on 4.8.dev with the cap set as low as 1 MiB: it never returned. Brotli is the
+  server's default compression mode, so any client that enabled compression was one
+  corrupt frame away from a hung parse thread and unbounded memory growth.
+  Decoding now uses the bounded one-shot `PackedByteArray.decompress()`, which
+  fails immediately on a stream it cannot finish. It needs the output size up
+  front, so the size is guessed from the compressed size and doubled on failure up
+  to the same 128 MiB ceiling; the ratio that worked is remembered (clamped, mutex
+  guarded, since the decode runs on the deserializer worker thread) so a payload
+  shape only pays for the retries once. Truncated, short and non-Brotli inputs now
+  return empty in about a millisecond. Found by extending
+  `tests/fuzz_wire_decode.gd` to mutate the compressed fixtures; covered by
+  `tests/test_decompress_brotli.gd`, including a 484-byte fixture that decodes to
+  2 MiB so the retry path stays exercised.
+
+- **A gzip frame that breaks mid-stream is dropped, not half-decoded.**
+  `decompress_packet()` returned whatever had inflated before an input failure —
+  the front of a message whose tail is missing, which the reader then reported as
+  a corruption belonging to the wire rather than to the decoder. It returns empty
+  now, like every other failure path in that function, and the client logs the
+  dropped frame the way it already did for Brotli. Its `while true` loop also gained
+  an explicit pass bound and a drained-cleanly flag, so exhausting that bound
+  reports and returns empty instead of yielding a prefix.
+
 - **A message too big for the inbound buffer now says so.** Godot hands
   `WebSocketPeer.inbound_buffer_size` to wslay as the maximum receivable message
   length, so a server message larger than that buffer is never delivered — wslay
