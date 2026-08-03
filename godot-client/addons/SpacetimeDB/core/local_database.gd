@@ -633,6 +633,14 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			# Update: delete+insert of the same pk. Refcount unchanged; mark handled so
 			# the delete pass skips it. Fire on_update only when the value differs.
 			deleted_pks.erase(pk_value)
+			if old_ref == 0:
+				# Nothing held this pk yet, so "unchanged" would leave the row cached at
+				# refcount 0: the matching delete is consumed here, so the delete pass
+				# never records this delivery's reference. An unreferenced cached row is
+				# permanent — a later delete reads refcount 0 and skips it, so the row
+				# never leaves the cache and no on_delete ever fires. Record the
+				# reference this delivery carries.
+				ref_table[pk_value] = 1
 			var prev_u: _ModuleTableType = table_dict.get(pk_value)
 			if prev_u == null:
 				# No prior cached row → this is an insert, not an update. Firing the

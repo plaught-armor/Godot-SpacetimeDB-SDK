@@ -33,6 +33,23 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A row updated before the client had it can now be deleted.** In
+  `LocalDatabase.apply_table_update()`, a delete+insert of the same primary key —
+  the server's encoding for an update — for a key the cache did not hold took
+  insert semantics but left the reference count untouched, because the delete it
+  carries is consumed as part of the update and so the delete pass never records
+  the delivery's reference. The row landed in the cache at reference count 0, and
+  an unreferenced cached row is permanent: every later delete for that key reads a
+  count of 0 and skips the row, so it never leaves the cache, no `on_delete` ever
+  fires, and every query helper keeps returning it for the rest of the session.
+  The next delivery of that key also fired a second `on_insert` for an
+  already-cached row instead of `on_update`. Reachable wherever the cache can be
+  behind the server for one key: an insert skipped for a null primary key, an
+  update arriving after the reconnect path cleared the mirror, or an update from
+  one subscription for a key a `SubscriptionError` just pruned for another. The
+  branch now records the reference it holds. Covered by
+  `tests/test_update_insert_refcount.gd`.
+
 - **A truncated Brotli frame no longer hangs the client.**
   `DataDecompressor.decompress_brotli()` used
   `PackedByteArray.decompress_dynamic()`, which never returns on a Brotli stream it
