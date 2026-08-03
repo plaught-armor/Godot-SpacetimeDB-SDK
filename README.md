@@ -7,7 +7,7 @@
 
 ## SpacetimeDB Godot SDK
 
-> Requires **SpacetimeDB 2.2.0+** (v3 BSATN protocol with batched framing, schema v10) and **Godot 4.6+** (the editor plugin uses `EditorDock`, added in 4.6). Tested with `SpacetimeDB 2.2.0`–`2.7.0` and Godot `4.6-stable`, `4.7-stable` and `4.8.dev`. The legacy v2 sub-protocol was dropped in 2.0; for servers below 2.2.0 use an SDK `1.x` release.
+> Requires **SpacetimeDB 2.2.0+** (v3 BSATN protocol with batched framing, schema v10) and **Godot 4.6+** (the editor plugin uses `EditorDock`, added in 4.6). Tested with `SpacetimeDB 2.2.0`–`2.7.1` and Godot `4.6-stable`, `4.7-stable` and `4.8.dev`. The legacy v2 sub-protocol was dropped in 2.0; for servers below 2.2.0 use an SDK `1.x` release.
 
 A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetimedb.com), enabling real-time data synchronization and server interaction directly from your Godot client, with full codegen support.
 
@@ -19,6 +19,7 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 -   [API Reference](docs/api.md)
 -   [SpacetimeAuth + GodotSteam: Steam sign-in](docs/spacetimeauth-godotsteam.md) — turn a Steam login into a SpacetimeDB connection
 -   [Design Decisions](docs/design-decisions.md) — what's built, what's blocked by the wire, what's deliberately out of scope (and why)
+-   [Submodules / namespaces readiness](docs/submodules-readiness.md) — what upstream's unreleased namespace feature does to the wire, and what this SDK does with a namespaced module today
 -   [Changelog](CHANGELOG.md)
 
 ## Features

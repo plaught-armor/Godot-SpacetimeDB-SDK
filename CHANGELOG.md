@@ -2,6 +2,16 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Verified the SDK end-to-end against **SpacetimeDB 2.7.1**; the tested range is
+  now `2.2.0`–`2.7.1`. No code change was needed — the client-facing wire format
+  is byte-identical to 2.7.0 (2.7.1 touched metrics, an MCP route, and HTTP
+  handler plumbing). Live suites re-run against a 2.7.1 server with modules built
+  against the `2.7.1` bindings: types 6/6, behavior 15/15, enum-with-payload 1/1,
+  anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1.
+
 ## [2.6.0] - 2026-07-28
 
 ### Fixed

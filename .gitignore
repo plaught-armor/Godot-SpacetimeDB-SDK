@@ -1,2 +1,7 @@
 docs/handoff-context.md
 .claude/settings.local.json
+
+# Rust build artifacts from the integration-test modules and the schema probe
+integration-tests/**/target/
+integration-tests/**/Cargo.lock
+integration-tests/schema_probe/schema.json
