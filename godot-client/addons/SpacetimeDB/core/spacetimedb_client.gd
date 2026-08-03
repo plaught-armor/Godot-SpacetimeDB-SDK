@@ -1123,8 +1123,11 @@ func _parse_packet_and_get_resource(bsatn_bytes: PackedByteArray) -> Array[Space
 			"SpacetimeDBClient: Failed to parse BSATN packet: ",
 			_deserializer.get_last_error(),
 		)
-		return []
-
+	# Whatever parsed is still delivered. A packet carries several complete server
+	# messages and the failure is at one of them: the ones read before it are whole,
+	# ordered, and indistinguishable from the same messages arriving in their own
+	# packet. Dropping them would discard uncorrupted transaction updates on top of
+	# the ones the error already cost.
 	return result
 
 
