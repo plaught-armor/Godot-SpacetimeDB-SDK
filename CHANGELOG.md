@@ -33,6 +33,28 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A dropped packet no longer looks like a clean parse.** When
+  `BSATNDeserializer.process_bytes_and_extract_messages()` hits a malformed
+  message it discards the whole buffered stream, and
+  `SpacetimeDBClient._parse_packet_and_get_resource()` checks `has_error()`
+  immediately afterwards to decide whether to throw the batch away. That check
+  could never fire: the branch reported the failure through `get_last_error()`,
+  whose documented job is to return the message *and clear the error state*, so
+  reporting the problem erased the evidence of it and the deserializer returned
+  looking like nothing had gone wrong. A corrupt or truncated frame therefore
+  dropped the client's parse buffer silently, and nothing above the parser learned
+  the stream had been cut. The branch now reads the message without consuming it,
+  so the failure reaches the client and the log. The messages parsed before the bad
+  one are still delivered — they are whole and ordered, and indistinguishable from
+  the same messages arriving in their own packet, so discarding them would cost
+  uncorrupted transaction updates on top of the ones the error already cost. The
+  neighbouring "parser consumed 0 bytes" guard, which dropped the same buffer
+  without ever setting an error at all, now sets one too. An empty packet clears
+  the error state rather than reporting the previous packet's. Found
+  by mutation-fuzzing the captured wire frames (`tests/fuzz_wire_decode.gd`,
+  committed): 1440 corrupted frames produced 1440 error-free parses. Covered by
+  `tests/test_parse_error_visibility.gd`.
+
 - **A redacted field name is treated as a literal, not as a regular
   expression.** `SpacetimeAuthProtocol.redact()` interpolated each name from
   `SpacetimeAuth.redact_fields` straight into a pattern, so a name carrying a

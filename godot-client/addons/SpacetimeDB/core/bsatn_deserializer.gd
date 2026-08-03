@@ -396,8 +396,17 @@ func read_bsatn_row_list(spb: StreamPeerBuffer) -> Array[PackedByteArray]:
 
 ## Appends [param new_data] to the internal buffer and extracts all complete
 ## [SpacetimeDBServerMessage] instances. Returns an array of parsed messages.
+##
+## Can return with the error state SET: a malformed message drops the buffered stream,
+## and the messages read before it are still returned, so [method has_error] is the only
+## way to tell a whole packet from a truncated one. The caller is expected to consume
+## that with [method get_last_error] (or [method clear_error]) before the next call.
 func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[SpacetimeDBServerMessage]:
 	if new_data.is_empty():
+		# Clear here too: this returns ahead of the parse loop, which is what normally
+		# resets the state, so an unconsumed error would otherwise be reported against
+		# a call that never read a byte.
+		clear_error()
 		return []
 	_pending_data.append_array(new_data)
 	var parsed_messages: Array[SpacetimeDBServerMessage] = []
@@ -420,7 +429,11 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 				clear_error()
 				break
 			# Malformed data: drop the whole buffer to avoid an infinite loop.
-			printerr("BSATNDeserializer: Unrecoverable parsing error: %s. Clearing buffer." % get_last_error())
+			# Read _last_error directly rather than through get_last_error(), which
+			# CLEARS the error state: reporting the failure must not also erase it,
+			# or this returns looking like a clean parse and the caller's has_error()
+			# check never fires for the one case it exists to catch.
+			printerr("BSATNDeserializer: Unrecoverable parsing error: %s. Clearing buffer." % _last_error)
 			_pending_data.clear()
 			return parsed_messages
 
@@ -429,7 +442,9 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 
 		var bytes_consumed: int = spb.get_position() - cursor
 		if bytes_consumed <= 0:
-			printerr("BSATNDeserializer: Parser consumed 0 bytes. Clearing buffer to prevent infinite loop.")
+			# Same contract as the malformed branch above: the buffer is dropped, so
+			# the caller has to be able to see that it happened.
+			_set_error("Parser consumed 0 bytes; clearing buffer to prevent an infinite loop.", cursor)
 			_pending_data.clear()
 			return parsed_messages
 
