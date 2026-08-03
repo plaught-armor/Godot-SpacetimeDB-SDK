@@ -940,6 +940,30 @@ class SpacetimeDBReducerCall:
 
 Decodes [`ret_value`](#ret_value-property) into the typed ok return value, using the BSATN type the generated reducer method passed at call time. Returns `null` if the reducer returned nothing (unit) or no return type was provided (e.g. a hand-written `call_reducer` without `ret_bsatn_type`).
 
+A `null` on its own is ambiguous — a unit reducer, a missing return type, and bytes that failed to parse all produce one. Use `has_return_value()` and `has_decode_error()` to tell them apart:
+
+```gdscript
+var call: SpacetimeDBReducerCall = await reducers.buy_item(1).wait_for_response()
+var value: Variant = call.decode()
+if call.has_decode_error():
+    push_error("bad return payload: %s" % call.decode_error_message)
+elif call.has_return_value():
+    print("reducer returned ", value)
+```
+
+A failed decode also raises a Godot error, so a malformed payload is never silent.
+
+#### `has_return_value()` / `has_decode_error()` methods
+
+```gdscript
+class SpacetimeDBReducerCall:
+    func has_return_value() -> bool   # server sent bytes AND a return type was declared
+    func has_decode_error() -> bool   # the most recent decode() failed to parse them
+    var decode_error_message: String  # why it failed, or "" when it did not
+```
+
+`has_return_value()` is `false` for a unit reducer, for a hand-written `call_reducer` with no declared return type, and for every non-`OK` outcome. `decode_error_message` is reset at the start of every `decode()`, so it always describes the latest attempt. An `opt_` return is never one of the ambiguous cases — it decodes to an `Option` whose `is_none()` is true, not to a bare `null`.
+
 #### `is_ok()` / `is_error()` / `is_completed()` methods
 
 ```gdscript
@@ -1052,6 +1076,17 @@ class SpacetimeDBProcedureCall:
 ```
 
 Decodes the raw `return_bytes` using the BSATN type information provided at call time. Returns `null` if the return bytes are empty or no return type was specified.
+
+As with the reducer handle, a `null` is ambiguous on its own — pair it with `has_return_value()` and `has_decode_error()`, and read `decode_error_message` when the latter is `true`. A failed decode also raises a Godot error.
+
+#### `has_return_value()` / `has_decode_error()` methods
+
+```gdscript
+class SpacetimeDBProcedureCall:
+    func has_return_value() -> bool   # server sent bytes AND a return type was declared
+    func has_decode_error() -> bool   # the most recent decode() failed to parse them
+    var decode_error_message: String  # why it failed, or "" when it did not
+```
 
 #### `is_ok()` / `is_error()` / `is_completed()` methods
 
