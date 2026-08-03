@@ -44,6 +44,10 @@ func _schema() -> SpacetimeDBSchema:
 	s.types[&"fuzzroot"] = FuzzRoot
 	s.types[&"fuzzmid"] = FuzzMid
 	s.types[&"fuzzleaf"] = FuzzLeaf
+	# Nested columns resolve by class name, so an injected script has to be indexed
+	# there too — exactly what _load_types does for a real one.
+	for script: GDScript in [FuzzRoot, FuzzMid, FuzzLeaf]:
+		s.register_type_by_class(script)
 	return s
 
 

@@ -20,6 +20,26 @@ var types: Dictionary[StringName, GDScript] = { }
 ## so one silently displaced the other and its rows decoded against the wrong row type
 ## with the wrong primary key.
 var tables: Dictionary[StringName, GDScript] = { }
+## Types keyed by the [code]class_name[/code] they declare, exactly as written.
+##
+## Every generated row and payload type declares one, every nested column names its type
+## by that same spelling (a `BSATN_TYPES` entry reads `&"shape": &"VsumShape"`, and an
+## `@export var`'s `class_name` property hint is the same string), and Godot already
+## enforces that the spelling is unique project-wide. That makes it a better key than the
+## normalized one for anything resolving a nested column: `FooBar` and `Foobar` are two
+## different classes that both normalize to `foobar`.
+var types_by_class: Dictionary[StringName, GDScript] = { }
+## Same scripts keyed by the lowercased class name, for the callers that only have that
+## form: the deserialization plan lowercases every `BSATN_TYPES` value so a hand-written
+## `"U32"` still finds a primitive reader, which flattens `VsumShape` to `vsumshape` on
+## the way through. Case is the only thing lost here — underscores are not stripped — so
+## the sole way two classes can share a key is a pair like `FooBar` / `Foobar`, and those
+## are recorded in [member _ambiguous_lower] rather than silently overwritten.
+var _types_by_class_lower: Dictionary[StringName, GDScript] = { }
+## Lowercased class names claimed by more than one class. Looked up through
+## [method get_type_by_class] these resolve to [code]null[/code] and report, rather than
+## returning whichever script loaded last.
+var _ambiguous_lower: Dictionary[StringName, bool] = { }
 ## Raw wire table names consumed once by [method LocalDatabase._init] then cleared.
 var raw_table_names: Array[StringName] = []
 ## Enables verbose debug printing during schema loading.
@@ -63,6 +83,54 @@ func get_type(type_name: StringName) -> GDScript:
 ## that rather than guessing.
 func get_table(table_name_lower: StringName) -> GDScript:
 	return tables.get(table_name_lower)
+
+
+## Indexes [param script] under the [code]class_name[/code] it declares, in both the
+## exact and the lowercased map. The single writer for those two — [method _load_types]
+## calls it, and so should anything that injects a script into the registry by hand
+## (tests do), because a script present in [member types] but missing here resolves as a
+## nested column type only by its exact spelling.
+##
+## A no-op for a script that declares no [code]class_name[/code].
+func register_type_by_class(script: GDScript) -> void:
+	var global_name: StringName = script.get_global_name()
+	if global_name.is_empty():
+		return
+	types_by_class[global_name] = script
+	var lowered: StringName = StringName(String(global_name).to_lower())
+	var claimed: GDScript = _types_by_class_lower.get(lowered)
+	if claimed != null and claimed != script:
+		_ambiguous_lower[lowered] = true
+		return
+	_types_by_class_lower[lowered] = script
+
+
+## Returns the [GDScript] declaring [param class_name_hint], or [code]null[/code].
+##
+## Accepts either the exact [code]class_name[/code] or its lowercased form, because the
+## deserialization plan lowercases the `BSATN_TYPES` value it resolves through. It never
+## falls back to the underscore-stripped [member types] key: that is what used to hand
+## back whichever of two colliding scripts loaded last.
+##
+## Two classes differing only in case (`FooBar` / `Foobar`) cannot be told apart from the
+## lowercased form alone, so that lookup returns [code]null[/code] and reports once —
+## a loud failure rather than a wrong row type. Reaching it needs the exact spelling.
+func get_type_by_class(class_name_hint: StringName) -> GDScript:
+	var script: GDScript = types_by_class.get(class_name_hint)
+	if script != null:
+		return script
+	var lowered: StringName = StringName(String(class_name_hint).to_lower())
+	if _ambiguous_lower.has(lowered):
+		push_error(
+			(
+				"SpacetimeDBSchema: '%s' names more than one class once lowercased. The "
+				+ "value reached here without its original casing, so it cannot be "
+				+ "resolved; rename one of the two types in your module."
+			)
+			% class_name_hint
+		)
+		return null
+	return _types_by_class_lower.get(lowered)
 
 
 func _load_types(raw_path: String, prefix: String = "") -> void:
@@ -120,6 +188,7 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 		var script: GDScript = ResourceLoader.load(script_path, "GDScript") as GDScript
 
 		if script and script.can_instantiate():
+			register_type_by_class(script)
 			var instance: Variant = script.new()
 			if instance is RefCounted: # Resource extends RefCounted — one check covers both
 				var fallback_table_names: Array[String] = [file_name.get_basename().get_file()]
@@ -148,15 +217,16 @@ func _add_table_names(table_names: Array, is_table: bool, script: GDScript, scri
 			and not _warned_collisions.has(lower_table_name)
 		):
 			_warned_collisions[lower_table_name] = true
-			# Not gated on debug_mode: the normalized key is lossy, so this is the only
-			# notice anyone gets that two type names collapsed onto one entry. Harmless
-			# when both are tables — `tables` keeps them apart under their exact names —
-			# but a nested column type resolved through `types` has no such fallback.
+			# Not gated on debug_mode: this is the only notice anyone gets that two
+			# names collapsed onto one entry. Both exact maps cover the generated case —
+			# tables by wire name, types by class_name — so what is left is a script that
+			# declares no class_name, which only [method get_type_by_class]'s fallback can
+			# reach, and there the collision still decides by load order.
 			push_warning(
 				(
-					"SpacetimeDBSchema: %s and %s both normalize to '%s'. Table lookups "
-					+ "stay correct — those use the exact wire name — but a nested column "
-					+ "typed as either one resolves to whichever loaded last."
+					"SpacetimeDBSchema: %s and %s both normalize to '%s'. Tables and "
+					+ "class_name'd types are unaffected; a script declaring no class_name "
+					+ "resolves to whichever of the two loaded last."
 				)
 				% [script_path.get_file(), displaced.resource_path.get_file(), lower_table_name]
 			)
