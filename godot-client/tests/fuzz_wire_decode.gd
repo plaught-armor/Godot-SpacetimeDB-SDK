@@ -19,6 +19,23 @@ const MAX_FRAMES_PER_FIXTURE: int = 24
 const MAX_FLIPS_PER_FRAME: int = 48
 const MAX_TRUNCATIONS_PER_FRAME: int = 24
 const MAX_SPLICES_PER_FRAME: int = 24
+const MAX_COMPRESSED_CASES_PER_FRAME: int = 64
+# Captures of the same subscription the uncompressed fixture holds, so a mutation that
+# still inflates produces bytes the reader will genuinely try to parse.
+## A plain `var`, never `const` — a const Packed*Array reads back wrong (C1, #88753).
+## No `make_read_only()` either: that is an `Array`/`Dictionary` API, and
+## `Packed*Array` does not have it (C2a does not reach this type).
+static var COMPRESSED_FIXTURES: PackedStringArray = [
+	"wire_snapshot_gzip.bin",
+	"wire_snapshot_brotli.bin",
+]
+# Compression tags as the server writes them (ws_common::SERVER_MSG_COMPRESSION_TAG_*).
+const TAG_NONE: int = 0
+const TAG_BROTLI: int = 1
+const TAG_GZIP: int = 2
+# Anything past this from a ~7 KiB capture means a mutation hit the decoder's own
+# length fields, which is worth seeing even when it stays under the 128 MiB cap.
+const MAX_SANE_OUTPUT: int = 8 * 1024 * 1024
 
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 # Built once: the schema is read-only here, and its constructor walks the generated
@@ -27,6 +44,8 @@ var _schema: SpacetimeDBSchema = SpacetimeDBSchema.new("Blackholio")
 var _cases: int = 0
 var _errors_flagged: int = 0
 var _clean_decodes: int = 0
+var _decompressed: int = 0
+var _decompress_empty: int = 0
 
 
 func _initialize() -> void:
@@ -48,12 +67,61 @@ func _initialize() -> void:
 			_fuzz_truncations(name, i, payload)
 			_fuzz_splices(name, i, payload)
 
+	_fuzz_compressed()
+
 	print(
 		"cases=%d error_flagged=%d decoded_without_error=%d"
 		% [_cases, _errors_flagged, _clean_decodes]
 	)
+	print("decompressed=%d empty=%d" % [_decompressed, _decompress_empty])
 	print("SURVIVED")
 	quit(0)
+
+
+## The other half of the receive path: the bytes reach `DataDecompressor` before the
+## reader ever sees them, and a corrupt compressed frame is the cheapest thing for a
+## hostile server to send — the decoder is Godot's, the size cap is ours, and a bomb
+## or a truncated member has to end in an empty return rather than an allocation the
+## game cannot survive. Mutations here deliberately include the compression tag byte,
+## which selects the branch.
+func _fuzz_compressed() -> void:
+	for name: String in COMPRESSED_FIXTURES:
+		var frames: Array[PackedByteArray] = _frames("%s/%s" % [FIXTURE_DIR, name])
+		var frame_count: int = mini(frames.size(), MAX_FRAMES_PER_FIXTURE)
+		for i: int in frame_count:
+			var frame: PackedByteArray = frames[i]
+			if frame.size() < 2:
+				continue
+			for _n: int in MAX_COMPRESSED_CASES_PER_FRAME:
+				var mutated: PackedByteArray = frame.duplicate()
+				var at: int = _rng.randi_range(0, mutated.size() - 1)
+				var run: int = mini(_rng.randi_range(1, 16), mutated.size() - at)
+				for k: int in run:
+					mutated[at + k] = _rng.randi_range(0, 255)
+				if _rng.randi_range(0, 3) == 0:
+					mutated = mutated.slice(0, _rng.randi_range(1, mutated.size() - 1))
+				_decompress_and_decode("%s#%d comp@%d+%d" % [name, i, at, run], mutated)
+
+
+## Mirrors SpacetimeDBClient._decompress_and_parse: read the tag, run the matching
+## decoder, then hand whatever came out to the reader.
+func _decompress_and_decode(label: String, frame: PackedByteArray) -> void:
+	_note(label)
+	var tag: int = frame[0]
+	var payload: PackedByteArray = frame.slice(1)
+	if tag == TAG_BROTLI:
+		payload = DataDecompressor.decompress_brotli(payload)
+	elif tag == TAG_GZIP:
+		payload = DataDecompressor.decompress_packet(payload)
+	elif tag != TAG_NONE:
+		return # the client drops an unknown tag without decoding
+	if payload.is_empty():
+		_decompress_empty += 1
+		return
+	_decompressed += 1
+	if payload.size() > MAX_SANE_OUTPUT:
+		printerr("%s: decompressed to %d bytes" % [label, payload.size()])
+	_decode(label, payload)
 
 
 func _fixture_names() -> PackedStringArray:
