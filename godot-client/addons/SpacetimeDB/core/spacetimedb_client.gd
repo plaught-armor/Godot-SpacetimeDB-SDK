@@ -186,6 +186,18 @@ func _physics_process(_delta: float) -> void:
 	_process_results_asynchronously()
 
 
+func _notification(what: int) -> void:
+	# All three mean "the frame loop is running again", and which one the platform
+	# sends varies: FOCUS_IN on desktop/mobile, RESUMED on Android/iOS, the window-level
+	# one on web. Handling all three is free — the handler is a no-op unless a reconnect
+	# is actually waiting out a backoff.
+	if (
+		what == NOTIFICATION_APPLICATION_FOCUS_IN or what == NOTIFICATION_APPLICATION_RESUMED
+		or what == NOTIFICATION_WM_WINDOW_FOCUS_IN
+	):
+		_on_app_resumed()
+
+
 func _exit_tree() -> void:
 	_cancel_reconnection()
 	if deserializer_worker:
@@ -1483,6 +1495,39 @@ func _schedule_next_reconnect_attempt() -> void:
 		_emit_disconnected()
 
 
+## True when regaining focus should pull a waiting reconnect attempt forward: the
+## option is on, a reconnect cycle is in flight, and its backoff timer still has time
+## left to run. Pure so the decision is testable without a scene tree or a socket.
+static func should_resume_reconnect(enabled: bool, is_reconnecting: bool, timer_time_left: float) -> bool:
+	return enabled and is_reconnecting and timer_time_left > 0.0
+
+
+## Fires a reconnect attempt whose backoff timer stalled while the app was in the
+## background. A backgrounded frame loop is throttled (web) or stopped (mobile
+## suspend), so the [SceneTreeTimer] the backoff runs on barely advances; without
+## this, a drop that happens off-screen waits out the rest of that delay after the
+## player is already looking at the game again.
+func _on_app_resumed() -> void:
+	var enabled: bool = (connection_options != null and connection_options.reconnect_on_app_resume)
+	var time_left: float = 0.0
+	if _reconnect_timer != null:
+		time_left = _reconnect_timer.time_left
+	var is_reconnecting: bool = _reconnect_state == _ReconnectState.RECONNECTING
+	if not should_resume_reconnect(enabled, is_reconnecting, time_left):
+		return
+
+	print_log("SpacetimeDBClient: App resumed — firing the pending reconnect attempt now.")
+	if _reconnect_timer.timeout.is_connected(_attempt_reconnect):
+		_reconnect_timer.timeout.disconnect(_attempt_reconnect)
+	_reconnect_timer = null
+	# The pending attempt is re-scheduled under its own number rather than consuming a
+	# new one, so alt-tabbing can neither burn through max_reconnect_attempts nor reset
+	# it — only the remaining wait is skipped.
+	_reconnect_attempt = maxi(_reconnect_attempt - 1, 0)
+	_reconnect_immediate = true
+	_schedule_next_reconnect_attempt()
+
+
 func _calculate_backoff(attempt: int) -> float:
 	var base_delay: float = connection_options.reconnect_initial_delay * pow(
 		connection_options.reconnect_backoff_multiplier,
@@ -1568,9 +1613,13 @@ func _cancel_reconnection() -> void:
 	_resubscribe_epoch += 1 # supersede any in-flight resubscribe settles
 	_saved_subscription_queries.clear()
 
-	if _reconnect_timer and _reconnect_timer.time_left > 0:
-		if _reconnect_timer.timeout.is_connected(_attempt_reconnect):
-			_reconnect_timer.timeout.disconnect(_attempt_reconnect)
+	# No time_left check: a zero-delay timer (a stall-induced fast reconnect, or one
+	# pulled forward by _on_app_resumed) has not fired yet either, and leaving it
+	# connected lets it call _attempt_reconnect after the cancel — which would null a
+	# *newer* cycle's _reconnect_timer and connect a second time. is_connected already
+	# makes this a no-op for a timer that has fired.
+	if _reconnect_timer != null and _reconnect_timer.timeout.is_connected(_attempt_reconnect):
+		_reconnect_timer.timeout.disconnect(_attempt_reconnect)
 	_reconnect_timer = null
 
 

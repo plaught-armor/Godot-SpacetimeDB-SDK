@@ -1,0 +1,223 @@
+{
+	"sections": [
+		{
+			"Typespace": {
+				"types": [
+					{
+						"Product": {
+							"elements": [
+								{
+									"name": {
+										"some": "id"
+									},
+									"algebraic_type": {
+										"U64": []
+									}
+								}
+							]
+						}
+					}
+				]
+			}
+		},
+		{
+			"Types": [
+				{
+					"source_name": {
+						"scope": [],
+						"source_name": "RootThing"
+					},
+					"ty": 0,
+					"custom_ordering": true
+				}
+			]
+		},
+		{
+			"Tables": [
+				{
+					"source_name": "RootThing",
+					"product_type_ref": 0,
+					"primary_key": [],
+					"indexes": [],
+					"constraints": [],
+					"sequences": [],
+					"table_type": {
+						"User": []
+					},
+					"table_access": {
+						"Public": []
+					},
+					"default_values": [],
+					"is_event": false
+				}
+			]
+		},
+		{
+			"Reducers": [
+				{
+					"source_name": "rootInsert",
+					"params": {
+						"elements": [
+							{
+								"name": {
+									"some": "n"
+								},
+								"algebraic_type": {
+									"U64": []
+								}
+							}
+						]
+					},
+					"visibility": {
+						"ClientCallable": []
+					},
+					"ok_return_type": {
+						"Product": {
+							"elements": []
+						}
+					},
+					"err_return_type": {
+						"String": []
+					}
+				}
+			]
+		},
+		{
+			"ExplicitNames": {
+				"entries": [
+					{
+						"Table": {
+							"source_name": "RootThing",
+							"canonical_name": "root_thing"
+						}
+					},
+					{
+						"Function": {
+							"source_name": "rootInsert",
+							"canonical_name": "root_insert"
+						}
+					}
+				]
+			}
+		},
+		{
+			"Submodules": [
+				{
+					"namespace": "lib",
+					"module": {
+						"sections": [
+							{
+								"Typespace": {
+									"types": [
+										{
+											"Product": {
+												"elements": [
+													{
+														"name": {
+															"some": "id"
+														},
+														"algebraic_type": {
+															"U64": []
+														}
+													},
+													{
+														"name": {
+															"some": "value"
+														},
+														"algebraic_type": {
+															"String": []
+														}
+													}
+												]
+											}
+										}
+									]
+								}
+							},
+							{
+								"Types": [
+									{
+										"source_name": {
+											"scope": [],
+											"source_name": "LibData"
+										},
+										"ty": 0,
+										"custom_ordering": true
+									}
+								]
+							},
+							{
+								"Tables": [
+									{
+										"source_name": "LibData",
+										"product_type_ref": 0,
+										"primary_key": [],
+										"indexes": [],
+										"constraints": [],
+										"sequences": [],
+										"table_type": {
+											"User": []
+										},
+										"table_access": {
+											"Public": []
+										},
+										"default_values": [],
+										"is_event": false
+									}
+								]
+							},
+							{
+								"Reducers": [
+									{
+										"source_name": "libInsert",
+										"params": {
+											"elements": [
+												{
+													"name": {
+														"some": "value"
+													},
+													"algebraic_type": {
+														"String": []
+													}
+												}
+											]
+										},
+										"visibility": {
+											"ClientCallable": []
+										},
+										"ok_return_type": {
+											"Product": {
+												"elements": []
+											}
+										},
+										"err_return_type": {
+											"String": []
+										}
+									}
+								]
+							},
+							{
+								"ExplicitNames": {
+									"entries": [
+										{
+											"Table": {
+												"source_name": "LibData",
+												"canonical_name": "lib_data"
+											}
+										},
+										{
+											"Function": {
+												"source_name": "libInsert",
+												"canonical_name": "lib_insert"
+											}
+										}
+									]
+								}
+							}
+						]
+					}
+				}
+			]
+		}
+	]
+}

@@ -1,0 +1,12 @@
+[package]
+name = "submodule-probe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spacetimedb-lib = { path = "../../../SpacetimeDB/crates/lib" }
+spacetimedb-sats = { path = "../../../SpacetimeDB/crates/sats" }
+spacetimedb-schema = { path = "../../../SpacetimeDB/crates/schema" }
+serde_json = "1"
+
+[workspace]

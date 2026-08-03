@@ -75,6 +75,16 @@ var reconnect_max_delay: float = 30.0
 var reconnect_backoff_multiplier: float = 2.0
 ## Fraction of the computed delay used as random jitter ([code]0.0[/code]–[code]1.0[/code]).
 var reconnect_jitter_fraction: float = 0.5
+## If [code]true[/code], regaining application focus fires a reconnect attempt that is
+## still waiting out its backoff delay, instead of letting the delay run down.
+##
+## A backgrounded app's frame loop is throttled (heavily so in a web export's
+## background tab, and stopped outright while a mobile app is suspended), which stalls
+## the [SceneTreeTimer] the backoff runs on: a drop that happens while the app is in
+## the background would otherwise sit unreconnected for the remainder of a delay that
+## barely ticks. The attempt counter is not reset, so [member max_reconnect_attempts]
+## still bounds the cycle.
+var reconnect_on_app_resume: bool = true
 
 
 ## Convenience setter — sets both [member inbound_buffer_size] and [member outbound_buffer_size].

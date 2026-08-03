@@ -90,6 +90,24 @@ Two things worth knowing:
 
 If you would rather not see the underscore, rename the column or reducer in your module.
 
+### When two names escape to the same identifier
+
+The escapes above guarantee the name they produce is free on the *base class*, but they
+cannot see a *sibling* that escaped to the same string. A module with a reducer `set`
+(escaped to `set_`) **and** a reducer literally named `set_` produces `func set_()`
+twice, and Godot refuses to load the whole script:
+
+```
+Parse Error: Function "set_" has the same name as a previously declared function.
+```
+
+Codegen now detects this and fails the run with the file and the identifier, instead of
+letting you find out at load time from a message that names neither of the two module
+names involved. The fix is to rename one of them in your module — codegen deliberately
+does not pick a winner for you, since which of the two ends up with the mangled spelling
+is your call. The same applies to a column pair like `count` / `count_` and a table pair
+like `table_names` / `table_names_`.
+
 ## Enum deduplication
 
 When generating bindings, the codegen automatically scans your project for existing GDScript enums that match enums defined in your SpacetimeDB module. If an enum with the same name and matching variants is found, the codegen will use your project's enum instead of generating a duplicate.

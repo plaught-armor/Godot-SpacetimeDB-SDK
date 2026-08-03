@@ -2,6 +2,58 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Regaining focus fires a stalled reconnect immediately.** A backgrounded app's
+  frame loop is throttled (a web export in a background tab) or stopped outright
+  (a suspended mobile app), which stalls the `SceneTreeTimer` the reconnect
+  backoff runs on — a drop that happens while the player is away would sit
+  unreconnected for the remainder of a delay that barely ticks, well after they
+  are looking at the game again. The client now listens for
+  `NOTIFICATION_APPLICATION_FOCUS_IN` / `NOTIFICATION_APPLICATION_RESUMED` /
+  `NOTIFICATION_WM_WINDOW_FOCUS_IN` (which one arrives depends on the platform)
+  and re-schedules a waiting attempt with no delay. The attempt keeps its own
+  number rather than consuming or resetting one, so `max_reconnect_attempts`
+  still bounds the cycle and alt-tabbing cannot extend it. New option
+  `SpacetimeDBConnectionOptions.reconnect_on_app_resume` (default `true`) turns
+  it off. The decision is a pure `SpacetimeDBClient.should_resume_reconnect()`,
+  covered by `tests/test_resume_reconnect.gd`.
+
+### Fixed
+- **Codegen now fails loudly when two module names escape to one GDScript
+  identifier.** Every name escape guarantees its result is free on the *base*
+  class, but none of them could see a *sibling* that escaped to the same string:
+  a module with a reducer `set` (escaped to `set_`, because `Object.set` is
+  taken) alongside a reducer literally named `set_` emitted `func set_()` twice.
+  Godot then refuses the script — `Parse Error: Function "set_" has the same name
+  as a previously declared function` — and since a module's reducers share one
+  class, every reducer in the module went down with it, at load time, from a
+  message naming neither of the two module names. The generated output is now
+  scanned for duplicate top-level members and the run fails with the file and the
+  identifier. Deliberately not auto-renamed: which of `set` / `set_` gets the
+  mangled spelling is the module author's call. Same shape covers column pairs
+  (`count` / `count_`) and table pairs (`table_names` / `table_names_`). New
+  `tests/test_member_collision_gate.gd` plus a `vcollide` fixture that reproduces
+  it through the real generator.
+
+- **Cancelling a reconnection now detaches a zero-delay backoff timer too.**
+  `_cancel_reconnection()` only disconnected the pending timer when it still had
+  time left, so a zero-delay one — previously only produced by the stall-induced
+  fast path, and now by every resume — stayed connected and could call
+  `_attempt_reconnect` after the cancel, dropping a newer cycle's timer reference
+  and connecting a second time. `is_connected` already makes the disconnect a
+  no-op for a timer that has fired, so the time check was doing nothing but
+  letting that case through.
+
+### Changed
+- Verified the SDK end-to-end against **SpacetimeDB 2.7.1**; the tested range is
+  now `2.2.0`–`2.7.1`. No code change was needed — the client-facing wire format
+  is byte-identical to 2.7.0 (2.7.1 touched metrics, an MCP route, and HTTP
+  handler plumbing). Live suites re-run against a 2.7.1 server with modules built
+  against the `2.7.1` bindings: types 6/6, behavior 15/15, enum-with-payload 1/1,
+  anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1.
+
 ## [2.6.0] - 2026-07-28
 
 ### Fixed
