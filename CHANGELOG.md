@@ -33,6 +33,28 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A reconnect no longer strands rows that were deleted while the client was away.**
+  `_prepare_for_reconnect()` wiped the local cache with
+  `LocalDatabase.clear_all_tables()`, which empties the storage and reports nothing.
+  The resubscribe that follows re-delivers only the rows that still exist, so a row
+  deleted server-side during the outage left the mirror with no `on_delete` and no
+  `row_deleted` — and a consumer keyed by primary key kept whatever it had built for
+  that row for the rest of the session. In the Blackholio example, food eaten and
+  players who left during a drop stayed on screen after every auto-reconnect. The
+  wipe now runs through `clear_local_db()`, which reports every cached row as deleted
+  and emits one `row_transactions_completed` per non-empty table, so a reconnect
+  reads as a teardown followed by a rebuild from the resubscribe. It runs last in
+  the reconnect preparation, after the handles are ended and the queues are dropped,
+  so a listener that reads client state or calls back in sees the finished state.
+  `clear_all_tables()` stays available for a caller that is rebuilding every
+  consumer's view itself, with its silence now documented. Because the wipe is last,
+  a subscription handle's `end` signal now fires while the pre-drop rows are still
+  cached, with the deletes following right after, and a listener that cancels the
+  reconnect from inside the wipe no longer has the attempt continue around it.
+  Covered by
+  `tests/test_reconnect_row_deletes.gd`; the contract is written up under "Row
+  callbacks across a reconnect" in `docs/api.md`.
+
 - **A row updated before the client had it can now be deleted.** In
   `LocalDatabase.apply_table_update()`, a delete+insert of the same primary key —
   the server's encoding for an update — for a key the cache did not hold took

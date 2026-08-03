@@ -126,7 +126,7 @@ func _run(_identity: PackedByteArray, _token: String) -> void:
 	)
 	# The real question: did the resubscribe actually refill the cache the reconnect
 	# cleared, or did it just reopen a socket? _prepare_for_reconnect calls
-	# clear_all_tables(), and only a SubscribeApplied refills it.
+	# clear_local_db(), and only a SubscribeApplied refills it.
 	_check("config row is back in the cache", SpacetimeDB.Blackholio.db.config.count(), 1)
 
 	# Everything the fixture needs is captured; the reducer call below is a

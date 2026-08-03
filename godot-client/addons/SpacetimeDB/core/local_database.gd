@@ -732,8 +732,10 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 
 
 ## Wipes every cached row from all tables, emitting a delete callback per row and a
-## transactions-completed callback per non-empty table. Used to reset the mirror
-## (e.g. before a fresh subscription after reconnecting).
+## transactions-completed callback per non-empty table. This is how the client resets
+## the mirror before a reconnect's resubscribe refills it: the resubscribe re-delivers
+## only the rows that still exist, so reporting the wipe is what lets a consumer drop
+## whatever it built for a row that was deleted while the client was away.
 func clear_local_db() -> void:
 	# Snapshot the rows, then clear the INNER containers (keeping the outer table keys
 	# that _init pre-populates and apply_table_update's known-table guard relies on —
@@ -901,7 +903,10 @@ func count_where(table_name: StringName, predicate: Callable) -> int:
 	return c
 
 
-## Erases all rows from every table. Used during reconnection to reset state.
+## Erases all rows from every table WITHOUT reporting them: no delete callback, no
+## signal, no transactions-completed. Row listeners are left believing they still hold
+## rows that are gone, so reach for [method clear_local_db] unless the caller is itself
+## rebuilding every consumer's view.
 func clear_all_tables() -> void:
 	for table_name: StringName in _tables:
 		_tables[table_name].clear()

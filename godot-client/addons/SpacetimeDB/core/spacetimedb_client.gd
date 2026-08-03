@@ -1564,6 +1564,14 @@ func _attempt_reconnect() -> void:
 
 	_prepare_for_reconnect()
 
+	# Re-checked because _prepare_for_reconnect reports the cache wipe to row listeners,
+	# and a listener is game code: one that calls disconnect_db() has cancelled this
+	# cycle, and opening the socket anyway would be reconnecting against the caller's
+	# wishes.
+	if _reconnect_state != _ReconnectState.RECONNECTING:
+		print_log("SpacetimeDBClient: Reconnect cancelled while the cache wipe was reported.")
+		return
+
 	var conn_id: String = _generate_connection_id()
 	_connection.set_token(_token)
 
@@ -1572,9 +1580,6 @@ func _attempt_reconnect() -> void:
 
 
 func _prepare_for_reconnect() -> void:
-	if _local_db:
-		_local_db.clear_all_tables()
-
 	_reducer_result_cache.clear()
 	_procedure_result_cache.clear()
 	# Cleared so a post-reconnect request_id (counter resets to 0 below) can't read a
@@ -1609,6 +1614,17 @@ func _prepare_for_reconnect() -> void:
 	# to the fresh post-reconnect database (main-thread-only state).
 	_drain_batch = []
 	_drain_cursor = 0
+
+	# The cache wipe goes LAST, because it is the one step here that runs game code:
+	# clear_local_db reports every cached row as deleted, and a listener that reads
+	# client state (or calls back in) has to see the finished reconnect-prep state,
+	# not a half-reset one. Reporting the rows is the point — the resubscribe only
+	# re-delivers rows that still exist, so a row deleted server-side while the
+	# client was away would otherwise leave the mirror with nothing to tell a
+	# consumer keyed by primary key, which would hold what it spawned for that row
+	# for the rest of the session. Rows that do come back arrive as inserts again.
+	if _local_db:
+		_local_db.clear_local_db()
 
 
 func _cancel_reconnection() -> void:

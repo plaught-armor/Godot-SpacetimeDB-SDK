@@ -218,6 +218,25 @@ Waits for the procedure call response and returns the raw BSATN-encoded return b
 | `reconnected` | Emitted after a successful reconnection and all subscriptions are restored. |
 | `reconnect_failed` | Emitted when all reconnection attempts are exhausted. |
 
+### Row callbacks across a reconnect
+
+Each reconnection attempt resets the local cache before resubscribing, and the reset is
+reported: every cached row fires `row_before_delete` / `row_deleted` (and its per-table
+`on_delete` listeners), followed by one `row_transactions_completed` per non-empty
+table. The resubscribe then re-delivers the rows that still exist as inserts.
+
+So a reconnect looks like a full teardown and rebuild to row listeners, not a diff. That
+is deliberate: the resubscribe only carries rows that still exist, so a row deleted
+server-side while the client was away has nothing left to announce it — without the
+teardown, anything you spawned for that row would stay alive for the rest of the session.
+Spawn per `on_insert` and free per `on_delete` and this takes care of itself. Key what you
+spawn by primary key: a row that survives the reconnect arrives as an insert again, not an
+update.
+
+The wipe is the last step of the reconnect preparation, so a subscription handle's `end`
+signal fires *before* it — a handler there still sees the pre-drop rows, and the
+`row_deleted` run for those same rows follows immediately after.
+
 ## Generated `ModuleClient` class
 
 **Inherits:** [SpacetimeDBClient](#spacetimedbclient-class) < Node
