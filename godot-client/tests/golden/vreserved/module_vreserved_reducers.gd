@@ -7,6 +7,7 @@ var _client: SpacetimeDBClient
 func _init(p_client: SpacetimeDBClient) -> void:
 	_client = p_client
 ## 0. id: int [br]
-func match_(id: int) -> SpacetimeDBReducerCall:
-	return _client.call_reducer('match', [id], [&'u32'], &'')
+## 1. trait_: int [br]
+func match_(id: int, trait_: int) -> SpacetimeDBReducerCall:
+	return _client.call_reducer('match', [id, trait_], [&'u32', &'u32'], &'')
 

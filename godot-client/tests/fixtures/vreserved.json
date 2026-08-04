@@ -8,7 +8,9 @@
 							"elements": [
 								{ "name": { "some": "func" }, "algebraic_type": { "U32": [] } },
 								{ "name": { "some": "signal" }, "algebraic_type": { "U32": [] } },
-								{ "name": { "some": "class" }, "algebraic_type": { "U32": [] } }
+								{ "name": { "some": "class" }, "algebraic_type": { "U32": [] } },
+								{ "name": { "some": "trait" }, "algebraic_type": { "U32": [] } },
+								{ "name": { "some": "namespace" }, "algebraic_type": { "U32": [] } }
 							]
 						}
 					}
@@ -54,7 +56,8 @@
 					"source_name": "match",
 					"params": {
 						"elements": [
-							{ "name": { "some": "id" }, "algebraic_type": { "U32": [] } }
+							{ "name": { "some": "id" }, "algebraic_type": { "U32": [] } },
+							{ "name": { "some": "trait" }, "algebraic_type": { "U32": [] } }
 						]
 					},
 					"visibility": { "ClientCallable": [] },

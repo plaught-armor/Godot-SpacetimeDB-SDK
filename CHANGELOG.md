@@ -33,6 +33,14 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **Codegen escapes columns named `namespace` or `trait`.** Both are GDScript reserved
+  words that were missing from the escape list, and both are ordinary identifiers on the
+  server side — `namespace` in a Rust module, `trait` in a C# one. A module with either
+  as a column, parameter, reducer or table name emitted `var namespace: int`, which the
+  parser answers with `Expected variable name after "var"`, taking that module's whole
+  bindings down rather than just the one field. They are now escaped to `namespace_` /
+  `trait_` like every other reserved word. The `vreserved` codegen fixture covers both.
+
 - **A successful REST reducer call is no longer reported as a failure.**
   `SpacetimeDBRestAPI.call_reducer()` required the response body to be a JSON object,
   and a reducer that commits answers `POST /v1/database/<db>/call/<reducer>` with

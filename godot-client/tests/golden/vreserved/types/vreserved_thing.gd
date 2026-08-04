@@ -6,18 +6,24 @@ class_name VreservedThing extends _ModuleTableType
 const module_name : String = "Vreserved"
 const table_names: Array[StringName] = [&'alpha', &'signal']
 const PRIMARY_KEY: StringName = &"func_"
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"func_": &"u32", &"signal_": &"u32", &"class_": &"u32" }
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"func_": &"u32", &"signal_": &"u32", &"class_": &"u32", &"trait_": &"u32", &"namespace_": &"u32" }
 
 @export var func_: int
 @export var signal_: int
 @export var class_: int
+@export var trait_: int
+@export var namespace_: int
 
 ## 0. func_: int[br]
 ## 1. signal_: int[br]
 ## 2. class_: int[br]
-static func create(p_func_: int, p_signal_: int, p_class_: int) -> VreservedThing:
+## 3. trait_: int[br]
+## 4. namespace_: int[br]
+static func create(p_func_: int, p_signal_: int, p_class_: int, p_trait_: int, p_namespace_: int) -> VreservedThing:
 	var result: VreservedThing = VreservedThing.new()
 	result.func_ = p_func_
 	result.signal_ = p_signal_
 	result.class_ = p_class_
+	result.trait_ = p_trait_
+	result.namespace_ = p_namespace_
 	return result
