@@ -26,6 +26,13 @@ VERBOSE=1 ./run_tests.sh             # stream each test's full output
 
 The runner launches one Godot process per test so a crash in one test cannot
 take down the others. It exits `0` when every test passes and `1` if any fail.
+A test is also failed when its output carries a `SCRIPT ERROR`, even if it exited
+`0`: a GDScript runtime fault aborts the function it happened in but not the
+process, so the test's own `quit(fails)` still reports whatever count it had
+reached before the fault — and the assertions it never got to look like passes.
+`tests/_runner_fault_fixture.gd` is that shape on purpose; run it by name to check
+the detection still works. Deliberate `push_error` output prints `ERROR` rather
+than `SCRIPT ERROR` and does not fail a test.
 
 A test may also be a `test_*.tscn` scene whose root node self-asserts in
 `_ready` and calls `get_tree().quit(failures)`. Use that form only when the code
