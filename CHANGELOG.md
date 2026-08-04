@@ -33,6 +33,17 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A client running without threads now gets the same reconnect boundary as one with
+  them.** `_prepare_for_reconnect()` put its whole session-boundary cleanup behind
+  `if use_threading`, so a threadless client kept two things across a reconnect: messages
+  already parsed out of the dying session, which were then drained into the fresh mirror
+  (the epoch check in the worker exists to stop exactly that), and the deserializer's
+  partial-message buffer, so the first packet of the new session parsed against a prefix
+  belonging to the old one — `reset_stream_state()` was only ever called from the worker
+  thread. Threadless is not a corner case: `_setup_threading()` disables threading on any
+  build without thread support, so every threadless web export was on this path. Covered
+  by `tests/test_threadless_reconnect.gd`.
+
 - **A `RowReceiver` now unsubscribes from the table it subscribed to.** Its listeners are
   registered under the name `_subscribe_to_table()` was called with, but `_exit_tree()`
   unsubscribed whatever `selected_table_name` held at that moment. Assigning

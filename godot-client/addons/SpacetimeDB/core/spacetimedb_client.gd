@@ -1744,6 +1744,20 @@ func _prepare_for_reconnect() -> void:
 		_result_mutex.lock()
 		_result_queue.clear()
 		_result_mutex.unlock()
+	else:
+		# Same session boundary, without a worker to enforce it. Threadless is not an
+		# exotic setup — _setup_threading disables threading on a build with no thread
+		# support, so every threadless web export lands here.
+		#
+		# The queued results were parsed out of the dying session and would otherwise be
+		# drained into the fresh mirror, which is exactly what the worker's epoch check
+		# prevents on the threaded side. And a socket that dies mid-message leaves the
+		# front of that message in the deserializer, so the first packet of the new
+		# session would parse against a prefix belonging to the old one; the worker resets
+		# the stream on an epoch change, and nothing did it here.
+		_result_queue.clear()
+		if _deserializer:
+			_deserializer.reset_stream_state()
 
 	# Drop any in-flight batch from the old session so its messages aren't applied
 	# to the fresh post-reconnect database (main-thread-only state).
