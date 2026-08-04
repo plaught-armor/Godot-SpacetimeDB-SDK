@@ -23,7 +23,18 @@ class _TestEnum:
 # delegation (tag/length byte dropped, wire desynced from the reader).
 class _PayloadEnum:
 	extends RustEnum
-	const ENUM_OPTIONS: Array[StringName] = [&"opt_string", &"vec_u32", &"opt_u32", &"vec_opt_u32"]
+	const ENUM_OPTIONS: Array[StringName] = [
+		&"opt_string",
+		&"vec_u32",
+		&"opt_u32",
+		&"vec_opt_u32",
+		# Vec<u8> is the one prefixed type the reader resolves with a primitive
+		# reader instead of the generic vec_ path, so it comes back as a
+		# PackedByteArray rather than an Array. The writer used to demand an Array
+		# for anything vec_-prefixed, which made that value unwritable.
+		&"vec_u8",
+		&"opt_vec_u8",
+	]
 
 
 func _initialize() -> void:
@@ -43,6 +54,13 @@ func _initialize() -> void:
 	# Compound prefix Vec<Option<u32>> — codegen emits these; pins the recursive
 	# prefix peeling in _write_value_from_bsatn_type / _read_value_from_bsatn_type.
 	fails += _roundtrip_vec_opt_u32("vec_opt_u32", [Option.some(1), Option.none(), Option.some(3)] as Array)
+	# Vec<u8> in both the shape the reader hands back (PackedByteArray) and the
+	# Array shape a caller may build by hand — both must reach the same bytes.
+	fails += _roundtrip_vec_u8("vec_u8 packed", PackedByteArray([1, 2, 250]))
+	fails += _roundtrip_vec_u8("vec_u8 empty", PackedByteArray())
+	fails += _roundtrip_vec_u8("vec_u8 array", [1, 2, 250] as Array)
+	fails += _roundtrip_opt_vec_u8("opt_vec_u8 some", Option.some(PackedByteArray([7, 8])))
+	fails += _roundtrip_opt_vec_u8("opt_vec_u8 none", Option.none())
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -152,6 +170,32 @@ func _roundtrip_vec_opt_u32(label: String, want: Array) -> int:
 				f += _check_b("%s[%d]: none" % [label, i], (got_opt as Option).is_none(), want_opt.is_none())
 				if not want_opt.is_none():
 					f += _check_i("%s[%d]: val" % [label, i], (got_opt as Option).unwrap(), want_opt.unwrap())
+	return f
+
+
+# The reader always produces a PackedByteArray for vec_u8, whatever the writer was
+# handed, so compare against the bytes rather than the input container.
+func _roundtrip_vec_u8(label: String, payload: Variant) -> int:
+	var want: PackedByteArray = PackedByteArray(payload)
+	var dst: _PayloadEnum = _codec(4, payload)
+	var f: int = 0
+	f += _check_b("%s: tag" % label, dst.value == 4, true)
+	f += _check_b("%s: is PackedByteArray" % label, dst.data is PackedByteArray, true)
+	if dst.data is PackedByteArray:
+		f += _check_b("%s: bytes" % label, (dst.data as PackedByteArray) == want, true)
+	return f
+
+
+func _roundtrip_opt_vec_u8(label: String, opt_in: Option) -> int:
+	var dst: _PayloadEnum = _codec(5, opt_in)
+	var f: int = 0
+	f += _check_b("%s: tag" % label, dst.value == 5, true)
+	f += _check_b("%s: is Option" % label, dst.data is Option, true)
+	if dst.data is Option:
+		var got: Option = dst.data
+		f += _check_b("%s: none" % label, got.is_none(), opt_in.is_none())
+		if not opt_in.is_none():
+			f += _check_b("%s: bytes" % label, got.unwrap() == opt_in.unwrap(), true)
 	return f
 
 
