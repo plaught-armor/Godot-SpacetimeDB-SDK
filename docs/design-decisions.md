@@ -30,6 +30,40 @@ If a future protocol (v4) re-adds caller identity to `TransactionUpdate`, an
 `EventContext`-style callback argument becomes worth building. Until then it has
 no data to carry beyond what the reducer handle already gives you.
 
+## Blocked by the engine — not actionable client-side
+
+- **A message the server sends immediately before closing is lost.** Godot's
+  `WebSocketPeer` discards messages it has already received but not yet handed
+  over, if the remote's close frame arrives in the same poll. `WSLPeer::poll()`
+  runs `wslay_event_recv()`, which queues the data frames into `in_buffer` and
+  auto-replies to the close; the next lines see `close_sent && close_received`,
+  call `close(-1)`, and that calls `in_buffer.clear()`
+  (`modules/websocket/wsl_peer.cpp`). The whole close handshake therefore
+  completes inside one `poll()` — by the time any GDScript runs,
+  `get_available_packet_count()` is already `0`. There is no intermediate state
+  to drain from and no polling cadence that avoids it.
+
+  Two independent locks, in fact: even without the clear, both `get_packet()` and
+  `get_available_packet_count()` refuse to hand anything over once `ready_state`
+  is not `STATE_OPEN`, and the transition happens in the same call. A faster poll,
+  an earlier read, a client-initiated close, and every `WebSocketPeer` setting all
+  fail against that; recovering these bytes would take a WebSocket implementation
+  over raw `StreamPeerTCP`.
+
+  It lands here rather than staying theoretical because SpacetimeDB deliberately
+  flushes its pending frames immediately before the close frame — the close arm
+  in `crates/client-api/src/routes/subscribe.rs` drains `frames_rx` and *then*
+  sends the close, precisely so the client is not left with partial messages.
+  Those drained frames are the ones the engine throws away.
+
+  Measured against a local WebSocket server (Godot 4.8.dev): three messages sent
+  and closed in the same flush deliver **0 of 3**; the same three with one poll of
+  separation deliver **3 of 3**. `godot-client/tests/_repro_ws_close_drops_final_messages.gd`
+  is that measurement, kept out of the suite (`_` prefix) because it asserts
+  engine behaviour rather than this SDK's. Re-run it after a Godot upgrade — it
+  reports `ENGINE FIXED` and exits non-zero once the behaviour changes, at which
+  point this section and the README caveat come out.
+
 ## Built
 
 - **Btree range queries** — `filter_range(from, to)` (inclusive) plus the one-sided

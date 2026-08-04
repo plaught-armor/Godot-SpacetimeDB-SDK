@@ -12,6 +12,7 @@ Below = only what's specific to this SpacetimeDB SDK, or the project workflow. E
 - **Enum mismatch at reducer call sites** — cast GDScript enums to `int` when passing to a generated reducer. Wire format is int; the enum type doesn't survive the boundary.
 - **BSATN deserialization is a real Variant boundary** — row callbacks / decoded rows arrive untyped. Convert to the typed form at the boundary, then keep downstream code typed (reviewer H10/H10b treat this as a sanctioned exception, not a license to stay untyped).
 - **Generated bindings** at `godot-client/spacetime_bindings/` — regenerate when codegen changes; don't hand-edit. After a deliberate codegen change, regen goldens (`STDB_REGEN_GOLDEN=1`) and review the diff.
+- **A message the server sends right before closing never reaches the SDK** — Godot's `WebSocketPeer` calls `in_buffer.clear()` when a clean close completes, and the whole close handshake happens inside one `poll()`, so a data frame that arrived in the same read is gone before any script runs. Engine-side, not fixable here; don't go looking for a drain the SDK is missing. Reproducer + full write-up: `godot-client/tests/_repro_ws_close_drops_final_messages.gd` and `docs/design-decisions.md`.
 
 ## Project workflow
 
