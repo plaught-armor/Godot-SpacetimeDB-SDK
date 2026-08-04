@@ -722,7 +722,12 @@ func _create_serialization_plan(script: Script) -> Array:
 
 		if not writer_callable.is_valid():
 			_set_error("Unsupported property or missing writer for '%s' in script '%s'" % [prop_name, script.resource_path])
-			_serialization_plan_cache[script] = []
+			# Leave the cache untouched. A plan is legitimately empty for a schema with
+			# no storage fields, so the cache cannot tell that apart from a failed
+			# build: caching [] here made the *first* attempt fail loudly and every
+			# later one write zero bytes and report success, silently truncating the
+			# payload (a nested reducer-argument struct becomes an empty product).
+			# The deserializer's mirror already returns without caching.
 			return []
 
 		# Pre-bind static context args for writers that need them, so the hot loop
