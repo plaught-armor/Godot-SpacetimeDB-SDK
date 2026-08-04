@@ -33,16 +33,24 @@ func _on_insert(r: _ModuleTableType) -> void:
 	_cache_ref[col_val] = r
 
 
-## Update listener — moves the row to its new key when the key changed.
+## Update listener — moves the row to its new key when the key changed. The old key is
+## given up only if this row is still the one holding it: another row may have taken it
+## already, since one transaction can hand a unique value over and [LocalDatabase]
+## applies its whole insert list before any delete.
 func _on_update(p: _ModuleTableType, r: _ModuleTableType) -> void:
 	var previous_col_val: Variant = p[_field_name]
 	var col_val: Variant = r[_field_name]
-	if previous_col_val != col_val:
+	if previous_col_val != col_val and _cache_ref.get(previous_col_val) == p:
 		_cache_ref.erase(previous_col_val)
 	_cache_ref[col_val] = r
 
 
-## Delete listener — drops the row's key from the cache.
+## Delete listener — drops the row's key from the cache, unless the key has already been
+## handed to another row. A transaction that deletes the holder of a unique value and
+## inserts its successor in the same batch arrives here with the successor already
+## cached (inserts are applied first), and erasing by key alone dropped it — leaving the
+## generated find() returning null for a row iter() still yields, for good.
 func _on_delete(r: _ModuleTableType) -> void:
 	var col_val: Variant = r[_field_name]
-	_cache_ref.erase(col_val)
+	if _cache_ref.get(col_val) == r:
+		_cache_ref.erase(col_val)

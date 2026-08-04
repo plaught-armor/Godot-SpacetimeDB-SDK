@@ -33,6 +33,22 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A unique index no longer loses a row when a transaction hands its key over.**
+  `_ModuleTableUniqueIndex` erased its cache entry by key on delete, without checking
+  whose row was sitting there. `LocalDatabase` applies a table update's whole insert
+  list before any of its deletes, so a transaction that deletes the holder of a unique
+  value and inserts its successor in the same batch — a rename, a seat or slot handed
+  from one row to another — arrived with the successor already cached, and the delete
+  dropped it. The generated `db.<table>.<column>.find(value)` then returned `null` for
+  a row `iter()` still yields, for the rest of the session (nothing re-adds it until
+  that row is updated again). The update listener had the same hole for the key it
+  gives up. Both now release a key only while this row still holds it. Blackholio never
+  hit it because each of its unique columns is also the primary key, which cannot be
+  handed over; a unique column that is not the primary key can. Covered by four new
+  cases in `tests/test_unique_index_cache.gd`. The btree index was already correct — it
+  erases the row from its bucket by identity, which targets the row being deleted, so a
+  successor sharing the key survives.
+
 - **An auth token can no longer inject headers into the WebSocket handshake.** The
   token is spliced into an `Authorization: Bearer <token>` entry in
   `WebSocketPeer.handshake_headers`, and Godot writes those out verbatim
