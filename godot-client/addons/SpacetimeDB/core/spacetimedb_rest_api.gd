@@ -10,8 +10,12 @@ extends Node
 signal token_received(token: String)
 ## Emitted when the token request fails.
 signal token_request_failed(error_code: int, response_body: String)
-## Emitted when a REST-based reducer call succeeds.
-signal reducer_call_completed(result: Dictionary)
+## Emitted when a REST-based reducer call succeeds. [param result] is [code]null[/code]
+## for a reducer — one that commits answers with an empty body, since a reducer has no
+## return value over HTTP. A procedure answers with the JSON encoding of its return
+## value, which is any JSON value (object, array, number, string, bool), so [param result]
+## is typed [Variant] rather than [Dictionary].
+signal reducer_call_completed(result: Variant)
 ## Emitted when a REST-based reducer call fails.
 signal reducer_call_failed(error_code: int, response_body: String)
 
@@ -178,9 +182,10 @@ func _handle_reducer_response(
 	_headers: PackedStringArray,
 	body: PackedByteArray,
 ) -> void:
-	# (Logic for handling reducer response - remains the same as before)
 	var body_text: String = body.get_string_from_utf8()
 	if result_code != HTTPRequest.RESULT_SUCCESS or response_code >= 400:
+		# A reducer that returns an error answers 530, which lands here with the
+		# module's message as the body.
 		printerr(
 			"SpacetimeDBRestAPI: Reducer call failed. Result: %d, Code: %d"
 			% [result_code, response_code]
@@ -189,13 +194,28 @@ func _handle_reducer_response(
 		reducer_call_failed.emit(response_code, body_text)
 		return
 
-	var json: Variant = JSON.parse_string(body_text)
-	if not (json is Dictionary):
-		printerr("SpacetimeDBRestAPI: reducer response was not a JSON object: ", body_text)
+	# A committed reducer answers 200 with an empty body — it has no return value over
+	# HTTP. Demanding a JSON object here reported every successful call as a failure,
+	# so reducer_call_completed could not fire for a reducer at all.
+	if body_text.is_empty():
+		reducer_call_completed.emit(null)
+		return
+
+	# Only a procedure sends a body, and it is the JSON encoding of its return value —
+	# any JSON value, not necessarily an object. Parse through a JSON instance rather
+	# than JSON.parse_string, whose null return cannot tell a literal `null` body from
+	# a parse failure.
+	var parser: JSON = JSON.new()
+	var parse_result: Error = parser.parse(body_text)
+	if parse_result != OK:
+		printerr(
+			"SpacetimeDBRestAPI: reducer response was not valid JSON (line %d: %s): %s"
+			% [parser.get_error_line(), parser.get_error_message(), body_text]
+		)
 		reducer_call_failed.emit(response_code, "Invalid JSON response")
 		return
 
-	reducer_call_completed.emit(json)
+	reducer_call_completed.emit(parser.data)
 
 
 # --- Request Completion Handler ---

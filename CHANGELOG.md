@@ -33,6 +33,42 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A successful REST reducer call is no longer reported as a failure.**
+  `SpacetimeDBRestAPI.call_reducer()` required the response body to be a JSON object,
+  and a reducer that commits answers `POST /v1/database/<db>/call/<reducer>` with
+  `200` and an **empty** body — so every successful call emitted
+  `reducer_call_failed(200, "Invalid JSON response")` and `reducer_call_completed`
+  could not fire for a reducer at all. A body only comes back for a procedure, and it
+  is the JSON encoding of the return value, which is any JSON value rather than
+  necessarily an object. `reducer_call_completed` now carries a `Variant`: `null` for
+  a reducer, the decoded return value for a procedure. **Breaking for a typed handler:**
+  the signal's parameter was declared `Dictionary`, so a listener written as
+  `func _on(result: Dictionary)` must widen to `Variant` — connecting is unaffected,
+  but dispatch now hands it `null` or a non-object value. Genuine failures are unchanged
+  — a reducer that returns an error still answers `530` with its message, which
+  routes to `reducer_call_failed` as before. Covered by
+  `tests/test_rest_reducer_response.gd`.
+
+- **A `Vec<u8>` read off the wire can be serialized back.** The BSATN reader resolves
+  a primitive reader before it looks at the `vec_` / `opt_` type prefixes, so `vec_u8`
+  decodes to a `PackedByteArray`; the writer checked the prefix first and rejected
+  anything that was not an `Array`. An `Option<Vec<u8>>` field or a `Vec<u8>` enum
+  variant therefore could not be written back — reading such a row and handing it to a
+  reducer failed with `Expected Array for BSATN type 'vec_u8', got PackedByteArray`.
+  Plain `Array` fields of `Vec<u8>` were never affected (codegen labels those with the
+  element type). `vec_u8` is the only primitive whose name carries one of those
+  prefixes, so this was the only place the two orderings could disagree.
+
+- **A BSATN serialization plan that fails to build no longer caches as an empty one.**
+  The plan cache tells "no storage fields" from "not built yet" by key presence, and a
+  failed build stored `[]` — so the first attempt to serialize a schema with an
+  unsupported property failed loudly and **every later one wrote zero bytes and
+  reported success**. Reachable with a user struct passed as a reducer argument: after
+  the first send named the offending field, every subsequent send silently shipped an
+  empty product in its place. The failure path now leaves the cache untouched, so each
+  attempt rebuilds and fails the same way (matching the deserializer, which already
+  did).
+
 - **`SpacetimeDBQuery.where_in()` now emits SQL the server can parse.** It produced
   `field IN (v1, v2, ...)`, and SpacetimeDB's SQL has no `IN` operator: its expression
   parser — the same one behind a subscription and a one-off query — accepts comparisons
