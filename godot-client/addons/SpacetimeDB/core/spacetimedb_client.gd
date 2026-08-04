@@ -114,6 +114,13 @@ var _frame_budget_min_us: int = 1000
 var _frame_budget_max_us: int = 8000
 var _auto_tune_target_fps: int = 0
 const _MAX_RESULT_CACHE_SIZE: int = 256
+## Cap on outstanding call handles retained, applied per kind (reducer, procedure).
+## A response that never arrives strands its handle: the pending maps are cleared by a
+## matching response or by a disconnect, and neither happens when a packet is lost while
+## the socket stays up (the parser drops a corrupt buffer and keeps the connection).
+## Same number as [constant SpacetimeDBStats.MAX_PENDING], which bounds the four-category
+## total rather than any one kind — the constant is shared, the running counts are not.
+const _MAX_PENDING_CALLS: int = SpacetimeDBStats.MAX_PENDING
 # Cache of reducer results that arrived before anyone called wait_for_reducer_response
 var _reducer_result_cache: Dictionary[int, TransactionUpdateMessage] = { } # request_id -> TransactionUpdateMessage (or null)
 var _pending_reducer_calls: Dictionary[int, SpacetimeDBReducerCall] = { }
@@ -595,7 +602,7 @@ func call_reducer(
 			request_id,
 			ret_bsatn_type,
 		)
-		_pending_reducer_calls[request_id] = handle
+		_track_reducer_call(request_id, handle)
 		_stats.record_send(request_id, SpacetimeDBStats.Category.REDUCER)
 		return handle
 
@@ -655,7 +662,7 @@ func call_procedure(
 			request_id,
 			return_bsatn_type,
 		)
-		_pending_procedure_calls[request_id] = handle
+		_track_procedure_call(request_id, handle)
 		_stats.record_send(request_id, SpacetimeDBStats.Category.PROCEDURE)
 		return handle
 
@@ -1867,6 +1874,42 @@ func _finish_resubscribe(epoch: int) -> void:
 	_resubscribe_epoch += 1
 	_saved_subscription_queries.clear()
 	reconnected.emit()
+
+
+# Registers a reducer handle, dropping the oldest outstanding one first when the map is
+# at its cap. See _MAX_PENDING_CALLS: without this, a call whose response is lost while
+# the socket stays up holds its handle (and whatever the caller closed over) for the
+# life of the connection.
+func _track_reducer_call(request_id: int, handle: SpacetimeDBReducerCall) -> void:
+	if _pending_reducer_calls.size() >= _MAX_PENDING_CALLS:
+		# First key = oldest (dict iteration is insertion-order); no keys() alloc.
+		for oldest: int in _pending_reducer_calls:
+			var dropped: SpacetimeDBReducerCall = _pending_reducer_calls[oldest]
+			# Stamped rather than silently dropped: an awaiter would otherwise sit on a
+			# handle nothing can ever complete, and the message names why it ended.
+			if dropped.outcome == SpacetimeDBReducerCall.Outcome.PENDING:
+				dropped.outcome = SpacetimeDBReducerCall.Outcome.TIMEOUT
+				dropped.error_message = (
+					"Dropped: more than %d reducer calls outstanding" % _MAX_PENDING_CALLS
+				)
+			_pending_reducer_calls.erase(oldest)
+			break
+	_pending_reducer_calls[request_id] = handle
+
+
+# Procedure-side twin of _track_reducer_call.
+func _track_procedure_call(request_id: int, handle: SpacetimeDBProcedureCall) -> void:
+	if _pending_procedure_calls.size() >= _MAX_PENDING_CALLS:
+		for oldest: int in _pending_procedure_calls:
+			var dropped: SpacetimeDBProcedureCall = _pending_procedure_calls[oldest]
+			if dropped.outcome == SpacetimeDBProcedureCall.Outcome.PENDING:
+				dropped.outcome = SpacetimeDBProcedureCall.Outcome.TIMEOUT
+				dropped.error_message = (
+					"Dropped: more than %d procedure calls outstanding" % _MAX_PENDING_CALLS
+				)
+			_pending_procedure_calls.erase(oldest)
+			break
+	_pending_procedure_calls[request_id] = handle
 
 
 func _evict_oldest(cache: Dictionary) -> void:
