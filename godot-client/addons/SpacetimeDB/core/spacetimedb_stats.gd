@@ -91,6 +91,19 @@ func record_response(request_id: int) -> void:
 		t.in_flight -= 1
 
 
+## Drops every outstanding send and zeroes the [member Tracker.in_flight] gauges,
+## keeping the completed round trips' latency history. For a connection that died:
+## those requests are answered by nobody (the client stamps their handles
+## DISCONNECTED), so a tracker that kept them reported requests in flight on an idle
+## client for the rest of the session. Also stops a pre-drop id from resolving against
+## a post-reconnect request that reuses it — the id counters restart at 0.
+func retire_pending() -> void:
+	_pending_usec.clear()
+	_pending_cat.clear()
+	for i: int in Category.size():
+		_trackers[i].in_flight = 0
+
+
 ## Live [Tracker] for [param category]. Treat as read-only.
 func get_tracker(category: Category) -> Tracker:
 	return _trackers[category]

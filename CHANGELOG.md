@@ -33,6 +33,31 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A btree index on an Identity column no longer leaks its sorted-key mirror.**
+  `Identity`, `ConnectionId`, `u128` and `u256` all arrive as `PackedByteArray`, and
+  `PackedByteArray` has no `<` — so `Array.bsearch` landed on an arbitrary slot for
+  those keys and `_key_removed()` never found the key it was handed. Every distinct
+  value a client saw left one entry in `_sorted_keys` after its bucket was gone, plus
+  a duplicate each time the same value came back: a session-long connection to a table
+  keyed by identity grew the mirror without bound. Nothing read the stale entries
+  (codegen emits `filter_range` / `filter_gte` / … for `int`, `float` and `String`
+  columns only), so this cost memory rather than wrong answers. The mirror is now
+  maintained only for keys `bsearch` can order, which also drops the pointless
+  bsearch-and-insert on every bucket edge of a bytes-keyed index. Covered by
+  `tests/test_btree_bytes_keys.gd`.
+
+- **The latency tracker no longer reports requests in flight on an idle client.**
+  A reducer call, procedure call, one-off query or subscribe that was outstanding when
+  the socket dropped is answered by nobody — the client stamps its handle
+  `DISCONNECTED` — but `SpacetimeDBStats` kept the send, so `get_stats()` reported a
+  non-zero `in_flight` for the rest of the session after every auto-reconnect, and a
+  pre-drop request id could resolve against a post-reconnect request that reused it
+  (the id counters restart at zero). `_fail_pending_calls_disconnected()` now retires
+  the tracker's pending sends along with the handles, keeping the completed round
+  trips' latency history. A `SubscriptionError` that carries a request id also counts
+  as that subscribe's response now, instead of leaving it pending until the next
+  disconnect. Covered by `tests/test_stats.gd` and `tests/test_reconnect_state.gd`.
+
 - **The drain auto-tuner no longer mistakes a frame-rate cap for a struggling game.**
   `_auto_tune_budget()` compares `Engine.get_frames_per_second()` — the *rendered*
   frame rate — against a target that defaulted to `Engine.physics_ticks_per_second`,

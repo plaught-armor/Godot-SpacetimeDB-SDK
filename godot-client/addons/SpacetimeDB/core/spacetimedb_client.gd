@@ -399,6 +399,10 @@ func _fail_pending_calls_disconnected() -> void:
 			handle.outcome = SpacetimeDBProcedureCall.Outcome.DISCONNECTED
 			handle.error_message = "Connection lost during procedure call"
 	_pending_procedure_calls.clear()
+	# Subscribes and one-off queries have no handle map to stamp, but their sends are
+	# just as dead — the latency tracker holds all four kinds, so retire them together
+	# here rather than leaving the in_flight gauge above zero on an idle client.
+	_stats.retire_pending()
 
 
 ## Returns [code]true[/code] if the WebSocket is currently open.
@@ -1357,6 +1361,12 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			sub.applied.emit()
 	elif message is SubscriptionErrorMessage:
 		printerr("SpacetimeDBClient: Subscription error: %s" % message.error_message)
+		# The error IS the response to that subscribe — without this the send stayed
+		# pending and its in_flight never came back down. The id is optional on this
+		# message; when the server omits it the send is only released by the next
+		# disconnect (or MAX_PENDING eviction).
+		if message.has_request_id():
+			_stats.record_response(message.request_id)
 		if message.has_query_id():
 			var qid: int = message.query_id.id
 			if pending_subscriptions.has(qid):

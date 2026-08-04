@@ -26,6 +26,7 @@ func _initialize() -> void:
 	var f: int = 0
 	f += _test_disconnect_while_closed()
 	f += _test_finish_resubscribe_epoch_guard()
+	f += _test_disconnect_retires_stats_pending()
 
 	if f == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -77,6 +78,37 @@ func _test_finish_resubscribe_epoch_guard() -> int:
 	f += _check_i("repeat finish → no second reconnected", _reconnected_count, 1)
 
 	client.reconnected.disconnect(_on_reconnected)
+	client.free()
+	return f
+
+
+# A request outstanding when the socket dies is answered by nobody: the handle is
+# stamped DISCONNECTED and the pending map cleared, so the latency tracker has to let
+# go of it too. It used to keep the send, leaving get_stats() reporting requests in
+# flight on an idle client for the rest of the session.
+func _test_disconnect_retires_stats_pending() -> int:
+	var f: int = 0
+	var client: SpacetimeDBClient = SpacetimeDBClient.new()
+	var stats: SpacetimeDBStats = client.get_stats()
+	var red: int = SpacetimeDBStats.Category.REDUCER
+	var sub: int = SpacetimeDBStats.Category.SUBSCRIBE
+
+	stats.record_send(0, red)
+	stats.record_response(0) # completed before the drop — history, not in flight
+	stats.record_send(1, red)
+	stats.record_send(2, sub)
+	f += _check_i("setup: reducer in flight", stats.get_tracker(red).in_flight, 1)
+
+	client._prepare_for_reconnect()
+	f += _check_i("reconnect drains reducer in_flight", stats.get_tracker(red).in_flight, 0)
+	f += _check_i("reconnect drains subscribe in_flight", stats.get_tracker(sub).in_flight, 0)
+	f += _check_i("reconnect keeps completed count", stats.get_tracker(red).count, 1)
+
+	# The id counters restart at 0 after a reconnect, so a fresh request reusing a
+	# pre-drop id must not resolve against the dead session's send.
+	stats.record_response(1)
+	f += _check_i("pre-drop id no longer resolves", stats.get_tracker(red).count, 1)
+
 	client.free()
 	return f
 
