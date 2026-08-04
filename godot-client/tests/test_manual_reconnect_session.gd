@@ -39,6 +39,7 @@ func _initialize() -> void:
 	fails += _test_listener_disconnect_during_the_wipe_wins()
 	fails += _test_listener_connect_during_the_wipe_wins()
 	fails += _test_wipe_is_a_no_op_mid_handshake()
+	fails += _test_new_session_drops_the_old_session_traffic()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -171,6 +172,45 @@ func _test_wipe_is_a_no_op_mid_handshake() -> int:
 	client.connect_db("http://localhost:3000", "test_mod", _mk_options())
 	f += _check_i("mid-handshake connect still proceeds", conn.connect_calls, 1)
 	f += _check_i("nothing to report deleted", _deleted_ids.size(), 0)
+
+	client.free()
+	db.free()
+	return f
+
+
+# Wiping the rows is only half the boundary. Messages the dying session already parsed,
+# the batch a frame was midway through draining, and the half-message left in the framing
+# buffer all belong to the old session too — drained or parsed after the wipe, they would
+# land in the mirror the new session is about to fill. The auto-reconnect path has always
+# dropped them; the manual one has to as well.
+func _test_new_session_drops_the_old_session_traffic() -> int:
+	var f: int = 0
+	var client: SpacetimeDBClient = _mk_client(false)
+	var db: LocalDatabase = client._local_db
+	client.use_threading = false
+	client._deserializer = BSATNDeserializer.new(null, false)
+
+	# Half a message: a tag byte the parser recognises with fewer bytes behind it than the
+	# message needs, which is what a socket dying mid-frame leaves behind.
+	var truncated: PackedByteArray = [SpacetimeDBServerMessage.Type.INITIAL_CONNECTION, 0x01]
+	client._deserializer.process_bytes_and_extract_messages(truncated)
+	client._deserializer.clear_error()
+	client._result_queue.append(SubscribeAppliedMessage.new())
+	client._drain_batch = [SubscribeAppliedMessage.new()]
+	client._drain_cursor = 0
+	f += _check_b(
+		"setup: parser holds a prefix",
+		not client._deserializer._pending_data.is_empty(),
+		true,
+	)
+
+	client.disconnect_db()
+	client.connect_db("http://localhost:3000", "test_mod", _mk_options())
+
+	f += _check_i("parsed-but-undrained results dropped", client._result_queue.size(), 0)
+	f += _check_i("in-flight drain batch dropped", client._drain_batch.size(), 0)
+	f += _check_i("drain cursor reset", client._drain_cursor, 0)
+	f += _check_b("framing buffer reset", client._deserializer._pending_data.is_empty(), true)
 
 	client.free()
 	db.free()
