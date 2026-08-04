@@ -761,6 +761,7 @@ class SpacetimeDBConnectionOptions:
     var reconnect_backoff_multiplier: float = 2.0
     var reconnect_jitter_fraction: float = 0.5 # 0.0–1.0
     var reconnect_on_app_resume: bool = true
+    var process_while_paused: bool = true
 ```
 
 | Name | Description |
@@ -772,6 +773,7 @@ class SpacetimeDBConnectionOptions:
 | `reconnect_backoff_multiplier` | Multiplier applied to the delay after each failed attempt. |
 | `reconnect_jitter_fraction` | Random jitter applied to each delay (0.0 = none, 1.0 = full delay range). Prevents thundering herd on reconnect. |
 | `reconnect_on_app_resume` | When `true` (default), regaining application focus fires a reconnect attempt that is still waiting out its backoff. A backgrounded app's frame loop is throttled (web tab) or stopped (suspended mobile app), which stalls the `SceneTreeTimer` the backoff runs on, so a drop that happens off-screen would otherwise sit unreconnected well after the player is back. The attempt is re-scheduled under its own number, so `max_reconnect_attempts` still bounds the cycle. |
+| `process_while_paused` | When `true` (default), the client and its children keep processing while `get_tree().paused` is set. The socket is polled from `_physics_process`, and that poll is what sends the keepalive ping, reads inbound frames and flushes outbound ones — on the default process mode a paused game stops polling entirely, the server closes the connection after its 30-second idle timeout, and a reducer called while paused is queued but never sent. The cost of leaving this on is that row callbacks keep arriving while the game is paused, which matches the server's world continuing to move. Set it to `false` to freeze the SDK with the game. |
 
 ## `SpacetimeDBSubscription` class
 

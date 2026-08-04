@@ -177,8 +177,28 @@ var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 func _ready() -> void:
 	_rng.randomize()
+	_apply_process_mode()
 	if auto_connect:
 		initialize_and_connect()
+
+
+## Puts the client (and with it every child: the connection, the REST handler, the
+## local database) on a process mode that survives [member SceneTree.paused], unless
+## [member SpacetimeDBConnectionOptions.process_while_paused] says otherwise.
+##
+## The socket is polled from [method Node._physics_process], and that poll is what
+## sends the keepalive ping, reads inbound frames and flushes outbound ones. On the
+## default process mode a paused game stops polling altogether and the server closes
+## the idle connection. The children stay on [constant Node.PROCESS_MODE_INHERIT], so
+## they follow this node.
+##
+## Opting out selects [constant Node.PROCESS_MODE_PAUSABLE] rather than INHERIT: the
+## option promises the SDK freezes with the game, and INHERIT would quietly hand that
+## decision to an ancestor — a client parented under an always-process node would keep
+## running despite the opt-out.
+func _apply_process_mode() -> void:
+	var keep_running: bool = connection_options == null or connection_options.process_while_paused
+	process_mode = Node.PROCESS_MODE_ALWAYS if keep_running else Node.PROCESS_MODE_PAUSABLE
 
 
 # --- WebSocket Message Handling ---
@@ -286,6 +306,8 @@ func connect_db(
 	if not options:
 		options = SpacetimeDBConnectionOptions.new()
 	connection_options = options
+	# This call may be the first to supply options, or may replace the ones _ready saw.
+	_apply_process_mode()
 	self.base_url = host_url
 	self.database_name = database_name.to_lower()
 	self.compression = options.compression

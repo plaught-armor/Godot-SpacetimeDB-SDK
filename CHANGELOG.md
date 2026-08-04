@@ -33,6 +33,24 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A paused game keeps its connection.** The socket is polled from
+  `_physics_process`, and no `process_mode` was set anywhere in the addon, so
+  `get_tree().paused = true` — the ordinary way to pause a Godot game — stopped the
+  poll entirely. Measured against a real socket: the connection's poll clock advanced
+  338 ms over 20 unpaused physics frames and 0 ms over 20 paused ones, while 332 ms of
+  real time went by. That poll is what sends Godot's keepalive ping, reads inbound
+  frames and flushes outbound ones, so a pause menu left open past the server's
+  30-second idle timeout lost the session, inbound frames piled up unread, and a
+  reducer called while paused was queued but never sent. `SpacetimeDBClient` now sets
+  `PROCESS_MODE_ALWAYS` on itself, which its children (the connection, the REST
+  handler, the local database) inherit. The trade-off is that row callbacks keep
+  arriving while the game is paused, along with every other client signal — the
+  server's world does not stop — and the new
+  `SpacetimeDBConnectionOptions.process_while_paused` (default `true`) turns it off for
+  a game that would rather freeze the SDK too. Opting out selects `PROCESS_MODE_PAUSABLE`
+  rather than inherit, so a client parented under an always-process node still freezes as
+  the option promises. Covered by `tests/test_pause_processing.gd`.
+
 - **Timeouts and backoffs now run on the wall clock, not the game clock.** Every
   `SceneTree.create_timer()` in the SDK took the default `ignore_time_scale = false`,
   so all of them stopped dead at `Engine.time_scale = 0` — a standard way to pause a

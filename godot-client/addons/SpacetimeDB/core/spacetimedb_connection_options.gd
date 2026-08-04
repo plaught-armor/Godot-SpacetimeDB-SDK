@@ -103,6 +103,27 @@ var reconnect_jitter_fraction: float = 0.5
 ## still bounds the cycle.
 var reconnect_on_app_resume: bool = true
 
+## Whether the client keeps running while the [SceneTree] is paused.
+##
+## The socket is polled from [method Node._physics_process], and that is where Godot's
+## [WebSocketPeer] sends its keepalive ping, reads inbound frames and flushes outbound
+## ones. A node left on the default process mode stops being processed the moment
+## [member SceneTree.paused] is set, so a game paused the ordinary way stops polling
+## entirely: the server sees an idle connection and closes it (its timeout is 30
+## seconds), inbound frames pile up unread, and a reducer call made while paused is
+## queued but never flushed.
+##
+## Left [code]true[/code], the client and its children process regardless of the pause
+## state, which is what keeps a paused game connected. The cost is that the client keeps
+## delivering while the game is paused: row callbacks and the signals they are re-emitted
+## as, but also reducer and procedure results, and the connection signals. Godot runs a
+## connected [Callable] whichever process mode its owner has, so a [RowReceiver] left on
+## the default mode still forwards rows during the pause. That matches the server's world
+## not stopping, which is usually what you want. Set it to [code]false[/code] to freeze
+## the SDK with the game and accept that a pause longer than the server's idle timeout
+## drops the connection.
+var process_while_paused: bool = true
+
 
 ## Convenience setter — sets both [member inbound_buffer_size] and [member outbound_buffer_size].
 func set_all_buffer_size(size: int) -> void:
