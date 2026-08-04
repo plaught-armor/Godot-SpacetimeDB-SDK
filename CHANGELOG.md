@@ -33,6 +33,26 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A connection attempt that stalls in the handshake now ends.** Godot's raw
+  `WebSocketPeer` has no handshake timeout — `handshake_timeout` belongs to
+  `WebSocketMultiplayerPeer`, and `WSLPeer::poll` only ages a socket that is already
+  open — so a remote that accepted the TCP connection and never answered the upgrade
+  (a proxy in front of a dead upstream, a half-open NAT entry, a server wedged
+  mid-boot) left the client in `STATE_CONNECTING` for as long as it held the socket:
+  no `connected`, no `connection_error`, and no auto-reconnect either, because the
+  attempt that would have to fail first never ended. One stalled attempt therefore
+  also wedged the whole reconnect cycle — `max_reconnect_attempts` was never reached
+  and `reconnect_failed` never fired. Attempts are now bounded by the new
+  `SpacetimeDBConnectionOptions.connect_timeout_seconds` (default `15.0`, `0.0`
+  restores the old wait-forever behaviour) and reported as `connection_error` with
+  `ERR_TIMEOUT`, after which auto-reconnect proceeds normally. A frozen frame loop
+  cannot fail a healthy connect: a poll gap over a second is credited back to the
+  handshake, up to one budget's worth, on a rule that does not read
+  `heartbeat_interval_seconds` — turning keepalive off does not harden this budget.
+  Covered by `tests/test_connect_timeout.gd`, which drives a real client against a
+  listener that accepts and never upgrades; the pre-fix wedge is reproduced by
+  `tests/_probe_handshake_wedge.gd`.
+
 - **A column holding a list of vectors decodes again.** A `Vec<Vector3>` column (or
   `Vec<Color>`, `Vec<Vector2i>`, `Vec<Quaternion>`, and every other native array-like
   element type) is emitted as `Array[Vector3]` with the ELEMENT's BSATN type,

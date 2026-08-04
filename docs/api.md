@@ -689,6 +689,30 @@ class SpacetimeDBConnectionOptions:
 
 Interval at which the client sends WebSocket pings to keep the socket alive and surface a dead/half-open connection. A main-thread stall longer than this makes Godot's `WebSocketPeer` miss a pong and close the socket — detected and surfaced as [`connection_stalled`](#signals-1). Set to `0.0` to disable keepalive.
 
+#### `connect_timeout_seconds` property
+
+```gdscript
+class SpacetimeDBConnectionOptions:
+    var connect_timeout_seconds: float = 15.0
+```
+
+How long a connection attempt may sit in the WebSocket handshake (TCP connect plus HTTP
+upgrade) before it is abandoned and reported as `connection_error` with `ERR_TIMEOUT`.
+
+Godot's `WebSocketPeer` has no handshake timeout of its own — `handshake_timeout` belongs to
+`WebSocketMultiplayerPeer`, and `WSLPeer::poll` only ages a socket once it is open. Without
+this budget, a remote that accepts the TCP connection and never answers the upgrade (a proxy
+in front of a dead upstream, a half-open NAT entry, a server wedged mid-boot) leaves the
+client in `STATE_CONNECTING` for as long as it holds the socket: no `connected`, no
+`connection_error`, and no auto-reconnect either, because the attempt that would have to
+fail first never ends. With the budget, the attempt fails, and `auto_reconnect` then retries
+or exhausts its attempts normally. A frozen frame loop does not count against the handshake:
+a poll gap over a second is credited back to it, up to one budget's worth in total, and that
+rule is independent of `heartbeat_interval_seconds` — switching keepalive off does not
+harden the connect budget.
+
+Set to `0.0` to disable the timeout and wait indefinitely.
+
 #### `inbound_buffer_size` property
 
 ```gdscript
