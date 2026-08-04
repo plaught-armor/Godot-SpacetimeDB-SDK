@@ -311,11 +311,35 @@ func initialize_and_connect() -> void:
 
 ## Connects to a SpacetimeDB [param database_name] at [param host_url].[br]
 ## Pass a [SpacetimeDBConnectionOptions] to configure threading, compression, and reconnection.
+##
+## Call [method disconnect_db] first if a session is already live: this method starts a
+## session, it does not re-point one, and on a connected client it is refused outright.
+## "Connected" here is [method is_connected_db] — the socket is open. A call made while
+## a handshake is still running is allowed and supersedes that attempt, since there is
+## no session yet for it to splice itself into.
 func connect_db(
 	host_url: String,
 	database_name: String,
 	options: SpacetimeDBConnectionOptions = null,
 ) -> void:
+	if is_connected_db():
+		# Refused rather than half-applied. The old shape of this call wrote host,
+		# database and options over the live session's and then returned without
+		# opening a socket or handing the options to the connection — so the socket
+		# kept the previous buffers, heartbeat and compression while the client
+		# reported the new target, and the next drop auto-reconnected to a host the
+		# caller never connected to, carrying the old session's subscriptions.
+		# Nothing here is changed, so a caller that ignores this error keeps a
+		# coherent session rather than a spliced one.
+		push_error(
+			(
+				"SpacetimeDBClient: already connected to '%s' — call disconnect_db() "
+				+ "before connecting to '%s' at %s. Nothing was changed."
+			)
+			% [self.database_name, database_name.to_lower(), host_url]
+		)
+		return
+
 	_cancel_reconnection()
 	_disconnected_emitted = false # re-arm the terminal signal for this session
 	# A call that starts a session, rather than reconfiguring a live one, has to leave the
@@ -328,22 +352,23 @@ func connect_db(
 	# re-arms database_initialized so the new session announces itself.
 	_session_intent += 1
 	var intent: int = _session_intent
-	if not is_connected_db():
-		# Queues first, then the rows — the same order (and the same reason) as
-		# _prepare_for_reconnect: the wipe is the step that runs game code, so everything
-		# it might observe has to be settled before it does.
-		_drop_dead_session_traffic()
-		if _local_db != null:
-			_local_db.clear_local_db()
-		_received_initial_subscription = false
-		# Reporting the wipe runs game code, so by here a listener may have called
-		# disconnect_db() or started its own connect_db(). Either one supersedes this
-		# call: finishing it would open a socket the listener asked to close, or write
-		# this call's host and options over the newer one's. Same countermand check
-		# _attempt_reconnect makes after its wipe.
-		if intent != _session_intent:
-			print_log("SpacetimeDBClient: connect_db superseded while the cache wipe was reported.")
-			return
+	# Unconditional: the connected case returned above, so by here there is no live
+	# session whose mirror this would be pulling out from under a running game.
+	# Queues first, then the rows — the same order (and the same reason) as
+	# _prepare_for_reconnect: the wipe is the step that runs game code, so everything
+	# it might observe has to be settled before it does.
+	_drop_dead_session_traffic()
+	if _local_db != null:
+		_local_db.clear_local_db()
+	_received_initial_subscription = false
+	# Reporting the wipe runs game code, so by here a listener may have called
+	# disconnect_db() or started its own connect_db(). Either one supersedes this
+	# call: finishing it would open a socket the listener asked to close, or write
+	# this call's host and options over the newer one's. Same countermand check
+	# _attempt_reconnect makes after its wipe.
+	if intent != _session_intent:
+		print_log("SpacetimeDBClient: connect_db superseded while the cache wipe was reported.")
+		return
 	if not options:
 		options = SpacetimeDBConnectionOptions.new()
 	connection_options = options
@@ -386,10 +411,11 @@ func connect_db(
 
 	if not _is_initialized:
 		initialize_and_connect()
-	elif not _connection.is_connected_db():
-		# Already initialized: the connection object survives a disconnect, so hand it
-		# this call's options rather than leaving it on the first call's compression,
-		# buffer sizes and heartbeat.
+	else:
+		# Already initialized, and — since the connected case returned above — not on a
+		# live socket. The connection object survives a disconnect, so hand it this
+		# call's options rather than leaving it on the first call's compression, buffer
+		# sizes and heartbeat.
 		_connection.apply_options(options)
 		# Just need token and connect
 		_load_token_or_request()

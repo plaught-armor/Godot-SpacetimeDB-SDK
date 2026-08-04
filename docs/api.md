@@ -27,6 +27,11 @@ Connects to a SpacetimeDB database.
 | database_name | The name or identity of the remote database. |
 | options | Client connection options, see the [`SpacetimeDBConnectionOptions`](#spacetimedbconnectionoptions-resource) documentation. |
 
+This method *starts* a session; it does not re-point a live one. Called while the client is
+already connected it is refused with an error and changes nothing — not the host, not the
+database name, not the options. Call [`disconnect_db()`](#disconnect_db-method) first to
+connect somewhere else.
+
 #### `disconnect_db()` method
 
 ```gdscript
