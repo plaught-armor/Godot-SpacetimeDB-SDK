@@ -596,7 +596,13 @@ func _read_array(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_str: String
 			if not element_reader.is_valid() and _schema.get_type_by_class(bsatn_type_str) != null:
 				element_reader = _read_nested_resource.bind(element_prop_sim)
 		if not element_reader.is_valid():
-			element_reader = _get_reader_callable_for_property(element_prop_sim, &"")
+			# Hand the element's BSATN type down, not an empty string. A native
+			# array-like element (Vector3, Color, ...) carries its component layout in
+			# that string — `vector3[f32,f32,f32]` — and reading one without it fails
+			# with "Missing BSATN_TYPES entry", so an Array[Vector3] column could not be
+			# decoded at all even though the writer emitted it correctly (write_array
+			# passes the same string to _get_writer_callable_for_property).
+			element_reader = _get_reader_callable_for_property(element_prop_sim, bsatn_type_str)
 
 	if not element_reader.is_valid():
 		_set_error(
