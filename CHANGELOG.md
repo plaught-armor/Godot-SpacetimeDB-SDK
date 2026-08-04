@@ -33,6 +33,21 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **`connect_db()` on a live socket is refused instead of half-applied.** The call
+  starts a session; it never re-pointed one. On a connected client it used to write
+  the new host, database name and options over the live session's and then return
+  without opening a socket or handing the connection those options — so the socket
+  kept the previous buffers, heartbeat and compression while the client reported the
+  new target, and the next drop auto-reconnected to a host the caller had never
+  connected to, carrying the old session's subscriptions. It now raises an error
+  naming both databases and changes nothing. Call `disconnect_db()` first to connect
+  somewhere else. Covered by `tests/test_connect_db_while_connected.gd`, which pins
+  the reconnect landing back on the original host. A call made while a handshake is
+  still running is still allowed — there is no session yet to protect. Note for
+  callers that used the old behaviour as an idempotent "ensure connected": that
+  double-call effectively no-op'd before and now raises an error; guard it with
+  `is_connected_db()`.
+
 - **A connection attempt that stalls in the handshake now ends.** Godot's raw
   `WebSocketPeer` has no handshake timeout — `handshake_timeout` belongs to
   `WebSocketMultiplayerPeer`, and `WSLPeer::poll` only ages a socket that is already

@@ -130,7 +130,7 @@ func _scenario_redrop_mid_resubscribe() -> void:
 
 
 func _scenario_connect_db_while_connected() -> void:
-	print("\n== connect_db() called on a live socket (host switch) ==")
+	print("\n== connect_db() called on a live socket (refused, changes nothing) ==")
 	var client: SpacetimeDBClient = await _connected_client(_options(false))
 	if client == null:
 		return
@@ -140,8 +140,8 @@ func _scenario_connect_db_while_connected() -> void:
 	client.connect_db("http://127.0.0.1:1", "otherdb", options)
 	await _pump(20)
 
-	print("   base_url now: %s (was %s)" % [client.base_url, live_url])
-	print("   database_name now: %s" % client.database_name)
+	_check_b("base_url unchanged", client.base_url == live_url, true)
+	_check_b("database_name unchanged", client.database_name == "probedb", true)
 	_check_b("still connected to the original socket", client.is_connected_db(), true)
 	_check_i("no second connection offered", int(_server.is_connection_available()), 0)
 	await _teardown(client)
