@@ -134,6 +134,11 @@ func unsubscribe_from_updates(table_name: StringName, callable: Callable) -> voi
 ## Registers [param callable] to be called with the row about to be deleted for
 ## [param table_name]. Fires before the row leaves the cache, so the callback can
 ## still read it (and related rows) at their pre-delete state.
+##
+## Pairing with [method subscribe_to_deletes] is per row, not per batch: on a PK table a
+## row's before-delete is immediately followed by its delete, while on a PK-less table a
+## batch reports every before-delete first and then every delete. Each row still gets
+## exactly one of each, in the order the batch evicted them.
 func subscribe_to_before_deletes(table_name: StringName, callable: Callable) -> void:
 	var key: StringName = _normalize(table_name)
 	if not _before_delete_listeners_by_table.has(key):
@@ -548,7 +553,20 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 						mem_ins[1] += 1
 
 		if not table_update.deletes.is_empty():
-			var evicted: Dictionary = { } # instance_id -> true, for a single-pass array compact
+			# instance_id -> the cached row, for a single-pass array compact and for the
+			# delete callbacks that follow it. The two delete callbacks split on whether the
+			# row is still in the cache, so on_before_delete fires here (row still listed)
+			# and on_delete only after the compaction below — matching the PK path, which
+			# erases from the table dict between the two. Firing both from this loop left
+			# on_delete able to find the row in iter(), so a listener that rebuilt its view
+			# from the cache kept showing what it was just told had been deleted.
+			#
+			# One difference from the PK path remains, and it follows from the compaction
+			# being a single pass over the array: a batch evicting several rows reports
+			# every before_delete first, then every delete, where the PK path interleaves
+			# them per row. Both orders keep each row's own pair in order and keep the
+			# cache state each callback promises; only the cross-row interleaving differs.
+			var evicted: Dictionary[int, _ModuleTableType] = { }
 			for deleted_row: _ModuleTableType in table_update.deletes:
 				var del_hash: int = _row_hash(deleted_row, props)
 				var del_entry: Array = _pk_less_find(counts, del_hash, deleted_row, props)
@@ -564,16 +582,12 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				if del_entry[1] == 0:
 					var cached_row: _ModuleTableType = del_entry[0]
 					_pk_less_remove(counts, del_hash, del_entry)
-					evicted[cached_row.get_instance_id()] = true
+					evicted[cached_row.get_instance_id()] = cached_row
 					had_any_change = true
 					if has_before_delete_listeners:
 						for listener: Callable in before_delete_listeners:
 							listener.call(cached_row)
 					row_before_delete.emit(table_name_lower, cached_row)
-					if has_delete_listeners:
-						for listener: Callable in delete_listeners:
-							listener.call(cached_row)
-					row_deleted.emit(table_name_lower, cached_row)
 			if not evicted.is_empty():
 				# Single pass compact — the stored row is the same instance appended on 0->1.
 				var write_idx: int = 0
@@ -584,6 +598,15 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 					rows_array[write_idx] = row
 					write_idx += 1
 				rows_array.resize(write_idx)
+				# Now the rows are actually gone. Reported in the order the batch evicted
+				# them (dict iteration is insertion-order), so a consumer sees the same
+				# sequence it saw from on_before_delete.
+				for gone_id: int in evicted:
+					var gone: _ModuleTableType = evicted[gone_id]
+					if has_delete_listeners:
+						for listener: Callable in delete_listeners:
+							listener.call(gone)
+					row_deleted.emit(table_name_lower, gone)
 
 		if had_any_change:
 			for listener: Callable in tx_listeners:
