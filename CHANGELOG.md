@@ -33,6 +33,19 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **`SpacetimeDBQuery.where_in()` now emits SQL the server can parse.** It produced
+  `field IN (v1, v2, ...)`, and SpacetimeDB's SQL has no `IN` operator: its expression
+  parser — the same one behind a subscription and a one-off query — accepts comparisons
+  (`=`, `!=`, `<`, `<=`, `>`, `>=`) joined by `AND` / `OR` and rejects everything else, so
+  every `where_in` query came back as an unsupported expression and failed the whole query
+  set. Verified against the SpacetimeDB source: no `InList` arm exists in the parser, and
+  none ever did. It now emits the equivalent OR group, `(field = v1 OR field = v2 ...)` —
+  same meaning, and it parses. `where_any` already emitted that shape and is unchanged;
+  both now share one helper. The practical ceiling on list length is the server's
+  expression-recursion guard (1600). `tests/test_query_builder.gd` asserted only the
+  generated string, which is why a feature no server could parse had a passing test; it
+  now asserts the shape the server accepts.
+
 - **A manual reconnect starts a clean session instead of stacking on the last one.**
   `clear_local_db()` was called from exactly one place, the auto-reconnect path, so a
   `disconnect_db()` followed later by `connect_db()` on the same client began the next

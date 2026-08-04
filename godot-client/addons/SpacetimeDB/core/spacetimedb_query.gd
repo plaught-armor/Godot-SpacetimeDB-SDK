@@ -89,8 +89,17 @@ func where_lte(field: String, value: Variant) -> SpacetimeDBQuery:
 	return self
 
 
-## Adds [code]field IN (v1, v2, ...)[/code]. Empty [param values] is a no-op
-## (an empty IN list is invalid SQL).
+## Matches [param field] against any of [param values], emitted as the OR group
+## [code](field = v1 OR field = v2 ...)[/code]. Empty [param values] is a no-op.
+##
+## Not [code]IN (...)[/code]: SpacetimeDB's SQL has no such operator. Its expression
+## parser — the same one behind both a subscription and a one-off query — accepts
+## comparisons ([code]=[/code], [code]!=[/code], [code]<[/code], [code]<=[/code],
+## [code]>[/code], [code]>=[/code]) joined by [code]AND[/code] / [code]OR[/code], and
+## rejects everything else, so an emitted [code]IN[/code] came back as an unsupported
+## expression and failed the whole query set. The OR group means the same thing and
+## parses. Its practical ceiling is the server's expression-recursion guard (1600), so
+## keep lists well under that.
 func where_in(field: String, values: Array) -> SpacetimeDBQuery:
 	if values.is_empty():
 		push_error("SpacetimeDBQuery.where_in: empty value list for field '%s'." % field)
@@ -98,10 +107,10 @@ func where_in(field: String, values: Array) -> SpacetimeDBQuery:
 	var ident: String = _validate_identifier(field)
 	if ident.is_empty():
 		return self
-	var formatted: Array[String] = []
+	var ors: PackedStringArray = []
 	for v: Variant in values:
-		formatted.append(_format_value(v))
-	_conditions.append("%s IN (%s)" % [ident, ", ".join(formatted)])
+		ors.append("%s = %s" % [ident, _format_value(v)])
+	_append_or_group(ors)
 	return self
 
 
@@ -109,7 +118,7 @@ func where_in(field: String, values: Array) -> SpacetimeDBQuery:
 ## ANDed with the other conditions. [param pairs] is an [Array] of
 ## [code][field, value][/code] two-element arrays. Empty [param pairs] is a no-op.
 func where_any(pairs: Array) -> SpacetimeDBQuery:
-	var ors: Array[String] = []
+	var ors: PackedStringArray = []
 	for p: Array in pairs:
 		if p.size() != 2:
 			push_error("SpacetimeDBQuery.where_any: each pair must be [field, value].")
@@ -118,9 +127,18 @@ func where_any(pairs: Array) -> SpacetimeDBQuery:
 		if ident.is_empty():
 			continue
 		ors.append("%s = %s" % [ident, _format_value(p[1])])
-	if not ors.is_empty():
-		_conditions.append("(%s)" % " OR ".join(ors))
+	_append_or_group(ors)
 	return self
+
+
+# Appends [param disjuncts] as one parenthesised OR condition, or nothing when there are
+# none to append. Every OR group the builder emits goes through here, so the parentheses
+# that keep the group intact once to_sql() AND-joins it with the other conditions are
+# decided in one place rather than at each call site.
+func _append_or_group(disjuncts: PackedStringArray) -> void:
+	if disjuncts.is_empty():
+		return
+	_conditions.append("(%s)" % " OR ".join(disjuncts))
 
 
 ## Builds and returns the complete SQL string.
