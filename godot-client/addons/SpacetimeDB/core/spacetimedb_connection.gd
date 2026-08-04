@@ -83,6 +83,24 @@ var _stall_threshold_ms: int = 0
 ## Polls remaining in the post-stall guard window; >0 means a stall was just seen.
 var _post_stall_polls: int = 0
 
+## Poll gap (ms) beyond which the main thread was frozen rather than merely running
+## slowly, so a handshake in flight is credited that time back. Deliberately its own
+## number rather than the heartbeat window: switching keepalive off must not quietly
+## harden the connect budget. 1 s is six frames at 10 fps — past any frame pacing.
+const HANDSHAKE_STALL_GAP_MS: int = 1000
+
+## Wall-clock ms at which the current attempt entered the handshake, or -1 for no
+## attempt in flight. Not 0 — [method Time.get_ticks_msec] can legitimately read 0
+## on the first frames, and that value has to mean "timing", not "idle". See
+## [member SpacetimeDBConnectionOptions.connect_timeout_seconds] for why the SDK
+## has to time the handshake itself.
+var _connect_started_ms: int = -1
+## Handshake budget in ms, from connect_timeout_seconds. 0 disables the timeout.
+var _connect_timeout_ms: int = 0
+## Stall time already credited back to the current handshake, capped at one budget
+## so a frame loop crawling below 1 fps cannot postpone the timeout indefinitely.
+var _handshake_credit_ms: int = 0
+
 
 func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
 	_db_name = db_name
@@ -112,6 +130,7 @@ func apply_options(options: SpacetimeDBConnectionOptions) -> void:
 	# surfacing a dead socket as STATE_CLOSED so the reconnect path can fire.
 	_websocket.heartbeat_interval = options.heartbeat_interval_seconds
 	_stall_threshold_ms = int(options.heartbeat_interval_seconds * 1000.0)
+	_connect_timeout_ms = int(options.connect_timeout_seconds * 1000.0)
 	set_compression_preference(options.compression)
 	self._debug_mode = options.debug_mode
 
@@ -130,6 +149,7 @@ func _physics_process(_delta: float) -> void:
 			)
 			_is_connected = true
 			_connection_requested = false
+			_connect_started_ms = -1 # the handshake is over; stop timing it
 			connected.emit()
 
 		# Process incoming packets
@@ -153,8 +173,11 @@ func _physics_process(_delta: float) -> void:
 			total_messages.emit(_total_messages_sent, _total_messages_received)
 			total_bytes.emit(_total_bytes_sent, _total_bytes_received)
 	elif state == WebSocketPeer.STATE_CONNECTING:
-		# Still trying to connect
-		pass
+		var waiting_ms: int = (
+			(Time.get_ticks_msec() - _connect_started_ms) if _connect_started_ms >= 0 else 0
+		)
+		if is_handshake_expired(waiting_ms, _connect_timeout_ms):
+			_abort_stalled_handshake(waiting_ms)
 	elif state == WebSocketPeer.STATE_CLOSING:
 		# Connection is closing
 		_print_log("SpacetimeDBConnection: connection closing")
@@ -194,6 +217,7 @@ func _physics_process(_delta: float) -> void:
 				disconnected.emit() # Normal closure signal
 		_is_connected = false
 		_connection_requested = false
+		_connect_started_ms = -1
 		set_physics_process(false) # Stop polling
 
 
@@ -205,6 +229,18 @@ func _track_stall() -> void:
 	var now_ms: int = Time.get_ticks_msec()
 	var gap_ms: int = (now_ms - _last_poll_ms) if _last_poll_ms > 0 else 0
 	_last_poll_ms = now_ms
+	# Time the main thread spent frozen is not time the remote spent failing to
+	# answer, so a handshake in flight gets that gap back rather than being abandoned
+	# for a local freeze. Kept out of the keepalive branch below on purpose: that one
+	# is disabled outright when heartbeat_interval_seconds is 0.
+	if _connect_started_ms >= 0:
+		var credit_ms: int = handshake_stall_credit(
+			gap_ms,
+			_handshake_credit_ms,
+			_connect_timeout_ms,
+		)
+		_connect_started_ms += credit_ms
+		_handshake_credit_ms += credit_ms
 	if is_stall_gap(gap_ms, _stall_threshold_ms):
 		_post_stall_polls = STALL_GUARD_POLLS
 	elif _post_stall_polls > 0:
@@ -216,6 +252,69 @@ func _track_stall() -> void:
 ## (heartbeat disabled) → never a stall.
 static func is_stall_gap(gap_ms: int, threshold_ms: int) -> bool:
 	return threshold_ms > 0 and gap_ms >= threshold_ms
+
+
+## True when a handshake has been waiting longer than its budget. timeout_ms == 0
+## (the timeout is switched off) → never expired. Pure, so the decision is testable
+## without a socket.
+static func is_handshake_expired(waiting_ms: int, timeout_ms: int) -> bool:
+	return timeout_ms > 0 and waiting_ms >= timeout_ms
+
+
+## Milliseconds of [param gap_ms] to give back to a handshake that was in flight
+## across a frozen frame loop, given the [param credited_ms] already returned to it
+## and the budget it runs under. Nothing is credited below
+## [constant HANDSHAKE_STALL_GAP_MS] (that is frame pacing, not a freeze), nothing
+## when the timeout is off, and never more than one budget in total — a loop running
+## slower than one frame per second would otherwise postpone the timeout forever.
+## Pure, so the arithmetic is testable without a socket.
+static func handshake_stall_credit(gap_ms: int, credited_ms: int, budget_ms: int) -> int:
+	if budget_ms <= 0 or gap_ms < HANDSHAKE_STALL_GAP_MS:
+		return 0
+	return mini(gap_ms, maxi(budget_ms - credited_ms, 0))
+
+
+## Ends an attempt that never got past the handshake. The peer is replaced rather
+## than reused: [method WebSocketPeer.connect_to_url] refuses a peer that is not
+## [constant WebSocketPeer.STATE_CLOSED], and the one being abandoned here is still
+## connecting, so the reconnect this error triggers would otherwise fail to start.
+##
+## The signal goes out last, after the state is settled, because a listener may
+## connect again from inside it — and that fresh attempt must not be the one this
+## call switches processing off for.
+func _abort_stalled_handshake(waiting_ms: int) -> void:
+	# The query string is cut off, not printed: on Web the token travels in it (the
+	# handshake there cannot carry an Authorization header), and this line is not
+	# gated behind debug_mode, so the full URL would put a credential in the console.
+	printerr(
+		(
+			"SpacetimeDBConnection: handshake to %s did not complete within %.1fs "
+			+ "(the socket never opened); giving up on this attempt."
+		)
+		% [_target_url.get_slice("?", 0), waiting_ms / 1000.0]
+	)
+	_reset_peer()
+	_is_connected = false
+	_connection_requested = false
+	_connect_started_ms = -1
+	set_physics_process(false)
+	connection_error.emit(
+		ERR_TIMEOUT,
+		"WebSocket handshake timed out after %.1fs" % (waiting_ms / 1000.0),
+	)
+
+
+## Drops the current peer and puts a fresh one in its place, carrying over the
+## settings [method apply_options] applied — a new [WebSocketPeer] starts with the
+## engine defaults, and a heartbeat_interval left at 0 would silently disable both
+## keepalive and the stall detection that reads it.
+func _reset_peer() -> void:
+	if _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED:
+		_websocket.close()
+	_websocket = WebSocketPeer.new()
+	_websocket.inbound_buffer_size = _options.inbound_buffer_size
+	_websocket.outbound_buffer_size = _options.outbound_buffer_size
+	_websocket.heartbeat_interval = _options.heartbeat_interval_seconds
 
 
 ## Monitor name suffix to the getter [Performance] samples for it. Built per call
@@ -425,16 +524,9 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 
 	if _connection_requested:
 		_print_log("SpacetimeDBConnection: Previous attempt still in progress, resetting.")
-		if _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED:
-			_websocket.close()
+		_reset_peer()
 		_is_connected = false
 		_connection_requested = false
-		_websocket = WebSocketPeer.new()
-		_websocket.inbound_buffer_size = _options.inbound_buffer_size
-		_websocket.outbound_buffer_size = _options.outbound_buffer_size
-		# Re-apply heartbeat — a fresh peer defaults to 0 (keepalive off), which would
-		# silently disable stall detection on this retried connection.
-		_websocket.heartbeat_interval = _options.heartbeat_interval_seconds
 
 	if _token.is_empty():
 		# Loud, and reported: the caller asked for a connection that is not going to
@@ -494,6 +586,8 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		_connection_requested = true
 		_last_poll_ms = 0 # fresh poll clock — first poll sets the baseline, no false stall
 		_post_stall_polls = 0
+		_connect_started_ms = Time.get_ticks_msec() # the handshake budget starts here
+		_handshake_credit_ms = 0
 		set_physics_process(true)
 
 
@@ -504,6 +598,7 @@ func disconnect_from_server(code: int = 1000, reason: String = "Client initiated
 		_websocket.close(code, reason)
 	_is_connected = false
 	_connection_requested = false
+	_connect_started_ms = -1
 
 
 ## Returns [code]true[/code] if the WebSocket is currently open.

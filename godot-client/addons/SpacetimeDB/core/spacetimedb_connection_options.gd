@@ -58,6 +58,26 @@ var outbound_buffer_size: int = 1024 * 1024 * 2
 ## PONG arrives before the next one, detecting a dead/half-open socket within ~2 intervals
 ## instead of waiting out the OS TCP timeout (minutes). [code]0.0[/code] disables keepalive.
 var heartbeat_interval_seconds: float = 15.0
+## Seconds a connection attempt may sit in the WebSocket handshake (TCP connect plus
+## HTTP upgrade) before it is abandoned and reported as [constant ERR_TIMEOUT].
+##
+## Godot's [WebSocketPeer] has no handshake timeout of its own — [member
+## WebSocketMultiplayerPeer.handshake_timeout] belongs to the multiplayer peer, and
+## [code]WSLPeer::poll[/code] only ages a socket once it is open. So a remote that
+## accepts the TCP connection and never answers the upgrade (a proxy in front of a
+## dead upstream, a half-open NAT entry, a server wedged mid-boot) leaves the client
+## in [constant WebSocketPeer.STATE_CONNECTING] for as long as it holds the socket:
+## no [signal SpacetimeDBClient.connected], no [signal
+## SpacetimeDBClient.connection_error], and no auto-reconnect either, because the
+## attempt that would have to fail first never ends.
+##
+## A frozen frame loop is not counted against the handshake: a poll gap over
+## [constant SpacetimeDBConnection.HANDSHAKE_STALL_GAP_MS] is credited back to it, up
+## to one budget in total. That rule does not read [member heartbeat_interval_seconds],
+## so turning keepalive off does not quietly harden this budget.
+##
+## [code]0.0[/code] disables the timeout and restores that wait-forever behaviour.
+var connect_timeout_seconds: float = 15.0
 
 ## Per-frame time budget in microseconds for applying parsed server messages.
 ## Higher values drain bursts (initial subscription, mass updates) faster at the
