@@ -33,6 +33,21 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **Timeouts and backoffs now run on the wall clock, not the game clock.** Every
+  `SceneTree.create_timer()` in the SDK took the default `ignore_time_scale = false`,
+  so all of them stopped dead at `Engine.time_scale = 0` — a standard way to pause a
+  Godot game. Measured on 4.8.dev: over 255 ms of real time at scale 0, a default timer
+  did not move at all while an `ignore_time_scale` one counted down normally. So a
+  connection that dropped while the game was paused that way never retried (the backoff
+  timer was frozen — the same stalled-backoff failure `reconnect_on_app_resume` exists
+  for, reached from a different direction), an `await …wait_for_response()` stayed
+  suspended for the length of the freeze, and slow motion stretched every network
+  timeout by `1/time_scale`. All six timers — the reducer/procedure/one-off response
+  wait, `SpacetimeDBSubscription.wait_for_applied()` / `wait_for_end()`, the reconnect
+  backoff, the resubscribe watchdog and the `SpacetimeAuth` retry delay — now ignore the
+  time scale, since each one is measuring a server or a network rather than game time.
+  They stay pause-immune as before. Covered by `tests/test_timeouts_wall_clock.gd`.
+
 - **A unique index no longer loses a row when a transaction hands its key over.**
   `_ModuleTableUniqueIndex` erased its cache entry by key on delete, without checking
   whose row was sitting there. `LocalDatabase` applies a table update's whole insert

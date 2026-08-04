@@ -736,7 +736,10 @@ func _wait_for_response(
 		cache.erase(request_id)
 		print_log("SpacetimeDBClient: Cache hit for Req ID: %d" % request_id)
 		return cached
-	var timer: SceneTreeTimer = get_tree().create_timer(timeout_seconds)
+	# Wall clock (ignore_time_scale): a response timeout measures the server, and a game
+	# frozen with Engine.time_scale = 0 would otherwise leave this await suspended for
+	# the whole freeze — indefinitely, for a pause menu that holds the scale at zero.
+	var timer: SceneTreeTimer = get_tree().create_timer(timeout_seconds, true, false, true)
 	var result_container: Array = [null]
 	# done lives in a container because GDScript lambdas capture local primitives
 	# by value (godot#69014); a bare `var done` would never reflect the mutation.
@@ -1534,7 +1537,12 @@ func _schedule_next_reconnect_attempt() -> void:
 		_emit_disconnected()
 		return
 
-	_reconnect_timer = tree.create_timer(backoff)
+	# Wall clock (ignore_time_scale), like every other timer in the SDK: a backoff is a
+	# statement about the network, not about game time, and a game frozen with
+	# Engine.time_scale = 0 (the usual pause idiom) would otherwise never retry — the
+	# same stalled-backoff failure reconnect_on_app_resume exists for, from a different
+	# cause. Slow motion would stretch it just as wrongly.
+	_reconnect_timer = tree.create_timer(backoff, true, false, true)
 	if _reconnect_timer:
 		_reconnect_timer.timeout.connect(_attempt_reconnect, CONNECT_ONE_SHOT)
 	else:
@@ -1738,7 +1746,13 @@ func _resubscribe_saved_queries() -> void:
 	# the call safely no-ops instead of invoking on a dangling self.
 	var tree: SceneTree = get_tree()
 	if tree:
-		var watchdog: SceneTreeTimer = tree.create_timer(RESUBSCRIBE_TIMEOUT_SECONDS)
+		# Wall clock — see the reconnect timer above.
+		var watchdog: SceneTreeTimer = tree.create_timer(
+			RESUBSCRIBE_TIMEOUT_SECONDS,
+			true,
+			false,
+			true,
+		)
 		watchdog \
 				.timeout \
 				.connect(_on_resubscribe_watchdog.bind(epoch, applied_count, total_sets), CONNECT_ONE_SHOT)

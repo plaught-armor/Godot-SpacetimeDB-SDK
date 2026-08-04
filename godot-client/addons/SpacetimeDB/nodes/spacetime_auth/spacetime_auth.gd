@@ -175,7 +175,9 @@ func _exchange_impl(
 				% [attempt + 1, max_attempts, delay]
 			),
 		)
-		await get_tree().create_timer(delay).timeout
+		# Wall clock (ignore_time_scale): a retry delay measures the auth host, and a
+		# game frozen with Engine.time_scale = 0 would otherwise never retry at all.
+		await get_tree().create_timer(delay, true, false, true).timeout
 		# Parent may have freed us during the real-time backoff wait (C5); the
 		# next iteration would touch a dead _http. Bail before that.
 		if not is_instance_valid(self):

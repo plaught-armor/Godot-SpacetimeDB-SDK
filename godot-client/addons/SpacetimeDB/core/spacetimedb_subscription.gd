@@ -81,7 +81,9 @@ func wait_for_applied(timeout_sec: float = 5) -> Error:
 	# Per-await LOCAL timer + poll. Concurrent awaiters on the same handle each get
 	# their own deadline instead of clobbering a shared timer/broadcast signal (which
 	# let a short-timeout caller resolve a long-timeout caller early).
-	var timer: SceneTreeTimer = tree.create_timer(timeout_sec)
+	# Wall clock (ignore_time_scale): the deadline is about the server answering, so a
+	# game frozen with Engine.time_scale = 0 must not suspend it for the whole freeze.
+	var timer: SceneTreeTimer = tree.create_timer(timeout_sec, true, false, true)
 	while _state == State.PENDING and timer.time_left > 0.0:
 		await tree.process_frame
 		if not is_instance_valid(_client): # client freed mid-await (C5 / H8)
@@ -100,7 +102,8 @@ func wait_for_end(timeout_sec: float = 5) -> Error:
 	var tree: SceneTree = _client.get_tree()
 	if tree == null:
 		return ERR_DOES_NOT_EXIST
-	var timer: SceneTreeTimer = tree.create_timer(timeout_sec)
+	# Wall clock — see wait_for_applied above.
+	var timer: SceneTreeTimer = tree.create_timer(timeout_sec, true, false, true)
 	while _state != State.ENDED and timer.time_left > 0.0:
 		await tree.process_frame
 		if not is_instance_valid(_client): # client freed mid-await (C5 / H8)
