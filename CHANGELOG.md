@@ -33,6 +33,21 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A manual reconnect starts a clean session instead of stacking on the last one.**
+  `clear_local_db()` was called from exactly one place, the auto-reconnect path, so a
+  `disconnect_db()` followed later by `connect_db()` on the same client began the next
+  session on top of the previous session's rows: every re-delivered row came back at
+  refcount 2, so that session's own unsubscribe left it cached; a row deleted server-side
+  while the client was away stayed cached for good with no `on_delete` to report it; and
+  `_received_initial_subscription` was still true, so `database_initialized` never fired
+  again and anything awaiting it waited forever. `connect_db()` now wipes and re-arms when
+  it is starting a session rather than reconfiguring a live one — `disconnect_db()` still
+  leaves the rows alone, since reading last-known state while offline is why it does. The
+  wipe reports every row as deleted, and because that is game code, a listener that calls
+  `disconnect_db()` or starts its own `connect_db()` from it now supersedes the call in
+  progress, the same countermand the auto-reconnect path already honoured. Covered by
+  `tests/test_manual_reconnect_session.gd`.
+
 - **A client running without threads now gets the same reconnect boundary as one with
   them.** `_prepare_for_reconnect()` put its whole session-boundary cleanup behind
   `if use_threading`, so a threadless client kept two things across a reconnect: messages

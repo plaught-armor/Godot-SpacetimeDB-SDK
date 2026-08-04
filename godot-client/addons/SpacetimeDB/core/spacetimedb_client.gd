@@ -178,6 +178,14 @@ var _saved_subscription_queries: Array[PackedStringArray] = []
 ## has since moved on, so a superseded cycle's late `applied`/`end` can't clear the
 ## saved queries or spuriously emit `reconnected` on a cycle that already moved past it.
 var _resubscribe_epoch: int = 0
+## Bumped by every call that states what the caller wants the connection to be doing —
+## [method connect_db] and [method disconnect_db]. [method connect_db] captures it before
+## reporting its cache wipe, which is game code, and stops if the number has moved by the
+## time the wipe returns: a listener that disconnected or started its own connect has
+## replaced this call's intent, and carrying on would connect against a disconnect or
+## clobber the newer call's host and options. [method _attempt_reconnect] makes the same
+## re-check against [member _reconnect_state] after its own wipe.
+var _session_intent: int = 0
 var _reconnect_timer: SceneTreeTimer = null
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
@@ -310,6 +318,28 @@ func connect_db(
 ) -> void:
 	_cancel_reconnection()
 	_disconnected_emitted = false # re-arm the terminal signal for this session
+	# A call that starts a session, rather than reconfiguring a live one, has to leave the
+	# last session's mirror behind. disconnect_db deliberately keeps those rows so a game
+	# can still read last-known state while offline, but they cannot be the floor the next
+	# session builds on: the resubscribe lands on top of them, so every re-delivered row
+	# comes back one refcount high and its own unsubscribe can no longer evict it, while a
+	# row deleted server-side in the meantime stays cached with no on_delete to report it.
+	# The wipe reports every row as deleted, exactly as the auto-reconnect one does, and
+	# re-arms database_initialized so the new session announces itself.
+	_session_intent += 1
+	var intent: int = _session_intent
+	if not is_connected_db():
+		if _local_db != null:
+			_local_db.clear_local_db()
+		_received_initial_subscription = false
+		# Reporting the wipe runs game code, so by here a listener may have called
+		# disconnect_db() or started its own connect_db(). Either one supersedes this
+		# call: finishing it would open a socket the listener asked to close, or write
+		# this call's host and options over the newer one's. Same countermand check
+		# _attempt_reconnect makes after its wipe.
+		if intent != _session_intent:
+			print_log("SpacetimeDBClient: connect_db superseded while the cache wipe was reported.")
+			return
 	if not options:
 		options = SpacetimeDBConnectionOptions.new()
 	connection_options = options
@@ -364,6 +394,9 @@ func connect_db(
 ## Intentionally disconnects from the database. Does not trigger auto-reconnect.
 func disconnect_db() -> void:
 	_cancel_reconnection()
+	# States an intent, so a connect_db still reporting its cache wipe stops rather than
+	# connecting the socket this call just asked to close. See _session_intent.
+	_session_intent += 1
 	_token = ""
 	# Close the socket whenever the peer is live — including mid-handshake
 	# (STATE_CONNECTING), which is_connected_db() (== _is_connected, set only on
