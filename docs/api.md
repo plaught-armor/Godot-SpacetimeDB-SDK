@@ -526,9 +526,16 @@ class SpacetimeDBQuery:
     func where_any(pairs: Array) -> SpacetimeDBQuery
 ```
 
-`where_in` adds `field IN (v1, v2, ...)` (empty `values` is a no-op). `where_any`
-adds an OR group of equality checks ANDed with the other conditions —
-`where_any([["kind", 1], ["kind", 2]])` produces `(kind = 1 OR kind = 2)`.
+`where_in` matches a field against any of several values (empty `values` is a no-op),
+and `where_any` does the same across different fields — both emit an OR group ANDed
+with the other conditions. `where_in("kind", [1, 2])` and
+`where_any([["kind", 1], ["kind", 2]])` both produce `(kind = 1 OR kind = 2)`.
+
+Neither emits `IN (...)`: SpacetimeDB's SQL has no `IN` operator. Its expression parser
+— the same one behind a subscription and a one-off query — accepts comparisons (`=`,
+`!=`, `<`, `<=`, `>`, `>=`) joined by `AND` / `OR` and rejects anything else, so an
+emitted `IN` came back as an unsupported expression and failed the whole query set. The
+practical ceiling on list length is the server's expression-recursion guard (1600).
 
 #### Output
 

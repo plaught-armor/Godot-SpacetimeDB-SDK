@@ -1,5 +1,10 @@
-# Test for SpacetimeDBQuery SQL generation, including the where_in (IN) and
-# where_any (OR group) extensions. Asserts exact SQL strings + value escaping.
+# Test for SpacetimeDBQuery SQL generation, including the where_in and where_any OR
+# groups. Asserts exact SQL strings + value escaping.
+#
+# Both of those emit OR groups rather than `IN (...)`: SpacetimeDB's expression parser
+# (the same one behind a subscription and a one-off query) accepts comparisons joined by
+# AND / OR and rejects everything else, so an emitted IN failed the whole query set. The
+# strings asserted here are what the server actually parses.
 #
 #   cd godot-client && <godot> --headless --path . \
 #       --script tests/test_query_builder.gd
@@ -51,16 +56,26 @@ func _run() -> int:
 		"SELECT * FROM u WHERE name = 'O''Brien'",
 	)
 
+	# An OR group, not `IN (...)`: SpacetimeDB's expression parser has no IN operator,
+	# and an emitted one came back as an unsupported expression that failed the whole
+	# query set. Same meaning, and it parses.
 	f += _check(
-		"where_in",
+		"where_in expands to an OR group",
 		SpacetimeDBQuery.table("circle").where_in("player_id", [1, 2, 3]).to_sql(),
-		"SELECT * FROM circle WHERE player_id IN (1, 2, 3)",
+		"SELECT * FROM circle WHERE (player_id = 1 OR player_id = 2 OR player_id = 3)",
 	)
 
 	f += _check(
 		"where_in strings",
 		SpacetimeDBQuery.table("u").where_in("tag", ["a", "b"]).to_sql(),
-		"SELECT * FROM u WHERE tag IN ('a', 'b')",
+		"SELECT * FROM u WHERE (tag = 'a' OR tag = 'b')",
+	)
+
+	# A single value still parenthesises, so it AND-joins with its neighbours safely.
+	f += _check(
+		"where_in with one value",
+		SpacetimeDBQuery.table("u").where("live", true).where_in("tag", ["a"]).to_sql(),
+		"SELECT * FROM u WHERE live = true AND (tag = 'a')",
 	)
 
 	f += _check(
@@ -73,7 +88,7 @@ func _run() -> int:
 		"SELECT * FROM e WHERE alive = true AND (kind = 1 OR kind = 2)",
 	)
 
-	# Empty IN list → no-op (no invalid SQL emitted).
+	# Empty value list → no-op (no dangling `()` fragment).
 	f += _check(
 		"empty where_in no-op",
 		SpacetimeDBQuery.table("x").where_in("y", []).to_sql(),
@@ -90,7 +105,7 @@ func _run() -> int:
 	f += _check(
 		"StringName in where_in",
 		SpacetimeDBQuery.table("e").where_in("state", [&"alive", &"dead"]).to_sql(),
-		"SELECT * FROM e WHERE state IN ('alive', 'dead')",
+		"SELECT * FROM e WHERE (state = 'alive' OR state = 'dead')",
 	)
 
 	# Invalid identifier → condition skipped (no malformed ` = value` fragment).
