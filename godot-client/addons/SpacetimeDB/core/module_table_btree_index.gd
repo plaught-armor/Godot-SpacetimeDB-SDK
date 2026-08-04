@@ -15,9 +15,8 @@ var _table_name: StringName
 var _field_name: StringName
 ## Ascending list of the distinct keys currently in the cache — a mirror of the
 ## multimap's keys kept sorted so range queries binary-search instead of scanning.
-## Maintained only at bucket create/empty edges (distinct-key churn), not per row.
-## Populated for every key type; only orderable types get a [code]filter_range[/code]
-## accessor from codegen, since [method Array.bsearch] needs a defined [code]<[/code].
+## Maintained only at bucket create/empty edges (distinct-key churn), not per row,
+## and only for keys [method Array.bsearch] can order (see [method _is_orderable_key]).
 var _sorted_keys: Array = []
 ## Reference to the subclass-owned multimap, captured in [method _connect_cache_to_db]
 ## so base-class range queries can read it (the typed [code]_cache[/code] lives on the
@@ -25,14 +24,34 @@ var _sorted_keys: Array = []
 var _cache_ref: Dictionary = { }
 
 
+## Whether [param k] is a value [method Array.bsearch] can order. Bytes-backed keys
+## (Identity / ConnectionId / u128 / u256 all map to [PackedByteArray]), row objects
+## and dictionaries have no [code]<[/code]: bsearch lands on an arbitrary index for
+## them, so [method _key_removed] would fail to find the key it was handed and the
+## mirror would keep every key the client ever saw. Deliberately a superset of
+## codegen's ORDERABLE_INDEX_TYPES (int / float / String): no generated accessor can
+## be starved of a mirror, at the cost of maintaining one for a StringName or bool
+## column that has no range accessor to read it.
+func _is_orderable_key(k: Variant) -> bool:
+	var t: int = typeof(k)
+	return (
+		t == TYPE_INT or t == TYPE_FLOAT or t == TYPE_STRING
+		or t == TYPE_STRING_NAME or t == TYPE_BOOL
+	)
+
+
 ## Inserts [param k] into [member _sorted_keys] at its sorted position.
 func _key_added(k: Variant) -> void:
+	if not _is_orderable_key(k):
+		return
 	var i: int = _sorted_keys.bsearch(k, true)
 	_sorted_keys.insert(i, k)
 
 
 ## Removes [param k] from [member _sorted_keys] if present.
 func _key_removed(k: Variant) -> void:
+	if not _is_orderable_key(k):
+		return
 	var i: int = _sorted_keys.bsearch(k, true)
 	if i < _sorted_keys.size() and _sorted_keys[i] == k:
 		_sorted_keys.remove_at(i)
