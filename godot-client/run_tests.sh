@@ -86,14 +86,31 @@ for t in "${tests[@]}"; do
 	if [ "$code" -eq 124 ]; then
 		echo "timed out after ${TEST_TIMEOUT}s" >>"$log"
 	fi
+	# A GDScript runtime fault (calling a method that does not exist, indexing past
+	# the end, dereferencing null) aborts the function it happened in but not the
+	# process: the test's own quit(fails) still runs, with whatever count it had
+	# reached before the fault. Exit code 0, "ALL PASS" printed, and every assertion
+	# the fault skipped counted as passing. Godot writes "SCRIPT ERROR" for exactly
+	# that case — a push_error from test code prints "ERROR"/"USER ERROR" instead, and
+	# several tests raise those deliberately — so it is the marker to fail on. A parse
+	# error already exits non-zero on its own.
+	faulted=0
+	if [ "$code" -eq 0 ] && grep -q 'SCRIPT ERROR' "$log"; then
+		faulted=1
+	fi
 	summary="$(grep -E "ALL PASS|FAIL" "$log" | tail -1)"
-	if [ "$code" -eq 0 ]; then
+	if [ "$code" -eq 0 ] && [ "$faulted" -eq 0 ]; then
 		printf 'PASS  %-34s %s\n' "$base" "$summary"
 	else
 		failed=$((failed + 1))
 		failed_names+=("$base")
-		printf 'FAIL  %-34s exit=%d  %s\n' "$base" "$code" "$summary"
-		tail -8 "$log" | sed 's/^/      | /'
+		if [ "$faulted" -eq 1 ]; then
+			printf 'FAIL  %-34s runtime error  %s\n' "$base" "$summary"
+			grep -m3 'SCRIPT ERROR' "$log" | sed 's/^/      | /'
+		else
+			printf 'FAIL  %-34s exit=%d  %s\n' "$base" "$code" "$summary"
+			tail -8 "$log" | sed 's/^/      | /'
+		fi
 	fi
 	if [ "${VERBOSE:-0}" != "0" ]; then
 		sed 's/^/      | /' "$log"
