@@ -77,7 +77,19 @@ var auto_tune_frame_budget: bool = true
 var frame_budget_min_us: int = 1000
 ## Upper clamp for the auto-tuned budget (microseconds).
 var frame_budget_max_us: int = 8000
-## Target fps the auto-tuner defends. [code]0[/code] = use [member Engine.physics_ticks_per_second].
+## Target fps the auto-tuner defends. [code]0[/code] resolves it: the engine's frame cap
+## ([member Engine.max_fps]) once the game is actually reaching it, otherwise
+## [member Engine.physics_ticks_per_second].
+##
+## The tuner reads the RENDERED frame rate, so the target has to be a rendered rate too.
+## A cap the game reaches is the rate it asked for — comparing it against the physics
+## rate instead made a 30 fps cap on 60 Hz physics read as permanently below target and
+## drove the drain budget to its floor. A cap it does not reach is fiction, so it is
+## ignored: capping above what the hardware delivers must not do the same thing in
+## reverse. Set this explicitly when the cap comes from vsync rather than
+## [member Engine.max_fps], or when capping far below the physics rate for power — down
+## there the rendered rate stops answering "is the drain costing too much", since the
+## engine sleeps out the difference.
 var auto_tune_target_fps: int = 0
 
 ## If [code]true[/code], the client automatically reconnects after unintentional disconnects.

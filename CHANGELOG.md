@@ -33,6 +33,31 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **The drain auto-tuner no longer mistakes a frame-rate cap for a struggling game.**
+  `_auto_tune_budget()` compares `Engine.get_frames_per_second()` — the *rendered*
+  frame rate — against a target that defaulted to `Engine.physics_ticks_per_second`,
+  which is a different loop. A game that caps itself at 30 fps while physics runs at
+  the default 60 therefore read as permanently below target, so the AIMD controller
+  backed off on every tick: measured, the budget falls from the configured 4000 us to
+  the 1000 us floor within twelve ticks and stays there, draining the message backlog
+  four times slower than configured while nothing was actually struggling. A 30 fps cap
+  is a common mobile configuration. The target now resolves through the new pure
+  `SpacetimeDBClient.resolve_target_fps()`: an explicit
+  `auto_tune_target_fps` wins, else the engine's frame cap (`Engine.max_fps`) if there
+  is one *and the game is actually reaching it*, else the physics tick rate as before —
+  so an *uncapped* game rendering below its physics rate still backs off, which is the
+  case the controller is for. The "actually reaching it" condition matters as much as
+  the cap itself: a cap is what a game permits, not what it achieves, and capping above
+  what the hardware delivers is a common idiom, so adopting an unreached 240 fps cap on
+  a machine rendering 60 would pin the budget at the floor exactly as the original bug
+  did. Two configurations still want an explicit `auto_tune_target_fps`: a game capped
+  by vsync rather than `max_fps`, and one capped far below its physics rate (a 10 fps
+  battery-saver mode), where the rendered rate stops being evidence about the drain at
+  all — the engine sleeps out the difference, so the budget ramps to
+  `frame_budget_max_us` and spends it every physics tick. Lower that ceiling or turn
+  `auto_tune_frame_budget` off for such a mode. Covered by nine new cases in
+  `tests/test_budget_tuner.gd`.
+
 - **A paused game keeps its connection.** The socket is polled from
   `_physics_process`, and no `process_mode` was set anywhere in the addon, so
   `get_tree().paused = true` — the ordinary way to pause a Godot game — stopped the

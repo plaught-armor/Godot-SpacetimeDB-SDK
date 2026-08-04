@@ -738,7 +738,7 @@ class SpacetimeDBConnectionOptions:
     var auto_tune_frame_budget: bool = true
     var frame_budget_min_us: int = 1000
     var frame_budget_max_us: int = 8000
-    var auto_tune_target_fps: int = 0          # 0 = use Engine.physics_ticks_per_second
+    var auto_tune_target_fps: int = 0          # 0 = use the frame cap, else the physics rate
 ```
 
 | Name | Description |
@@ -748,7 +748,7 @@ class SpacetimeDBConnectionOptions:
 | `auto_tune_frame_budget` | When `true`, `frame_budget_us` is auto-tuned at runtime by an fps feedback loop: ramp up while a backlog drains and fps stays healthy, back off when fps dips. |
 | `frame_budget_min_us` | Lower clamp for the auto-tuned budget, in microseconds. |
 | `frame_budget_max_us` | Upper clamp for the auto-tuned budget, in microseconds. |
-| `auto_tune_target_fps` | Target fps the auto-tuner defends. `0` uses `Engine.physics_ticks_per_second`. |
+| `auto_tune_target_fps` | Target fps the auto-tuner defends. `0` resolves it: the engine's frame cap (`Engine.max_fps`) once the game is actually reaching it, otherwise `Engine.physics_ticks_per_second`. The tuner reads the *rendered* frame rate, so the target has to be a rendered rate too — a game capped at 30 fps with 60 Hz physics would otherwise read as permanently below target and drive the drain budget to its floor. A cap the game never reaches is ignored, since capping above what the hardware delivers (240 on a machine rendering 60) would do the same thing in reverse. Set this explicitly when the cap comes from vsync rather than `max_fps`, or when capping far below the physics rate for power — down there the rendered rate no longer says anything about what the drain costs, so lower `frame_budget_max_us` or turn `auto_tune_frame_budget` off instead. |
 
 #### Reconnection options
 

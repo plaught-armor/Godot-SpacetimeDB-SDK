@@ -1044,10 +1044,13 @@ func _process_results_asynchronously() -> void:
 func _auto_tune_budget(pending: int) -> void:
 	if not _auto_tune_budget_enabled:
 		return
-	var target_fps: int = _auto_tune_target_fps
-	if target_fps <= 0:
-		target_fps = Engine.physics_ticks_per_second
 	var fps: float = Engine.get_frames_per_second()
+	var target_fps: int = resolve_target_fps(
+		_auto_tune_target_fps,
+		Engine.max_fps,
+		Engine.physics_ticks_per_second,
+		fps,
+	)
 	_frame_budget_us = _compute_tuned_budget(
 		_frame_budget_us,
 		fps,
@@ -1056,6 +1059,51 @@ func _auto_tune_budget(pending: int) -> void:
 		_frame_budget_min_us,
 		_frame_budget_max_us,
 	)
+
+
+## The frame rate the tuner defends, from the configured target, the engine's frame
+## cap, and the physics tick rate. Pure, so the resolution is testable without an
+## engine.
+##
+## The signal the tuner reads is [method Engine.get_frames_per_second] — the RENDERED
+## frame rate — so the target has to be a rendered rate too. It used to fall back to
+## the physics tick rate, which is a different loop: a game that caps itself at 30 fps
+## while physics runs at the default 60 read as permanently below target, so the budget
+## collapsed to its floor and stayed there (measured: 4000us to the 1000us floor within
+## twelve ticks) even though nothing was struggling. A cap is the rate the game asked
+## for, so it is the rate to defend.
+##
+## The physics rate remains the last resort, which keeps the old behaviour for an
+## uncapped game — there, a render rate below the physics rate really is the frame loop
+## falling behind, and handing time back to it is the point of the controller. A game
+## capped by vsync rather than [member Engine.max_fps] should set
+## [member SpacetimeDBConnectionOptions.auto_tune_target_fps] explicitly.
+##
+## Note the remaining blind spot, which no target can fix: a cap far below the physics
+## rate (a 10 fps battery-saver mode) means the rendered rate no longer answers "is the
+## drain costing too much" — the engine sleeps out the difference, so the budget ramps
+## to [member SpacetimeDBConnectionOptions.frame_budget_max_us] and spends that every
+## physics tick regardless. A game that caps that low to save power should lower
+## [member SpacetimeDBConnectionOptions.frame_budget_max_us] or turn
+## [member SpacetimeDBConnectionOptions.auto_tune_frame_budget] off.
+static func resolve_target_fps(
+	configured: int,
+	max_fps: int,
+	physics_tps: int,
+	measured_fps: float,
+) -> int:
+	if configured > 0:
+		return configured
+	# The cap counts as the target only once the game is actually reaching it. A cap is
+	# what the game PERMITS, not what it achieves, and capping above what the hardware
+	# delivers is a common idiom ("cap at the refresh rate, we will never hit it") — so
+	# adopting an unreached cap would compare 60 against 240 and pin the budget at the
+	# floor, which is the very failure this resolution exists to remove, mirrored. Cold
+	# start reads 0 fps and falls through; the controller holds on a 0 reading anyway,
+	# so the first real frame arms the target a tick later.
+	if max_fps > 0 and measured_fps >= max_fps * 0.9:
+		return max_fps
+	return physics_tps
 
 
 ## Pure AIMD step — returns the next budget for the given state, so the controller
