@@ -33,6 +33,17 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **An outstanding call whose response never arrives no longer strands its handle.**
+  `_pending_reducer_calls` / `_pending_procedure_calls` shrank only when the matching
+  response arrived or the connection died. Neither happens when a reply is lost while
+  the socket stays up — the BSATN parser drops a corrupt buffer and deliberately keeps
+  the connection — so that call's handle, and everything it holds, stayed in the map for
+  the rest of the session (measured: 4196 entries after 4196 such calls, none evictable).
+  Both maps now stop at `SpacetimeDBStats.MAX_PENDING` entries per kind, dropping the
+  oldest outstanding handle and stamping it `TIMEOUT` with a reason so an awaiter is not
+  left holding one nothing can complete. A handle that already reached an outcome keeps
+  it. Covered by `tests/test_pending_call_cap.gd`.
+
 - **A btree index on an Identity column no longer leaks its sorted-key mirror.**
   `Identity`, `ConnectionId`, `u128` and `u256` all arrive as `PackedByteArray`, and
   `PackedByteArray` has no `<` — so `Array.bsearch` landed on an arbitrary slot for
