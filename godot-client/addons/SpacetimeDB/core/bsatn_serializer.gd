@@ -635,6 +635,15 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 
 	# Vec<T> — recursive array serialization via prefix
 	if bsatn_type_str.begins_with(&"vec_"):
+		# Vec<u8> is the one prefixed type the deserializer never takes this path for:
+		# _read_value_from_bsatn_type resolves its primitive reader first, so "vec_u8"
+		# hits read_vec_u8 and comes back as a PackedByteArray. Reject that here and an
+		# Option<Vec<u8>> field — or a Vec<u8> enum variant — read off the wire could
+		# not be written back out. The length prefix and payload are identical either
+		# way; only the container type differs.
+		if value_type == TYPE_PACKED_BYTE_ARRAY and bsatn_type_str == &"vec_u8":
+			write_vec_u8(value)
+			return not has_error()
 		if value is not Array:
 			_set_error("Expected Array for BSATN type '%s', got %s" % [bsatn_type_str, type_string(value_type)])
 			return false
