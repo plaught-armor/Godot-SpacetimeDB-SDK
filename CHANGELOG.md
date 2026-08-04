@@ -33,6 +33,19 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **`on_delete` on a PK-less table no longer fires while the row is still in the cache.**
+  The two delete callbacks split on exactly one thing: `on_before_delete` runs while the
+  row is still queryable, `on_delete` once it is gone. The PK path erases from the table
+  dict between them; the PK-less path fired both from inside its refcount-decrement loop
+  and only compacted the row array afterwards, so `on_delete` still found the row in
+  `iter()` / `get_all_rows()`. A consumer that rebuilds its view from the cache on delete
+  — the natural shape for a flat table — kept showing the row it had just been told was
+  deleted, until the next event touched that table. Deletes now fire after the
+  compaction. One difference from the PK path is deliberate and documented on
+  `subscribe_to_before_deletes`: a PK-less batch evicting several rows reports every
+  before-delete and then every delete, where the PK path interleaves each row's pair.
+  Both orders are pinned in `tests/test_pkless_delete_order.gd`.
+
 - **An outstanding call whose response never arrives no longer strands its handle.**
   `_pending_reducer_calls` / `_pending_procedure_calls` shrank only when the matching
   response arrived or the connection died. Neither happens when a reply is lost while
