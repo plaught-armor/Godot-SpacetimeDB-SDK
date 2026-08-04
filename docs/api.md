@@ -41,6 +41,11 @@ class SpacetimeDBClient:
 
 Disconnects from the SpacetimeDB database.
 
+`disconnected` is terminal: nothing more from that session is applied after it. Traffic the
+socket had already handed over but that was not yet parsed or drained is dropped, so no row
+callback or transaction update arrives for a session the game has been told is over. Rows
+already in the local mirror are kept, so a game can still read last-known state offline.
+
 #### `is_connected_db()` method
 
 ```gdscript

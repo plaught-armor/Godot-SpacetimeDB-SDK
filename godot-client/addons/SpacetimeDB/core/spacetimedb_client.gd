@@ -447,10 +447,21 @@ func disconnect_db() -> void:
 # Idempotent terminal `disconnected`. See _disconnected_emitted: `disconnected`
 # fires at most once per session, so a server-initiated close (or an exhausted
 # reconnect) followed by a cleanup disconnect_db() does not double-fire it.
+#
+# This is the third session boundary, alongside _prepare_for_reconnect and
+# connect_db, and it needs the same queue drop they do: the socket is closed but
+# packets received from it are still queued, results parsed out of it are still
+# waiting, and a batch may be halfway through being applied. Without this they keep
+# landing for frames after the terminal signal — row callbacks and transaction
+# updates for a session the game has already been told is over, mutating a mirror
+# disconnect_db deliberately leaves in place as last-known state. Dropped before the
+# signal, so a listener that inspects the client sees a settled one; the call runs
+# no game code of its own.
 func _emit_disconnected() -> void:
 	if _disconnected_emitted:
 		return
 	_disconnected_emitted = true
+	_drop_dead_session_traffic()
 	disconnected.emit()
 
 
@@ -1092,7 +1103,12 @@ func _process_results_asynchronously() -> void:
 	# single message exceeds the whole budget.
 	var start_us: int = Time.get_ticks_usec()
 	var processed: int = 0
-	while not _should_stop_drain(
+	# The cursor bound is not redundant with `remaining`: _handle_parsed_message runs
+	# game code, and a listener that ends the session (disconnect_db from a row
+	# callback, say) drops the dead session's traffic — including this very batch —
+	# out from under the loop. Without this check the next iteration indexes an
+	# emptied array and the frame dies on an out-of-bounds read.
+	while _drain_cursor < _drain_batch.size() and not _should_stop_drain(
 		processed,
 		remaining,
 		_max_msgs_per_frame,
