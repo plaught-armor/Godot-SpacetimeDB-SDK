@@ -33,6 +33,17 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A `RowReceiver` now unsubscribes from the table it subscribed to.** Its listeners are
+  registered under the name `_subscribe_to_table()` was called with, but `_exit_tree()`
+  unsubscribed whatever `selected_table_name` held at that moment. Assigning
+  `table_to_receive` at runtime moves that property (through `on_set`) without
+  re-subscribing, so the first table's listeners were never removed — Callables bound to
+  a node that is then freed, which `LocalDatabase` goes on calling for every row event on
+  that table, for the rest of the session. The receiver now remembers the name it
+  subscribed with. Swapping the table while the receiver is in the tree still does not
+  re-subscribe, which is now stated on `table_to_receive`: leave the tree and re-enter to
+  switch tables. Covered by `tests/test_row_receiver_retable.tscn`.
+
 - **`on_delete` on a PK-less table no longer fires while the row is still in the cache.**
   The two delete callbacks split on exactly one thing: `on_before_delete` runs while the
   row is still queryable, `on_delete` once it is gone. The PK path erases from the table

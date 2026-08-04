@@ -14,6 +14,10 @@ signal delete(row: _ModuleTableType)
 signal transactions_completed
 
 @export var debug_mode: bool = false
+## The row type whose table this receiver forwards. Assign it in the editor: setting it
+## while the receiver is inside the tree moves [member selected_table_name] but does not
+## re-subscribe, so the receiver keeps delivering the table it entered the tree with.
+## Leave the tree and re-enter (or re-add the node) to switch tables at runtime.
 @export var table_to_receive: _ModuleTableType:
 	set = on_set
 
@@ -28,6 +32,14 @@ var _current_db_instance: LocalDatabase = null
 ## and drops itself at the next resume point if a newer entry has taken over, so
 ## only one pass ever reaches the row replay in [method _subscribe_to_table].
 var _entry_generation: int = 0
+## The table [method _subscribe_to_table] actually registered the listeners under, which
+## is not always [member selected_table_name] by the time the receiver leaves the tree:
+## assigning [member table_to_receive] at runtime moves that property (through
+## [method on_set]) without re-subscribing. Unsubscribing the current name instead of
+## this one left the first table's listeners registered for good — Callables bound to a
+## node that is about to be freed, which [LocalDatabase] then calls on every row event
+## for that table. Empty until a subscription pass completes.
+var _subscribed_table_name: StringName = &""
 
 
 func _ready() -> void:
@@ -63,7 +75,8 @@ func _init_subscription(generation: int) -> void:
 
 
 func _exit_tree() -> void:
-	_unsubscribe_from_table(selected_table_name)
+	_unsubscribe_from_table(_subscribed_table_name)
+	_subscribed_table_name = &""
 	# _ready runs once per node, not once per tree entry, so without this a
 	# receiver that leaves the tree and comes back (a pooled node, a re-parented
 	# actor, a scene swapped out and back in) stays unsubscribed for good — with
@@ -211,6 +224,9 @@ func _subscribe_to_table(db: LocalDatabase, table_name_sn: StringName, generatio
 	db.subscribe_to_updates(table_name_sn, _on_update)
 	db.subscribe_to_deletes(table_name_sn, _on_delete)
 	db.subscribe_to_transactions_completed(table_name_sn, _on_transactions_completed)
+	# Recorded here, not read back from selected_table_name later: this is the name the
+	# listeners above are keyed by, and the property can move without them.
+	_subscribed_table_name = table_name_sn
 
 	_print_log("Successfully subscribed to table: %s" % table_name_sn)
 
