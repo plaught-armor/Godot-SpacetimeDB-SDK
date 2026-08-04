@@ -5,7 +5,9 @@
 #   - categories are isolated,
 #   - record_response on an unknown id is a no-op,
 #   - reset() clears everything,
-#   - pending sends are capped at MAX_PENDING and eviction keeps in_flight honest.
+#   - pending sends are capped at MAX_PENDING and eviction keeps in_flight honest,
+#   - retire_pending() drops the sends a dead connection will never answer while
+#     keeping the completed round trips' history.
 #
 #   cd godot-client && <godot> --headless --path . \
 #       --script tests/test_stats.gd
@@ -23,6 +25,7 @@ func _initialize() -> void:
 	fails += _test_unknown_response_noop()
 	fails += _test_reset()
 	fails += _test_pending_cap_eviction()
+	fails += _test_retire_pending()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -109,6 +112,29 @@ func _test_pending_cap_eviction() -> int:
 	f += _check_i("evicted id response no-op", t.count, 0)
 	s.record_response(cap)
 	f += _check_i("live id response counts", t.count, 1)
+	return f
+
+
+func _test_retire_pending() -> int:
+	var s: SpacetimeDBStats = SpacetimeDBStats.new()
+	var red: int = SpacetimeDBStats.Category.REDUCER
+	var sub: int = SpacetimeDBStats.Category.SUBSCRIBE
+	var f: int = 0
+	s.record_send(1, red)
+	s.record_response(1) # one completed round trip = history worth keeping
+	s.record_send(2, red)
+	s.record_send(3, sub)
+
+	s.retire_pending()
+	var t: SpacetimeDBStats.Tracker = s.get_tracker(red)
+	f += _check_i("retire drains reducer in_flight", t.in_flight, 0)
+	f += _check_i("retire drains subscribe in_flight", s.get_tracker(sub).in_flight, 0)
+	f += _check_i("retire keeps completed count", t.count, 1)
+	f += _check_b("retire keeps latency history", t.last_usec >= 0 and t.max_usec >= 0, true)
+	# A retired id must not resolve later — its send belongs to a dead connection.
+	s.record_response(2)
+	f += _check_i("retired id response no-op", t.count, 1)
+	f += _check_i("retired id response leaves in_flight at 0", t.in_flight, 0)
 	return f
 
 
