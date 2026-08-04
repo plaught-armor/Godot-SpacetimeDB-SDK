@@ -329,6 +329,10 @@ func connect_db(
 	_session_intent += 1
 	var intent: int = _session_intent
 	if not is_connected_db():
+		# Queues first, then the rows — the same order (and the same reason) as
+		# _prepare_for_reconnect: the wipe is the step that runs game code, so everything
+		# it might observe has to be settled before it does.
+		_drop_dead_session_traffic()
 		if _local_db != null:
 			_local_db.clear_local_db()
 		_received_initial_subscription = false
@@ -1747,6 +1751,47 @@ func _attempt_reconnect() -> void:
 	_connection.connect_to_database(base_url, database_name, conn_id)
 
 
+# Everything the dying session left in flight, dropped so none of it lands in the mirror
+# the next session is about to fill: packets not yet parsed, results parsed but not
+# drained, the batch a frame was midway through, and the front of a message the socket
+# died partway into. Runs no game code, so a caller can call it before its own cache wipe
+# (which does) and know the queues are already settled.
+#
+# Both session boundaries need this — the automatic one in _prepare_for_reconnect and the
+# manual one in connect_db. They used to disagree about it, and the manual path drained
+# the old session's messages into the new session's mirror.
+func _drop_dead_session_traffic() -> void:
+	if use_threading and _packet_mutex:
+		_packet_mutex.lock()
+		# Bump the epoch under the same lock the worker drains under, so any batch
+		# it has already pulled will fail its post-parse epoch check and be dropped.
+		_session_epoch += 1
+		_packet_queue.clear()
+		_packet_mutex.unlock()
+
+		_result_mutex.lock()
+		_result_queue.clear()
+		_result_mutex.unlock()
+	else:
+		# Same boundary, without a worker to enforce it. Threadless is not an exotic setup
+		# — _setup_threading disables threading on a build with no thread support, so every
+		# threadless web export lands here.
+		#
+		# The queued results were parsed out of the dying session and would otherwise be
+		# drained into the fresh mirror, which is exactly what the worker's epoch check
+		# prevents on the threaded side. And a socket that dies mid-message leaves the
+		# front of that message in the deserializer, so the first packet of the new session
+		# would parse against a prefix belonging to the old one; the worker resets the
+		# stream on an epoch change, and nothing did it here.
+		_result_queue.clear()
+		if _deserializer:
+			_deserializer.reset_stream_state()
+
+	# Main-thread-only state, so no lock: the batch a frame was partway through draining.
+	_drain_batch = []
+	_drain_cursor = 0
+
+
 func _prepare_for_reconnect() -> void:
 	_reducer_result_cache.clear()
 	_procedure_result_cache.clear()
@@ -1766,36 +1811,7 @@ func _prepare_for_reconnect() -> void:
 	_next_query_id = 0
 	_next_request_id = 0
 
-	if use_threading and _packet_mutex:
-		_packet_mutex.lock()
-		# Bump the epoch under the same lock the worker drains under, so any batch
-		# it has already pulled will fail its post-parse epoch check and be dropped.
-		_session_epoch += 1
-		_packet_queue.clear()
-		_packet_mutex.unlock()
-
-		_result_mutex.lock()
-		_result_queue.clear()
-		_result_mutex.unlock()
-	else:
-		# Same session boundary, without a worker to enforce it. Threadless is not an
-		# exotic setup — _setup_threading disables threading on a build with no thread
-		# support, so every threadless web export lands here.
-		#
-		# The queued results were parsed out of the dying session and would otherwise be
-		# drained into the fresh mirror, which is exactly what the worker's epoch check
-		# prevents on the threaded side. And a socket that dies mid-message leaves the
-		# front of that message in the deserializer, so the first packet of the new
-		# session would parse against a prefix belonging to the old one; the worker resets
-		# the stream on an epoch change, and nothing did it here.
-		_result_queue.clear()
-		if _deserializer:
-			_deserializer.reset_stream_state()
-
-	# Drop any in-flight batch from the old session so its messages aren't applied
-	# to the fresh post-reconnect database (main-thread-only state).
-	_drain_batch = []
-	_drain_cursor = 0
+	_drop_dead_session_traffic()
 
 	# The cache wipe goes LAST, because it is the one step here that runs game code:
 	# clear_local_db reports every cached row as deleted, and a listener that reads
