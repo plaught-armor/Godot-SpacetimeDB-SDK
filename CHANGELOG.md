@@ -33,6 +33,23 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A session that has ended stops delivering.** Closing the socket does not empty
+  what the session already handed over — packets received but not yet parsed,
+  results parsed but not yet drained, and the batch a frame was midway through — so
+  row callbacks and transaction updates kept landing for frames after `disconnected`
+  had already been emitted, mutating a mirror `disconnect_db()` deliberately leaves
+  in place as last-known state. Measured: 224 further transaction updates applied
+  after a `disconnect_db()`, 160 after a server close with auto-reconnect off. The
+  reconnect path (`_prepare_for_reconnect`) and `connect_db()` both dropped that
+  traffic at their session boundary; the terminal one did not, and now does — inside
+  the one-shot `disconnected` emit, so it covers a caller disconnect, an exhausted
+  reconnect cycle, and a server close alike. Rows applied before the end are
+  untouched. The per-frame drain loop now also checks its cursor against the batch,
+  since ending the session from inside a row callback drops the batch the loop is
+  standing in — without that check the frame died on an out-of-bounds read, taking
+  the rest of that frame's messages with it. Covered by
+  `tests/test_traffic_stops_at_disconnect.gd`, including the reentrant case.
+
 - **`connect_db()` on a live socket is refused instead of half-applied.** The call
   starts a session; it never re-pointed one. On a connected client it used to write
   the new host, database name and options over the live session's and then return
