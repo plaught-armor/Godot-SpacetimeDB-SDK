@@ -33,6 +33,18 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A column holding a list of vectors decodes again.** A `Vec<Vector3>` column (or
+  `Vec<Color>`, `Vec<Vector2i>`, `Vec<Quaternion>`, and every other native array-like
+  element type) is emitted as `Array[Vector3]` with the ELEMENT's BSATN type,
+  `vector3[f32,f32,f32]` — the component layout lives in that string. The writer
+  resolved its element writer with that type; the reader resolved its element reader
+  with an empty one, so every such column failed with `Missing BSATN_TYPES entry for
+  '<column>' (type Vector3)`, taking the whole row down rather than just the column.
+  Only a *populated* list reached the element reader, so an empty one always decoded —
+  which is how this survived. Covered by `tests/test_native_vector_array_roundtrip.gd`,
+  whose first assertion pins the type pair codegen emits so the round trip is testing
+  the real shape.
+
 - **Codegen escapes columns named `namespace` or `trait`.** Both are GDScript reserved
   words that were missing from the escape list, and both are ordinary identifiers on the
   server side — `namespace` in a Rust module, `trait` in a C# one. A module with either
