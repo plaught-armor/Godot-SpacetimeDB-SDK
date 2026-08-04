@@ -64,6 +64,18 @@ func find_by_class_(value: int) -> Array[VreservedThing]:
 func first_by_class_(value: int) -> VreservedThing:
 	return class_._first_row(value) as VreservedThing
 
+func find_by_trait_(value: int) -> Array[VreservedThing]:
+	return find_by(&"trait_", value)
+
+func first_by_trait_(value: int) -> VreservedThing:
+	return first_by(&"trait_", value)
+
+func find_by_namespace_(value: int) -> Array[VreservedThing]:
+	return find_by(&"namespace_", value)
+
+func first_by_namespace_(value: int) -> VreservedThing:
+	return first_by(&"namespace_", value)
+
 func _emit_inserted(row: _ModuleTableType) -> void:
 	inserted.emit(row as VreservedThing)
 
