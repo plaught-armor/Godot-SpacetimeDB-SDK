@@ -127,6 +127,26 @@ static func _first_key(d: Dictionary) -> String:
 static var _synth_result_types: Dictionary = { }
 
 
+## The one spelling every generated name is built from: the module key put through
+## [method String.to_pascal_case] EXACTLY ONCE.
+##
+## `to_pascal_case` is not idempotent — it splits on case boundaries, so a name whose
+## segments are single letters comes back with consecutive capitals that a second pass
+## re-splits differently: `a-b` (a legal SpacetimeDB database name — `parse_database_name`
+## accepts [a-z0-9] with single interior hyphens) gives `AB`, and `AB` gives `Ab`.
+## Applying it twice therefore produced two different prefixes inside one run: the
+## nested-column type map and the `<Prefix>Types` class said `AB…`, while every emitted
+## `class_name` said `Ab…`, and the autoload declared a client class no file wrote.
+## Nothing reported it — the run completed, so the pruning pass then deleted the previous,
+## working bindings.
+##
+## Anything deriving a name from the module — a class name, a file name, the autoload
+## property — goes through here or through [member SpacetimeParsedSchema.module], which is
+## this function's result. Never re-apply the transform to a value that has had it.
+static func module_class_prefix(module_key: String) -> String:
+	return module_key.to_pascal_case()
+
+
 static func parse_schema(schema: Dictionary, module_name: String, project_enums: Dictionary = { }) -> SpacetimeParsedSchema:
 	_synth_result_types.clear()
 	var type_map: Dictionary[String, String] = DEFAULT_TYPE_MAP.duplicate() as Dictionary[String, String]
@@ -243,7 +263,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 
 	schema_types_raw.sort_custom(_sort_by_ty)
 	var parsed_schema: SpacetimeParsedSchema = SpacetimeParsedSchema.new()
-	parsed_schema.module = module_name.to_pascal_case()
+	parsed_schema.module = module_class_prefix(module_name)
 
 	var parsed_types_list: Array[Dictionary] = []
 	for type_info: Dictionary in schema_types_raw:
@@ -281,8 +301,8 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			type_data["struct"] = struct_elements
 
 			if not type_data.has("gd_native"):
-				type_map[type_name] = module_name.to_pascal_case() + type_name.to_pascal_case()
-				meta_type_map[type_name] = module_name.to_pascal_case() + type_name.to_pascal_case()
+				type_map[type_name] = module_class_prefix(module_name) + type_name.to_pascal_case()
+				meta_type_map[type_name] = module_class_prefix(module_name) + type_name.to_pascal_case()
 			elif not _validate_gd_native(type_name, type_data):
 				# Error should be printed in _validate_gd_native
 				return parsed_schema
@@ -315,13 +335,13 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 						type_data["project_enum"] = project_enum["path"]
 						SpacetimePlugin.print_log("Enum '%s' matched project enum '%s'" % [pascal_name, project_enum["path"]])
 					else:
-						type_map[type_name] = "%sTypes.%s" % [module_name.to_pascal_case(), pascal_name]
+						type_map[type_name] = "%sTypes.%s" % [module_class_prefix(module_name), pascal_name]
 						SpacetimePlugin.print_log("Enum '%s' found in project as '%s' but variants differ, generating standalone" % [pascal_name, project_enum["path"]])
 				else:
-					type_map[type_name] = "%sTypes.%s" % [module_name.to_pascal_case(), pascal_name]
+					type_map[type_name] = "%sTypes.%s" % [module_class_prefix(module_name), pascal_name]
 			else:
-				type_map[type_name] = module_name.to_pascal_case() + type_name.to_pascal_case()
-				meta_type_map[type_name] = module_name.to_pascal_case() + type_name.to_pascal_case()
+				type_map[type_name] = module_class_prefix(module_name) + type_name.to_pascal_case()
+				meta_type_map[type_name] = module_class_prefix(module_name) + type_name.to_pascal_case()
 		else:
 			if not type_data.has("gd_native"):
 				if type_map.has(type_name) and not _is_gd_native(type_name):
@@ -335,7 +355,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 	# so all inline Results encountered while parsing fields/variants are included.
 	for synth_name: String in _synth_result_types:
 		parsed_types_list.append(_synth_result_types[synth_name])
-		var synth_class: String = module_name.to_pascal_case() + synth_name.to_pascal_case()
+		var synth_class: String = module_class_prefix(module_name) + synth_name.to_pascal_case()
 		type_map[synth_name] = synth_class
 		meta_type_map[synth_name] = synth_class
 
@@ -671,7 +691,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		if type_map.has(synth_name):
 			continue
 		parsed_types_list.append(_synth_result_types[synth_name])
-		var synth_class: String = module_name.to_pascal_case() + synth_name.to_pascal_case()
+		var synth_class: String = module_class_prefix(module_name) + synth_name.to_pascal_case()
 		type_map[synth_name] = synth_class
 		meta_type_map[synth_name] = synth_class
 

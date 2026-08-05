@@ -1,6 +1,12 @@
 class_name SpacetimeParsedSchema
 extends Resource
 
+## The module's class-name prefix: the module key already put through
+## [method SpacetimeSchemaParser.module_class_prefix]. Use it as written — every generated
+## `class_name`, the `module_name` constant on each row type, and `<module>.to_snake_case()`
+## for file names all derive from this one string. Re-applying `to_pascal_case` to it is a
+## bug: the transform is not idempotent, so a key like `a-b` yields two different prefixes
+## depending on how many times it has been applied.
 var module: String = ""
 var types: Array[Dictionary] = []
 var reducers: Array[Dictionary] = []
