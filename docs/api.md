@@ -613,8 +613,15 @@ class SpacetimeDBConnectionOptions:
     var light_mode: bool = false
 ```
 
-When `true`, subscribes in "light" mode — the server sends only the row deltas
-needed to keep the cache current, reducing bandwidth.
+Asks for "light" subscription updates (`&light=true` on the handshake).
+
+**This has no effect on the protocol this SDK speaks.** The server maps the parameter
+to its `tx_update_full` client config, which only the v1 message sender reads — there
+it chooses between a full `TransactionUpdate` (reducer name, caller identity, energy)
+and a `TransactionUpdateLight`. The v3 wire type carries neither: `ws_v2::TransactionUpdate`
+is nothing but its query-set row deltas, so every update a v3 client receives is already
+light. The parameter is still sent, so a later protocol that gives it meaning finds
+games that already set it; it does not change bandwidth today.
 
 #### `confirmed_reads` property
 
