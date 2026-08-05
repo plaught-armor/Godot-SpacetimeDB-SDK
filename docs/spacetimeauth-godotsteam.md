@@ -67,7 +67,7 @@ Exported knobs (all optional, sensible defaults):
 | export | default | purpose |
 |---|---|---|
 | `token_url` | `https://auth.spacetimedb.com/oidc/token` | override for a self-hosted SpacetimeAuth |
-| `request_timeout_seconds` | `15.0` | bounds a network hang (DNS/TLS stall) |
+| `request_timeout_seconds` | `15.0` | bounds a network hang (DNS/TLS stall); must be **greater than zero** — `exchange()` refuses a non-positive value rather than let `HTTPRequest` read it as "no timeout" |
 | `max_attempts` | `4` | transient failures (transport error / 5xx) retry with exponential backoff; a 2xx/4xx is authoritative and never retried |
 | `base_retry_delay_seconds` / `max_retry_delay_seconds` | `0.5` / `4.0` | backoff bounds |
 | `redact_fields` | `["id_token","access_token","refresh_token","token","code","ticket","client_secret"]` | field **values** scrubbed from any error body echoed to the log |
@@ -75,6 +75,16 @@ Exported knobs (all optional, sensible defaults):
 
 **The node owns its own `HTTPRequest`** — you just add it to the tree and
 `await`. It must be inside the scene tree before you call `exchange()`.
+
+> **`token_url` must be the final URL — redirects are not followed.** The
+> exchange POSTs your provider credential in the request body, and Godot's
+> `HTTPRequest` carries that body over to whatever host a `Location` header
+> names (it rewrites the method to GET and drops the content headers on a
+> 301/302/303, but not the body, and an `http://` target is followed with TLS
+> off). Following could not succeed anyway — the rewritten GET is not a token
+> request — so `max_redirects` is 0 and a 3xx comes back as an error naming the
+> status. If a self-hosted deployment redirects, point `token_url` at where it
+> redirects to.
 
 > **Redaction gotcha (Steam):** the default `redact_fields` has `"ticket"`, but
 > the Steam credential field is named `steam_ticket`, and matching is by exact

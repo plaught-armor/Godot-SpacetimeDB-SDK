@@ -40,8 +40,15 @@ const TOKEN_URL_DEFAULT: String = "https://auth.spacetimedb.com/oidc/token"
 
 @export var debug_mode: bool = false
 ## OIDC token endpoint. Override for a self-hosted SpacetimeAuth deployment.
+## Must be the FINAL url: redirects are refused rather than followed, because the
+## request body carries the provider credential and HTTPRequest would re-send it
+## to whatever host the Location names (see [method _ensure_http]).
 @export var token_url: String = TOKEN_URL_DEFAULT
 ## Bounds the network hang on an unreachable endpoint (DNS stall, TLS failure).
+## Must be greater than zero: HTTPRequest reads 0 as "no timeout", which against
+## a host that accepts the connection and never answers suspends the exchange for
+## the process's lifetime — no result, no signal, and the in-flight guard left set
+## so every later exchange on the node is refused.
 @export var request_timeout_seconds: float = 15.0
 ## Total attempts before giving up. Transient failures (transport error / 5xx)
 ## are retried; a 2xx/4xx is authoritative and never retried.
@@ -79,6 +86,16 @@ func _ensure_http() -> void:
 	# Set every call so an inspector tweak to request_timeout_seconds after the
 	# first exchange still takes effect on reuse (not just at construction).
 	_http.timeout = request_timeout_seconds
+	# Never follow a redirect. This request carries the provider credential in its
+	# body, and HTTPRequest re-sends that body to whatever host the Location names
+	# — it rewrites the method to GET and strips the content headers for a
+	# 301/302/303/305, but the body itself is carried over, and a `Location:
+	# http://…` from an https endpoint is followed with TLS off. Following can
+	# never succeed either: the rewritten GET is not a token request, and Godot
+	# already refuses to follow a 307/308 for an unsafe method. So a redirect has
+	# nothing to offer here and one thing to lose. With the limit at 0 the 3xx is
+	# reported as itself (RESULT_REDIRECT_LIMIT_REACHED carries the status code).
+	_http.max_redirects = 0
 
 
 ## Exchange a provider credential for a SpacetimeAuth id_token. Coroutine: await
@@ -125,6 +142,17 @@ func _exchange_impl(
 		return result
 	if max_attempts < 1:
 		result.error = "max_attempts must be >= 1 (got %d)" % max_attempts
+		push_error("[SpacetimeAuth] %s" % result.error)
+		exchange_completed.emit(result)
+		return result
+	# Refused rather than clamped: 0 is HTTPRequest's "no timeout", and a silent
+	# host would then suspend this coroutine forever — no result, no signal, and
+	# the in-flight guard never cleared. A negative value is worse still, since
+	# HTTPRequest.set_timeout rejects it and silently keeps whatever was set
+	# before. Same wedge SpacetimeDBRestAPI.REQUEST_TIMEOUT_SECONDS exists to
+	# avoid; here the value is an @export, so a project can reach it.
+	if request_timeout_seconds <= 0.0:
+		result.error = "request_timeout_seconds must be > 0 (got %f)" % request_timeout_seconds
 		push_error("[SpacetimeAuth] %s" % result.error)
 		exchange_completed.emit(result)
 		return result
