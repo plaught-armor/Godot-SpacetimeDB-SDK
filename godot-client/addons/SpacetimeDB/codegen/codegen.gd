@@ -509,6 +509,36 @@ func generate_bindings() -> Array[String]:
 	var sorted_module_names: Array[String] = _plugin_config.module_configs.keys()
 	sorted_module_names.sort()
 
+	# Every class a module emits — and the autoload property that reaches it — is named
+	# after the module key put through to_pascal_case, so the key has to survive that as
+	# a GDScript identifier. A SpacetimeDB database name may start with a digit
+	# (parse_database_name accepts [a-z0-9] with single interior hyphens, so `2048` is
+	# legal), and `2048`.to_pascal_case() is `2048`: measured, that generated 19 scripts
+	# named `class_name 2048Something`, none of which parse, and an autoload declaring
+	# `var 2048`. The run reported success, so cleanup then pruned the previous working
+	# bindings. Checked before ANY file is written — a partial run would leave the
+	# autoload rewritten without the module, which is the one generated file the project
+	# boots through.
+	var bad_names: PackedStringArray = []
+	for module_name: String in sorted_module_names:
+		if not module_name.to_pascal_case().is_valid_identifier():
+			bad_names.append(module_name)
+	if not bad_names.is_empty():
+		for module_name: String in bad_names:
+			SpacetimePlugin.print_err(
+				(
+					"Module '%s' cannot name GDScript classes: the class-name prefix it "
+					+ "yields is '%s', which is not a valid identifier (one cannot start with "
+					+ "a digit or be empty). Give the module an alias that starts with a "
+					+ "letter — the alias only names the generated classes, the database the "
+					+ "client connects to is unchanged."
+				)
+				% [module_name, module_name.to_pascal_case()]
+			)
+		SpacetimePlugin.print_err("Nothing was generated; the existing bindings are untouched.")
+		generation_incomplete = true
+		return generated_files
+
 	for module_name: String in sorted_module_names:
 		generated_files.append_array(_generate_module_bindings(module_name))
 
