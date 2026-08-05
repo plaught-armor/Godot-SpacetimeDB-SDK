@@ -92,19 +92,68 @@ func update_module_ui() -> void:
 				.connect(func(text: String):
 					module_config.name = text
 					plugin_config_changed.emit())
+		# Committed when the edit ends, not per keystroke. Re-keying on every keystroke
+		# walked the dictionary through every prefix of what was being typed, and each
+		# of those re-keys overwrote whatever module already had that alias: typing
+		# "alpha" into a second module's alias field left ONE entry, keyed "alpha" but
+		# carrying the other module's name — the first module's name, flags and schema
+		# were gone, saved over on the same keystroke, with both rows still on screen.
 		alias_input \
-				.text_changed \
+				.text_submitted \
 				.connect(func(text: String):
-					_plugin_config.module_configs.erase(module_config.alias)
-					module_config.alias = text
-					_plugin_config.module_configs.set(module_config.alias, module_config)
-					plugin_config_changed.emit())
+					_commit_alias(module_config, alias_input, text))
+		alias_input \
+				.focus_exited \
+				.connect(func():
+					_commit_alias(module_config, alias_input, alias_input.text))
 	if _modules_container.get_child_count() == 0:
 		_add_module_hint_label.show()
 		_generate_button.disabled = true
 	else:
 		_add_module_hint_label.hide()
 		_generate_button.disabled = false
+
+
+## Applies an edited alias, or refuses it and puts the field back.
+##
+## The alias is the KEY of [member _plugin_config.module_configs], so a rename is a
+## re-key: it has to be rejected rather than allowed to land on another module's
+## entry. An empty alias is refused for the same reason — an empty key names no
+## module and codegen cannot spell a class from it.
+func _commit_alias(
+	module_config: SpacetimeDBModuleConfig,
+	field: LineEdit,
+	text: String,
+) -> void:
+	var new_alias: String = text.strip_edges()
+	# Also the re-entrancy guard. A rename ends in update_module_ui(), which removes the
+	# row this field belongs to — and removing a node that holds focus raises
+	# focus_exited, which lands back here. By then module_config.alias IS the new alias,
+	# so the edit reads as a no-op and stops. Do not drop this check.
+	if new_alias == module_config.alias:
+		field.text = module_config.alias
+		return
+	if new_alias.is_empty():
+		SpacetimePlugin.print_err(
+			"A module alias cannot be empty — keeping '%s'." % module_config.alias
+		)
+		field.text = module_config.alias
+		return
+	if _plugin_config.module_configs.has(new_alias):
+		SpacetimePlugin.print_err(
+			(
+				"Alias '%s' is already used by another module — keeping '%s'. Remove or "
+				+ "rename that module first."
+			)
+			% [new_alias, module_config.alias]
+		)
+		field.text = module_config.alias
+		return
+	_plugin_config.module_configs.erase(module_config.alias)
+	module_config.alias = new_alias
+	_plugin_config.module_configs.set(new_alias, module_config)
+	plugin_config_changed.emit()
+	update_module_ui()
 
 
 func clear_logs() -> void:
@@ -177,9 +226,21 @@ func _on_new_module() -> void:
 	var reducer_config: bool = _new_module_reducer_checkbox.button_pressed
 	if alias.is_empty():
 		alias = name
-	var module_config: SpacetimeDBModuleConfig = _plugin_config \
-			.module_configs \
-			.get(alias, SpacetimeDBModuleConfig.new())
+	if alias.is_empty():
+		SpacetimePlugin.print_err("A module needs a name (the alias defaults to it).")
+		return
+	# Adding under an alias that is already configured used to reach into that entry
+	# and overwrite its name and flags — the same silent clobber the alias field had.
+	if _plugin_config.module_configs.has(alias):
+		SpacetimePlugin.print_err(
+			(
+				"A module with the alias '%s' is already configured — edit or remove it "
+				+ "instead of adding a second one."
+			)
+			% alias
+		)
+		return
+	var module_config: SpacetimeDBModuleConfig = SpacetimeDBModuleConfig.new()
 	module_config.name = name
 	module_config.alias = alias
 	module_config.hide_private_tables = table_config
