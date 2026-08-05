@@ -177,6 +177,14 @@ static func generate_schema(
 ) -> bool:
 	if config.uri.ends_with("/"):
 		config.uri = config.uri.left(-1)
+	# No modules configured means the run would generate nothing but the autoload —
+	# and the cleanup below deletes every generated file the run did not name, so it
+	# would wipe the existing bindings instead of leaving them alone. A Generate click
+	# with an empty module list (a fresh install, or the last module just removed) is
+	# one click away, so refuse it here rather than let it through as an empty run.
+	if config.module_configs.is_empty():
+		print_err("No modules configured — add a module before generating.")
+		return false
 	print_log("Starting code generation...")
 	print_log("Fetching module schemas...")
 	var failed: bool = false
@@ -225,12 +233,8 @@ static func generate_schema(
 	codegen._plugin_config = config
 	var generated_files: Array[String] = codegen.generate_bindings()
 
-	if not _check_member_collisions(PackedStringArray(generated_files)):
-		print_err("Code generation failed!")
+	if not finalize_bindings(codegen, generated_files, BINDINGS_SCHEMA_PATH):
 		return false
-
-	_cleanup_unused_classes(BINDINGS_SCHEMA_PATH, generated_files)
-	_check_uid_collisions(BINDINGS_SCHEMA_PATH)
 
 	if DirAccess.dir_exists_absolute(LEGACY_DATA_PATH):
 		print_log("Removing legacy data directory: %s" % LEGACY_DATA_PATH)
@@ -261,6 +265,50 @@ func _sanitize_uri() -> void:
 	if plugin_config.uri.ends_with("/"):
 		plugin_config.uri = plugin_config.uri.left(-1)
 		save_codegen_data()
+
+
+## Checks a finished codegen run and, only if it produced a complete and loadable set of
+## bindings, prunes the files it replaced.
+##
+## [method SpacetimeCodegen.generate_bindings] is best-effort: a write that fails (a
+## read-only checkout, a file the OS has locked, no space) or a module whose schema does
+## not parse is reported and the run carries on, so the returned list can name only part
+## of the bindings. Cleanup deletes every generated file the list does NOT name, so
+## handing it a partial list turns "some files are stale" into "the previous run's output
+## for those files is gone, along with the `.uid` sidecars every scene reference resolves
+## through". Nothing is pruned unless the run was complete: stale bindings still load, and
+## the next successful run replaces them.
+##
+## Takes [param dir_path] rather than reading [constant BINDINGS_SCHEMA_PATH] so a test
+## can point the destructive half at a temp directory.
+static func finalize_bindings(
+	codegen: SpacetimeCodegen,
+	generated_files: Array[String], # gdlint: ignore[S6] — what generate_bindings returns
+	dir_path: String,
+) -> bool:
+	# A run over no modules writes nothing but the autoload and reports no failure, so
+	# the incomplete flag cannot catch it — and cleanup against that one-file list
+	# deletes every binding in the project. generate_schema refuses the empty config
+	# before it gets this far; the invariant is restated here because this is the
+	# function that does the deleting.
+	if codegen._plugin_config == null or codegen._plugin_config.module_configs.is_empty():
+		print_err("Code generation ran over no modules; leaving %s untouched." % dir_path)
+		return false
+
+	if codegen.generation_incomplete:
+		print_err(
+			"Code generation did not finish — see the errors above. The existing bindings "
+			+ "in %s were left untouched; fix the cause and generate again." % dir_path
+		)
+		return false
+
+	if not _check_member_collisions(PackedStringArray(generated_files)):
+		print_err("Code generation failed!")
+		return false
+
+	_cleanup_unused_classes(dir_path, generated_files)
+	_check_uid_collisions(dir_path)
+	return true
 
 
 static func _cleanup_unused_classes(dir_path: String = "res://schema", files: Array[String] = []) -> void:

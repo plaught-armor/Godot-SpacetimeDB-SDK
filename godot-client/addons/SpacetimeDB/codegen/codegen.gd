@@ -65,6 +65,15 @@ const GDSCRIPT_RESERVED_WORDS: Array[String] = [
 
 var _plugin_config: SpacetimeDBPluginConfig
 var _schema_path: String
+## Set when a run failed to write a binding, or failed to parse a module's schema,
+## and therefore returned a list that names only part of the bindings it would have
+## produced. The caller MUST NOT feed such a list to
+## [method SpacetimePlugin._cleanup_unused_classes]: cleanup deletes every generated
+## file the list does not name, so an incomplete list deletes the previous run's
+## still-valid output (and its `.uid` sidecars, taking every scene reference to them
+## with it) for the files that were never rewritten. Reset at the top of
+## [method generate_bindings].
+var generation_incomplete: bool = false
 
 
 func _init(p_schema_path: String) -> void:
@@ -493,6 +502,7 @@ static func _with_arraylike_components(
 
 func generate_bindings() -> Array[String]:
 	var generated_files: Array[String] = []
+	generation_incomplete = false
 
 	# Sort module names so the per-module output order (and the autoload it
 	# references) is stable across regenerations.
@@ -509,6 +519,7 @@ func generate_bindings() -> Array[String]:
 		SpacetimePlugin.print_err(
 			"failed to open %s: %s" % [autoload_output_file_path, FileAccess.get_open_error()],
 		)
+		generation_incomplete = true
 		return generated_files
 	autoload_file.store_string(autoload_content)
 	autoload_file.close()
@@ -516,7 +527,8 @@ func generate_bindings() -> Array[String]:
 
 	SpacetimePlugin.print_log("Generated files:")
 	for generated_file: String in generated_files:
-		_write_deterministic_uid(generated_file)
+		if not _write_deterministic_uid(generated_file):
+			generation_incomplete = true
 		SpacetimePlugin.print_log(generated_file)
 
 	return generated_files
@@ -535,21 +547,25 @@ static func _stable_uid_id(res_path: String) -> int:
 
 
 ## Writes a `<path>.uid` sidecar with the deterministic id and syncs the editor's
-## in-memory uid cache so a live regen doesn't re-mint a random uid.
-static func _write_deterministic_uid(gd_path: String) -> void:
+## in-memory uid cache so a live regen doesn't re-mint a random uid. Returns
+## [code]false[/code] if the sidecar could not be written — a script whose `.uid` is
+## missing is exactly the loss the cleanup gate exists to prevent, since every scene
+## `ext_resource uid="..."` resolves through it.
+static func _write_deterministic_uid(gd_path: String) -> bool:
 	var id: int = _stable_uid_id(gd_path)
 	var uid_file: FileAccess = FileAccess.open("%s.uid" % gd_path, FileAccess.WRITE)
 	if uid_file == null:
 		SpacetimePlugin.print_err(
 			"failed to write uid for %s: %s" % [gd_path, FileAccess.get_open_error()],
 		)
-		return
+		return false
 	uid_file.store_string(ResourceUID.id_to_text(id))
 	uid_file.close()
 	if ResourceUID.has_id(id):
 		ResourceUID.set_id(id, gd_path)
 	else:
 		ResourceUID.add_id(id, gd_path)
+	return true
 
 
 ## Scans all global classes and autoloads in the project for GDScript enums.
@@ -615,12 +631,31 @@ func _collect_enums_from_script(cls_name: String, cls_path: String, result: Dict
 
 
 func _generate_module_bindings(module_name: String) -> Array[String]:
-	var json = JSON.parse_string(_plugin_config.module_configs[module_name].unparsed_module_schema)
+	var json: Variant = JSON.parse_string(
+		_plugin_config.module_configs[module_name].unparsed_module_schema
+	)
+	# A body that is not a JSON object reaches here whenever something other than the
+	# module answered with 200 — a proxy or gateway error page, a truncated response.
+	# parse_schema takes a Dictionary, so handing it the null went down as a GDScript
+	# type fault: the function unwound to its default return, this module contributed
+	# no files, and the run carried on to prune every binding it had.
+	if not (json is Dictionary):
+		SpacetimePlugin.print_err(
+			(
+				"Module %s: the schema response is not a JSON object (%d bytes). "
+				+ "Aborting codegen for this module."
+			)
+			% [module_name, _plugin_config.module_configs[module_name].unparsed_module_schema.length()]
+		)
+		_plugin_config.module_configs[module_name].unparsed_module_schema = ""
+		generation_incomplete = true
+		return []
 	var project_enums: Dictionary = _scan_project_enums()
 	var schema: SpacetimeParsedSchema = SpacetimeSchemaParser.parse_schema(json, module_name, project_enums)
 	_plugin_config.module_configs[module_name].unparsed_module_schema = ""
 	if schema.is_empty():
 		SpacetimePlugin.print_err("Schema parsing failed for module: %s. Aborting codegen for this module." % module_name)
+		generation_incomplete = true
 		return []
 
 	for folder in REQUIRED_FOLDERS_IN_CODEGEN_FOLDER:
@@ -709,6 +744,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			SpacetimePlugin.print_err(
 				"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 			)
+			generation_incomplete = true
 			return generated_files
 		file.store_string(content)
 		file.close()
@@ -738,6 +774,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 				SpacetimePlugin.print_err(
 					"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 				)
+				generation_incomplete = true
 				return generated_files
 			file.store_string(content)
 			file.close()
@@ -759,6 +796,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 				SpacetimePlugin.print_err(
 					"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 				)
+				generation_incomplete = true
 				return generated_files
 			file.store_string(content)
 			file.close()
@@ -778,6 +816,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			SpacetimePlugin.print_err(
 				"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 			)
+			generation_incomplete = true
 			return generated_files
 		file.store_string(content)
 		file.close()
@@ -791,6 +830,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 		SpacetimePlugin.print_err(
 			"failed to open %s: %s" % [output_file_path_module, FileAccess.get_open_error()],
 		)
+		generation_incomplete = true
 		return generated_files
 	file_module.store_string(module_content)
 	file_module.close()
@@ -804,6 +844,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 		SpacetimePlugin.print_err(
 			"failed to open %s: %s" % [db_output_file_path, FileAccess.get_open_error()],
 		)
+		generation_incomplete = true
 		return generated_files
 	db_file.store_string(db_content)
 	db_file.close()
@@ -817,6 +858,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 		SpacetimePlugin.print_err(
 			"failed to open %s: %s" % [output_file_path_reducers, FileAccess.get_open_error()],
 		)
+		generation_incomplete = true
 		return generated_files
 	file_reducers.store_string(reducers_content)
 	file_reducers.close()
@@ -830,6 +872,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 		SpacetimePlugin.print_err(
 			"failed to open %s: %s" % [output_file_path_procedures, FileAccess.get_open_error()],
 		)
+		generation_incomplete = true
 		return generated_files
 	file_procedures.store_string(procedures_content)
 	file_procedures.close()
@@ -843,6 +886,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 		SpacetimePlugin.print_err(
 			"failed to open %s: %s" % [output_file_path_types, FileAccess.get_open_error()],
 		)
+		generation_incomplete = true
 		return generated_files
 	file_types.store_string(types_content)
 	file_types.close()
