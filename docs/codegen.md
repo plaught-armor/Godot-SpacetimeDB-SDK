@@ -26,6 +26,7 @@ Once at least one module is configured in the editor (the config is saved to
 without opening the editor — useful for CI or a pre-build step:
 
 ```sh
+godot --headless --path <project> --import   # once per checkout, see below
 godot --headless --path <project> --script res://addons/SpacetimeDB/cli.gd
 ```
 
@@ -34,6 +35,18 @@ the server, regenerates `res://spacetime_bindings/`, and exits `0` on success or
 `1` on failure (config missing, no modules configured, or codegen error). The
 server URL and module list come from the saved config — configure them in the
 editor UI first.
+
+**Import once on a fresh checkout.** Godot resolves `class_name` identifiers through
+`.godot/global_script_class_cache.cfg`, which only an import or an editor session
+writes — and Godot's project `.gitignore` keeps `.godot/` out of the repository. So on
+a CI clone the addon's classes do not resolve yet, and a `--script` run does not write
+the cache either, no matter how many times you run it. Run `--import` first (or cache
+`.godot/` between CI runs); without it, the codegen run refuses with the same advice.
+
+Two more things worth knowing for CI: commit `res://addons/SpacetimeDB/plugin_config.tres`
+so the runner has the server URL and module list, and note that the generated autoload is
+registered in `project.godot` by the **editor** — commit that entry too, since a headless
+run cannot add it.
 
 ## Generated bindings structure
 
