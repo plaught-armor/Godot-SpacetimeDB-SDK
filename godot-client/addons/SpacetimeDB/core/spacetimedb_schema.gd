@@ -188,18 +188,50 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 		var script: GDScript = ResourceLoader.load(script_path, "GDScript") as GDScript
 
 		if script and script.can_instantiate():
+			var constants: Dictionary = script.get_script_constant_map()
+			# The filename prefix cannot separate two modules whose names prefix each other
+			# (`game` and `game_extra` both emit files beginning `game_`), and the row type
+			# declares which module it came from, so believe the constant. Without this a
+			# foreign row type claimed this schema's table name — `tables` kept whichever
+			# script loaded last, so a table both modules define decoded against the wrong
+			# row type, and `raw_table_names` carried the name twice.
+			#
+			# Only row types declare `module_name`; a sum-type payload script does not, and
+			# it names no table, so it stays loadable as a nested column type either way —
+			# including into the schema of a module that merely shares its filename prefix,
+			# which is harmless because codegen prefixes every class_name with the module.
+			if _is_foreign_module(constants, prefix):
+				if debug_mode:
+					print(
+						"SpacetimeDBSchema: skipping %s — declares module '%s', not '%s'"
+						% [file_name, constants["module_name"], prefix]
+					)
+				continue
+
 			register_type_by_class(script)
 			var instance: Variant = script.new()
 			if instance is RefCounted: # Resource extends RefCounted — one check covers both
 				var fallback_table_names: Array[String] = [file_name.get_basename().get_file()]
-
-				var constants: Dictionary = script.get_script_constant_map()
 
 				if constants.has('table_names'):
 					_add_table_names(constants['table_names'], true, script, script_path)
 				_add_table_names(fallback_table_names, false, script, script_path)
 
 	dir.list_dir_end()
+
+
+## Whether a generated script belongs to a module other than [param prefix] (a snake_case
+## module name; empty when loading the SDK's own core types, which belong to every
+## module). A script that declares no [code]module_name[/code] is never foreign — that is
+## the sum-type payload shape, which names no table.
+## [param constants] is untyped on purpose: [method Script.get_script_constant_map]
+## hands back a bare [Dictionary] at runtime, and a typed parameter rejects it outright
+## ("does not have the same element type as the expected typed dictionary argument").
+static func _is_foreign_module(constants: Dictionary, prefix: String) -> bool:
+	if prefix.is_empty() or not constants.has("module_name"):
+		return false
+	var declared: String = str(constants["module_name"]).to_snake_case()
+	return declared != prefix
 
 
 func _add_table_names(table_names: Array, is_table: bool, script: GDScript, script_path: String) -> void:
