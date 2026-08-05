@@ -33,6 +33,24 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A codegen run that failed partway no longer deletes the bindings it did not
+  rewrite.** Generation is best-effort: an output file that cannot be opened (a
+  read-only VCS checkout, a file the OS has locked, a full disk) is reported and the
+  run carries on, so the file list it produces can name only part of the bindings.
+  The cleanup step deletes every generated file that list does not name — so one
+  failed write took out the previous run's still-valid output for everything after
+  it, together with the `.uid` sidecars every scene `ext_resource` resolves through.
+  Measured on the `vtypes` fixture: one unwritable file, and the module's procedures
+  and types bindings were deleted. Nothing is pruned now unless the run was
+  complete; stale bindings still load, and the next successful run replaces them.
+  Three further paths reached the same cleanup with an under-populated list and are
+  covered by the same gate: a `.uid` sidecar that fails to write, a module whose
+  schema response is not a JSON object (a proxy or gateway error page answering
+  with 200 — this one went down as a GDScript type fault inside the generator, so
+  the module silently contributed nothing), and a Generate click with no modules
+  configured, which is one click away on a fresh install and used to wipe every
+  binding in the project. Covered by `tests/test_codegen_partial_write.gd`.
+
 - **A session that has ended stops delivering.** Closing the socket does not empty
   what the session already handed over — packets received but not yet parsed,
   results parsed but not yet drained, and the batch a frame was midway through — so
