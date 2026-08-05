@@ -24,9 +24,21 @@ var token: String = ""
 var debug_mode: bool = false
 ## Registers custom Godot [Performance] monitors for packet/byte throughput.
 var monitor_mode: bool = false
-## If [code]true[/code], subscribes in "light" mode: the server omits row data the
-## client did not request, sending only the deltas needed to keep the cache current.
-## Lower bandwidth; the trade-off is fewer fields available in transaction updates.
+## If [code]true[/code], asks for "light" subscription updates ([code]&light=true[/code]
+## on the handshake).
+##
+## [b]This has no effect on the protocol this SDK speaks.[/b] The server maps the
+## parameter to its [code]tx_update_full[/code] client config, which is read in exactly
+## one place — the v1 message sender, where it decides between a full
+## [code]TransactionUpdate[/code] (reducer name, caller identity, energy) and a
+## [code]TransactionUpdateLight[/code]. The v3 wire type carries neither:
+## [code]ws_v2::TransactionUpdate[/code] is nothing but its query-set row deltas, so
+## every update a v3 client receives is already what v1 called light. Verified against
+## the server at 2.8.0; unchanged across every supported version.
+##
+## Kept, and still sent, because it costs one query parameter and it is what the other
+## SDKs send — if a later protocol gives the flag meaning again, a game that already
+## sets it keeps working. Do not expect it to change bandwidth today.
 var light_mode: bool = false
 ## If [code]true[/code], the server waits for each transaction to be durably
 ## committed before sending its update (read-after-commit). Higher latency, stronger
