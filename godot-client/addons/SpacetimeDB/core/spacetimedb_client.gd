@@ -187,6 +187,9 @@ var _resubscribe_epoch: int = 0
 ## re-check against [member _reconnect_state] after its own wipe.
 var _session_intent: int = 0
 var _reconnect_timer: SceneTreeTimer = null
+## Set when a reconnect cycle was in flight as the client left the tree, so
+## [method _enter_tree] can pick it up again. See [method _suspend_reconnection].
+var _reconnect_suspended: bool = false
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 
@@ -233,13 +236,56 @@ func _notification(what: int) -> void:
 		_on_app_resumed()
 
 
+## Re-arms what [method _exit_tree] tore down, for a client that comes BACK.
+##
+## [method Node._ready] runs once per node; [method Node._exit_tree] and this run once
+## per tree entry. A client moved between parents — reparented under a level, pulled out
+## and put back by a pool, `remove_child` then `add_child` — therefore leaves with its
+## deserializer worker joined and any reconnect backoff dropped, and nothing else ever
+## put either back: [method connect_db] and [method initialize_and_connect] are the only
+## other callers of [method _setup_threading] and neither runs again on re-entry.
+## Measured (tests/_probe_client_reparent.gd): the socket stayed open,
+## [method is_connected_db] kept answering true, and every message after the reparent was
+## queued for a worker that no longer existed — 0 of 40 delivered, in silence. Threadless
+## clients were unaffected, which is what named the worker as the cause.
+## A suspended cycle implies an initialized client — RECONNECTING is only reachable from
+## a connection error, which needs [method initialize_and_connect] to have run — so the
+## two branches below cannot disagree today. Stated because they read as independent.
+func _enter_tree() -> void:
+	if _is_initialized:
+		_setup_threading()
+	if _reconnect_suspended:
+		_reconnect_suspended = false
+		# Deferred, not called here: Godot enters the parent before its children, so at
+		# this point the client's own _connection, _local_db and _rest_api are still out
+		# of the tree — and _schedule_next_reconnect_attempt emits `reconnecting`
+		# (or, on the last attempt, `reconnect_failed` + `disconnected`) straight into
+		# game code, which may call back in. One frame later the client is whole.
+		#
+		# The attempt counter is deliberately not reset: a client that leaves and
+		# re-enters repeatedly must still run out of attempts. The flip side is that
+		# tree churn spends them — a client detached and re-attached max_reconnect_attempts
+		# times while a cycle is in flight reaches `reconnect_failed` without the network
+		# having been tried that often.
+		_resume_suspended_reconnect.call_deferred()
+
+
 func _exit_tree() -> void:
-	_cancel_reconnection()
+	# Suspended, not cancelled. A detached client polls no socket, so the attempt this
+	# backoff leads to could not be serviced — but cancelling drops the saved
+	# subscription queries with it, so a client moved between parents mid-backoff never
+	# reconnected and silently lost the set it would have restored. _enter_tree schedules
+	# the next attempt instead.
+	_suspend_reconnection()
 	if deserializer_worker:
 		_thread_should_exit = true
 		_packet_semaphore.post()
 		deserializer_worker.wait_to_finish()
 		deserializer_worker = null
+		# Cleared for the next worker: the flag is what the loop runs on, so leaving it
+		# set made a restarted worker exit on its first check — alive for an instant,
+		# then gone, with the queue still filling.
+		_thread_should_exit = false
 
 
 ## Prints [param log_message] to the output console when [member debug_mode] is enabled.
@@ -1040,11 +1086,28 @@ func _setup_threading() -> void:
 		use_threading = false
 	if not use_threading:
 		return
-	_packet_mutex = Mutex.new()
-	_packet_semaphore = Semaphore.new()
-	_result_mutex = Mutex.new()
+	# Reused, not replaced, because this also runs on a re-entry into the tree: the
+	# packet queue can already hold bytes that arrived before the previous worker was
+	# joined, and a fresh mutex would leave them behind a lock nothing else takes.
+	if _packet_mutex == null:
+		_packet_mutex = Mutex.new()
+	if _packet_semaphore == null:
+		_packet_semaphore = Semaphore.new()
+	if _result_mutex == null:
+		_result_mutex = Mutex.new()
 	deserializer_worker = Thread.new()
 	deserializer_worker.start(_thread_loop)
+	# Those queued bytes have no post waiting for them — the one that was pending was
+	# consumed by the worker on its way out — so the new worker would sit on the
+	# semaphore until the next packet happened to arrive. (The reverse trade is that a
+	# reused semaphore can carry counts the previous worker never spent, so a new one
+	# may take a few empty wakes; the loop handles an empty queue by looping, and losing
+	# queued bytes would be the worse half of the trade.)
+	_packet_mutex.lock()
+	var has_pending: bool = not _packet_queue.is_empty()
+	_packet_mutex.unlock()
+	if has_pending:
+		_packet_semaphore.post()
 
 
 func _on_websocket_message_received(raw_bytes: PackedByteArray) -> void:
@@ -1924,6 +1987,35 @@ func _cancel_reconnection() -> void:
 	# connected lets it call _attempt_reconnect after the cancel — which would null a
 	# *newer* cycle's _reconnect_timer and connect a second time. is_connected already
 	# makes this a no-op for a timer that has fired.
+	if _reconnect_timer != null and _reconnect_timer.timeout.is_connected(_attempt_reconnect):
+		_reconnect_timer.timeout.disconnect(_attempt_reconnect)
+	_reconnect_timer = null
+	# A cancelled cycle is over; nothing for _enter_tree to pick up.
+	_reconnect_suspended = false
+
+
+## Picks up a cycle [method _exit_tree] suspended, a frame after the client is back in
+## the tree. Re-checks everything that could have changed in that frame: a
+## [method connect_db] or [method disconnect_db] from the re-entry frame cancels the
+## cycle (leaving [member _reconnect_state] IDLE), and the client may have left the tree
+## again before this ran.
+func _resume_suspended_reconnect() -> void:
+	if _reconnect_state != _ReconnectState.RECONNECTING or not is_inside_tree():
+		return
+	_schedule_next_reconnect_attempt()
+
+
+## Drops the pending backoff timer but KEEPS the cycle — state, attempt count and saved
+## subscription queries — so [method _enter_tree] can schedule the next attempt when the
+## client is back in the tree. Called only from [method _exit_tree]; every other path
+## that ends a cycle uses [method _cancel_reconnection], which discards all of it.
+func _suspend_reconnection() -> void:
+	if _reconnect_state == _ReconnectState.IDLE:
+		return
+	print_log("SpacetimeDBClient: Suspending reconnection (left the tree).")
+	_reconnect_suspended = true
+	# Same reasoning as the cancel path: a timer left connected would call
+	# _attempt_reconnect against a client that is no longer in the tree.
 	if _reconnect_timer != null and _reconnect_timer.timeout.is_connected(_attempt_reconnect):
 		_reconnect_timer.timeout.disconnect(_attempt_reconnect)
 	_reconnect_timer = null
