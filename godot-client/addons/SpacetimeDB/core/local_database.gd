@@ -80,6 +80,21 @@ func _init(p_schema: SpacetimeDBSchema) -> void:
 ## may unsubscribe inside its own callback, so the list it mutates must not be the
 ## one being iterated — hence duplicate. Duplicate only when non-empty; the common
 ## no-listener case returns the shared read-only empty (zero alloc).
+##
+## The snapshot is what makes the [code]is_valid()[/code] guard at every
+## [code]listener.call[/code] site below necessary: a callback that frees ANOTHER
+## subscriber (its node, or any object holding a subscribed [Callable]) leaves that
+## object's Callable in this already-taken copy. Calling it is a GDScript runtime
+## error, which unwinds the whole apply — measured: freeing a second receiver from
+## an insert handler applied 1 of a 3-row batch, dropped the rest of the transaction
+## from the mirror and fired no transactions_completed, and the server never resends.
+## Skipping a dead listener instead matches how the engine treats a signal whose
+## receiver was freed. The guard covers a method Callable ([code]obj.method[/code]),
+## which is what every subscriber in this SDK registers; a LAMBDA that captured a
+## node stays valid after that node is freed, so a lambda subscriber still has to
+## check its own captures. [method Object.queue_free] was never affected (the free lands
+## after the batch), and a callback that frees its OWN object is refused by the
+## engine ("Object is locked and can't be freed").
 func _listener_snapshot(by_table: Dictionary, key: StringName) -> Array:
 	var live: Array = by_table.get(key, _EMPTY_LISTENERS)
 	return live.duplicate() if not live.is_empty() else _EMPTY_LISTENERS
@@ -497,11 +512,13 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			fired_event = true
 			if has_insert_listeners:
 				for listener: Callable in insert_listeners:
-					listener.call(event_row)
+					if listener.is_valid():
+						listener.call(event_row)
 			row_inserted.emit(table_name_lower, event_row)
 		if fired_event:
 			for listener: Callable in tx_listeners:
-				listener.call()
+				if listener.is_valid():
+					listener.call()
 			row_transactions_completed.emit(table_name_lower)
 		return
 
@@ -538,7 +555,8 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				had_any_change = true
 				if has_insert_listeners:
 					for listener: Callable in insert_listeners:
-						listener.call(inserted_row)
+						if listener.is_valid():
+							listener.call(inserted_row)
 				row_inserted.emit(table_name_lower, inserted_row)
 				if track_pkless_query:
 					_pk_less_add(pkless_qmem, ins_hash, inserted_row)
@@ -586,7 +604,8 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 					had_any_change = true
 					if has_before_delete_listeners:
 						for listener: Callable in before_delete_listeners:
-							listener.call(cached_row)
+							if listener.is_valid():
+								listener.call(cached_row)
 					row_before_delete.emit(table_name_lower, cached_row)
 			if not evicted.is_empty():
 				# Single pass compact — the stored row is the same instance appended on 0->1.
@@ -605,12 +624,14 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 					var gone: _ModuleTableType = evicted[gone_id]
 					if has_delete_listeners:
 						for listener: Callable in delete_listeners:
-							listener.call(gone)
+							if listener.is_valid():
+								listener.call(gone)
 					row_deleted.emit(table_name_lower, gone)
 
 		if had_any_change:
 			for listener: Callable in tx_listeners:
-				listener.call()
+				if listener.is_valid():
+					listener.call()
 			row_transactions_completed.emit(table_name_lower)
 		return
 
@@ -674,14 +695,16 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				had_any_change = true
 				if has_insert_listeners:
 					for listener: Callable in insert_listeners:
-						listener.call(inserted_row)
+						if listener.is_valid():
+							listener.call(inserted_row)
 				row_inserted.emit(table_name_lower, inserted_row)
 			elif props.is_empty() or not _rows_equal(prev_u, inserted_row, props):
 				table_dict[pk_value] = inserted_row
 				had_any_change = true
 				if has_update_listeners:
 					for listener: Callable in update_listeners:
-						listener.call(prev_u, inserted_row)
+						if listener.is_valid():
+							listener.call(prev_u, inserted_row)
 				row_updated.emit(table_name_lower, prev_u, inserted_row)
 		elif old_ref == 0:
 			ref_table[pk_value] = 1
@@ -689,7 +712,8 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			had_any_change = true
 			if has_insert_listeners:
 				for listener: Callable in insert_listeners:
-					listener.call(inserted_row)
+					if listener.is_valid():
+						listener.call(inserted_row)
 			row_inserted.emit(table_name_lower, inserted_row)
 		else:
 			# Overlapping re-delivery: bump refcount; on_update only if the value differs.
@@ -703,14 +727,16 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				had_any_change = true
 				if has_insert_listeners:
 					for listener: Callable in insert_listeners:
-						listener.call(inserted_row)
+						if listener.is_valid():
+							listener.call(inserted_row)
 				row_inserted.emit(table_name_lower, inserted_row)
 			elif props.is_empty() or not _rows_equal(prev_o, inserted_row, props):
 				table_dict[pk_value] = inserted_row
 				had_any_change = true
 				if has_update_listeners:
 					for listener: Callable in update_listeners:
-						listener.call(prev_o, inserted_row)
+						if listener.is_valid():
+							listener.call(prev_o, inserted_row)
 				row_updated.emit(table_name_lower, prev_o, inserted_row)
 
 	# Delete pass: skip entirely when there are no deletes, or (when detecting updates)
@@ -740,17 +766,20 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				had_any_change = true
 				if has_before_delete_listeners:
 					for listener: Callable in before_delete_listeners:
-						listener.call(cached_row)
+						if listener.is_valid():
+							listener.call(cached_row)
 				row_before_delete.emit(table_name_lower, cached_row)
 				table_dict.erase(pk_value)
 				if has_delete_listeners:
 					for listener: Callable in delete_listeners:
-						listener.call(cached_row)
+						if listener.is_valid():
+							listener.call(cached_row)
 				row_deleted.emit(table_name_lower, cached_row)
 
 	if had_any_change:
 		for listener: Callable in tx_listeners:
-			listener.call()
+			if listener.is_valid():
+				listener.call()
 		row_transactions_completed.emit(table_name_lower)
 
 
@@ -801,13 +830,16 @@ func _emit_clear_for_table(table_name_lower: StringName, rows: Array) -> void:
 	)
 	for row: _ModuleTableType in rows:
 		for listener: Callable in before_delete_listeners:
-			listener.call(row)
+			if listener.is_valid():
+				listener.call(row)
 		row_before_delete.emit(table_name_lower, row)
 		for listener: Callable in delete_listeners:
-			listener.call(row)
+			if listener.is_valid():
+				listener.call(row)
 		row_deleted.emit(table_name_lower, row)
 	for listener: Callable in tx_listeners:
-		listener.call()
+		if listener.is_valid():
+			listener.call()
 	row_transactions_completed.emit(table_name_lower)
 
 
