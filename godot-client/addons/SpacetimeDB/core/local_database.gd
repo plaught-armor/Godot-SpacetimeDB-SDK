@@ -44,7 +44,15 @@ var _ref_counts: Dictionary[StringName, Dictionary] = { }
 ## A distinct row value held by N overlapping subscriptions has count N; on_insert fires
 ## on 0->1, on_delete on 1->0. Mirrors the per-row entries in _pk_less_tables.
 var _pk_less_counts: Dictionary[StringName, Dictionary] = { }
-## Per-query row membership: query_id -> { table -> (PK: { pk -> row }) | (PK-less: { hash -> [[row, count]] }) }.
+## Per-query row membership: query_id -> { table -> (PK: { pk -> row | [row, count] }) |
+## (PK-less: { hash -> [[row, count]] }) }. Both shapes carry a COUNT, because one query
+## set can deliver the same row more than once: the server evaluates each query in a
+## subscribe independently (execute_plans in crates/core/src/subscription/mod.rs emits one
+## TableUpdate per query, with no dedupe across the set), so overlapping queries in one
+## subscribe each contribute a reference. The count is exactly the number of references
+## this query contributed to _ref_counts, so a prune can hand every one of them back. On
+## the PK side a single reference is stored as the bare row and only a repeat widens the
+## entry to a pair, which keeps the common subscribe path allocation-free.
 ## Records which rows each subscription contributes so a SubscriptionError on an already-
 ## applied query can be pruned precisely (decrement those rows' refcounts, evict any that
 ## no other query holds) — the server sends no dropped rows on an error, unlike unsubscribe.
@@ -394,12 +402,47 @@ func _pk_less_remove(counts: Dictionary, h: int, entry: Array) -> void:
 
 
 # --- Per-query membership (for prune_query) ---
+## Records one MORE reference to [param pk] for a query that already holds it, keeping
+## the newest row. The single-reference case is a bare row (written inline on the hot
+## insert path); only a repeat allocates the [code][row, count][/code] pair, so a
+## subscribe that delivers each row once pays nothing for this.
+func _qmem_add_repeat(qmem: Dictionary, pk: Variant, row: _ModuleTableType) -> void:
+	var entry: Variant = qmem.get(pk)
+	if entry == null:
+		qmem[pk] = row
+	elif entry is Array:
+		entry[0] = row
+		entry[1] += 1
+	else:
+		qmem[pk] = [row, 2]
+
+
+## Points this query's existing reference at a newer row without taking another one.
+func _qmem_refresh(qmem: Dictionary, pk: Variant, row: _ModuleTableType) -> void:
+	var entry: Variant = qmem.get(pk)
+	if entry is Array:
+		entry[0] = row
+	elif entry != null:
+		qmem[pk] = row
+
+
+## Hands one reference back; drops the entry when this query holds no more.
+func _qmem_release(qmem: Dictionary, pk: Variant) -> void:
+	var entry: Variant = qmem.get(pk)
+	if entry is Array:
+		entry[1] -= 1
+		if entry[1] <= 1:
+			qmem[pk] = entry[0]
+	elif entry != null:
+		qmem.erase(pk)
+
+
 func _query_table_pk_mem(query_id: int, table: StringName) -> Dictionary:
 	if not _query_rows.has(query_id):
 		_query_rows[query_id] = { }
 	var tables: Dictionary = _query_rows[query_id]
 	if not tables.has(table):
-		tables[table] = { } # pk -> row
+		tables[table] = { } # pk -> [row, count]
 	return tables[table]
 
 
@@ -434,8 +477,15 @@ func prune_query(query_id: int) -> void:
 					for _i: int in entry[1]:
 						drop.deletes.append(entry[0])
 		else:
-			# PK membership { pk -> row }.
-			drop.deletes.assign(membership.values())
+			# PK membership { pk -> row | [row, count] }: one delete per reference this
+			# query contributed.
+			for pk: Variant in membership:
+				var entry: Variant = membership[pk]
+				if entry is Array:
+					for _i: int in entry[1]:
+						drop.deletes.append(entry[0])
+				else:
+					drop.deletes.append(entry)
 		if not drop.deletes.is_empty():
 			apply_table_update(drop, query_id)
 	_query_rows.erase(query_id)
@@ -670,8 +720,6 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				% [table_name_lower, pk_field]
 			)
 			continue
-		if track_query:
-			qmem[pk_value] = inserted_row
 		var old_ref: int = ref_table.get(pk_value, 0)
 		if detect_updates and deleted_pks.has(pk_value):
 			# Update: delete+insert of the same pk. Refcount unchanged; mark handled so
@@ -685,6 +733,13 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				# never leaves the cache and no on_delete ever fires. Record the
 				# reference this delivery carries.
 				ref_table[pk_value] = 1
+				if track_query:
+					qmem[pk_value] = inserted_row
+			elif track_query:
+				# Refcount unchanged — this delivery is an update, not a new reference, so
+				# this query's membership only points at a newer row. Recording a reference
+				# here would let a later prune hand back one this query never took.
+				_qmem_refresh(qmem, pk_value, inserted_row)
 			var prev_u: _ModuleTableType = table_dict.get(pk_value)
 			if prev_u == null:
 				# No prior cached row → this is an insert, not an update. Firing the
@@ -708,6 +763,8 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				row_updated.emit(table_name_lower, prev_u, inserted_row)
 		elif old_ref == 0:
 			ref_table[pk_value] = 1
+			if track_query:
+				qmem[pk_value] = inserted_row
 			table_dict[pk_value] = inserted_row
 			had_any_change = true
 			if has_insert_listeners:
@@ -718,6 +775,10 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 		else:
 			# Overlapping re-delivery: bump refcount; on_update only if the value differs.
 			ref_table[pk_value] = old_ref + 1
+			if track_query:
+				# Already held — by this query (overlapping queries in one subscribe) or by
+				# another. Only the first case widens the entry to a counted pair.
+				_qmem_add_repeat(qmem, pk_value, inserted_row)
 			var prev_o: _ModuleTableType = table_dict.get(pk_value)
 			if prev_o == null:
 				# Refcount bumped above but no cached row (desync / first sight under
@@ -756,7 +817,11 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			if old_ref <= 0:
 				continue
 			if track_query:
-				qmem.erase(pk_value)
+				# One delete releases ONE reference, matching the single decrement below.
+				# Dropping the whole entry here would leave a doubly-referenced pk with a
+				# live refcount and no membership, so a later prune of this same query
+				# would hand back nothing and strand the row.
+				_qmem_release(qmem, pk_value)
 			if old_ref > 1:
 				ref_table[pk_value] = old_ref - 1
 				continue
