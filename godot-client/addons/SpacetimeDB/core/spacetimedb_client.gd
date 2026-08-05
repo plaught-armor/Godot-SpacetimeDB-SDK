@@ -280,6 +280,11 @@ func initialize_and_connect() -> void:
 	_local_db.name = "LocalDatabase"
 	add_child(_local_db) # Add as child if it needs signals
 
+	# Covers the path connect_db does not: base_url set in the inspector and
+	# initialize_and_connect() called directly. Both consumers strip the trailing slash
+	# themselves, but the property is public, so it reads back as what will be used.
+	base_url = base_url.rstrip("/")
+
 	# 4. Initialize REST API Handler (optional, mainly for token)
 	_rest_api = SpacetimeDBRestAPI.new(base_url, debug_mode)
 	_rest_api.token_received.connect(_on_token_received)
@@ -374,7 +379,10 @@ func connect_db(
 	connection_options = options
 	# This call may be the first to supply options, or may replace the ones _ready saw.
 	_apply_process_mode()
-	self.base_url = host_url
+	# Normalized on the way in, so the property reads back as the URL the SDK will
+	# actually use — the REST and socket paths both drop the trailing slash themselves.
+	# initialize_and_connect() normalizes again for the caller that skips this method.
+	self.base_url = host_url.rstrip("/")
 	self.database_name = database_name.to_lower()
 	self.compression = options.compression
 	self.one_time_token = options.one_time_token

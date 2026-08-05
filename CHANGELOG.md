@@ -33,6 +33,17 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A host URL with a trailing slash connects.** `String.path_join` concatenates when
+  either side already carries the separator, so `http://127.0.0.1:3000/` — the form a
+  browser's address bar shows, and an easy thing to paste — asked the server for
+  `//v1/identity` and `//v1/database/<name>/subscribe`. The server routes that as a
+  path with an empty first segment and answers 404 (measured against 2.7.x: `/v1/ping`
+  200, `//v1/ping` 404), so the token fetch and the handshake both failed with nothing
+  in either error naming the extra character. Trailing slashes are now dropped where
+  the URLs are built, and `SpacetimeDBClient.base_url` reads back normalized. A path
+  prefix on a reverse-proxied deployment is untouched. Covered by
+  `tests/test_base_url_trailing_slash.gd`.
+
 - **A codegen run that failed partway no longer deletes the bindings it did not
   rewrite.** Generation is best-effort: an output file that cannot be opened (a
   read-only VCS checkout, a file the OS has locked, a full disk) is reported and the

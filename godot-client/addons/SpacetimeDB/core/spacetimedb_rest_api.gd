@@ -55,7 +55,11 @@ static func _type_name(t: RequestType) -> String:
 
 
 func _init(base_url: String, debug_mode: bool) -> void:
-	self._base_url = base_url
+	# Trailing slashes dropped for the same reason as SpacetimeDBConnection.build_socket_url:
+	# path_join concatenates when either side carries the separator, so a host written as
+	# "http://127.0.0.1:3000/" asked for "//v1/identity", which the server answers 404
+	# (measured against 2.7.x) — the token fetch failed with nothing naming the cause.
+	self._base_url = base_url.rstrip("/")
 	self._debug_mode = debug_mode
 	add_child(_http_request)
 	_http_request.timeout = REQUEST_TIMEOUT_SECONDS

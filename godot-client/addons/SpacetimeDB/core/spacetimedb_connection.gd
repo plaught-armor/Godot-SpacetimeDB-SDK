@@ -504,6 +504,31 @@ static func build_query_params(
 	return query_params
 
 
+## Builds the `subscribe` WebSocket URL for [param database_name] under
+## [param base_url], with the scheme rewritten to `ws`/`wss`.
+##
+## Trailing slashes on [param base_url] are dropped first. `String.path_join` concatenates
+## when either side already carries the separator, so a host written with the trailing
+## slash a browser shows (`http://127.0.0.1:3000/`) produced `//v1/database/...`, and the
+## server routes that as a path with an empty first segment: measured against 2.7.x,
+## `/v1/ping` answers 200 and `//v1/ping` answers 404. The handshake failed with nothing
+## pointing at the extra character.
+static func build_socket_url(base_url: String, version: String, database_name: String) -> String:
+	var ws_url_base: String = base_url.rstrip("/")
+	# Rewrite only the leading scheme — a stray "http://" elsewhere in base_url
+	# (a path or query segment) must be left alone. begins_with anchors at index 0;
+	# .replace() would rewrite every occurrence. https checked first — "http" is a
+	# prefix of "https".
+	if ws_url_base.begins_with("https://"):
+		ws_url_base = "wss://" + ws_url_base.substr(8)
+	elif ws_url_base.begins_with("http://"):
+		ws_url_base = "ws://" + ws_url_base.substr(7)
+	return ws_url_base \
+			.path_join("/" + version + "/database") \
+			.path_join(database_name) \
+			.path_join("subscribe")
+
+
 ## Initiates a WebSocket connection to the SpacetimeDB [param database_name]
 ## at [param base_url] using the given [param connection_id].
 func connect_to_database(base_url: String, database_name: String, connection_id: String) -> void:
@@ -540,20 +565,7 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		printerr("SpacetimeDBConnection: Cannot connect without Connection ID.")
 		return
 
-	# Construct WebSocket URL base
-	# Rewrite only the leading scheme — a stray "http://" elsewhere in base_url
-	# (a path or query segment) must be left alone. begins_with anchors at index 0;
-	# .replace() would rewrite every occurrence. https checked first — "http" is a
-	# prefix of "https".
-	var ws_url_base: String = base_url
-	if ws_url_base.begins_with("https://"):
-		ws_url_base = "wss://" + ws_url_base.substr(8)
-	elif ws_url_base.begins_with("http://"):
-		ws_url_base = "ws://" + ws_url_base.substr(7)
-	ws_url_base = ws_url_base \
-			.path_join("/" + version + "/database") \
-			.path_join(database_name) \
-			.path_join("subscribe")
+	var ws_url_base: String = build_socket_url(base_url, version, database_name)
 
 	var query_params: String = build_query_params(
 		connection_id,
