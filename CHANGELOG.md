@@ -33,6 +33,17 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A module's schema no longer picks up another module's row types.** Generated
+  scripts were selected by filename prefix, and a filename prefix cannot separate two
+  modules whose names prefix each other: `game` and `game_extra` both emit files
+  beginning `game_`, so module `game`'s schema loaded `game_extra_user.gd` as well.
+  Both declare the table `user` — legal, they are different databases — so the table
+  map kept whichever script the directory listed last, and rows for one module's table
+  decoded against the other module's row type, with the table name registered twice on
+  top of that. The row type declares the module it came from, and that constant decides
+  now. Sum-type payload scripts, which declare no module and name no table, stay
+  loadable as nested column types. Covered by `tests/test_schema_module_isolation.gd`.
+
 - **A host URL with a trailing slash connects.** `String.path_join` concatenates when
   either side already carries the separator, so `http://127.0.0.1:3000/` — the form a
   browser's address bar shows, and an easy thing to paste — asked the server for
