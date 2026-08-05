@@ -24,7 +24,13 @@ var _errors: PackedStringArray = []
 
 
 func _initialize() -> void:
-	var fails: int = _run()
+	# Deferred + awaited: the client reports a token it refuses one frame later (see
+	# _report_connection_error), so the assertions below need the frame to land.
+	_drive.call_deferred()
+
+
+func _drive() -> void:
+	var fails: int = await _run()
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:
@@ -69,6 +75,8 @@ func _run() -> int:
 	# And the connect attempt that follows says so, rather than returning quietly.
 	conn.connection_error.connect(_on_connection_error)
 	conn.connect_to_database("http://127.0.0.1:3000", "testdb", "deadbeef")
+	# Deferred like the client's own refusals — see SpacetimeDBConnection.connect_to_database.
+	await process_frame
 	f += _check_i("the refused token fails the connect loudly", _errors.size(), 1)
 	f += _check_b(
 		"the failure names the missing token",
@@ -95,6 +103,7 @@ func _run() -> int:
 	# The refusal returns before the client touches its (here null) connection, which
 	# is what keeps this reachable on a client that was never wired up.
 	client._on_token_received("abc\r\nX-Injected: yes")
+	await process_frame
 	f += _check_s("the client did not store a refused token", client._token, "")
 	f += _check_i("the client reported the refusal", _errors.size(), 1)
 	f += _check_b(
@@ -117,6 +126,7 @@ func _run() -> int:
 	var opts: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
 	opts.token = "abc\r\nX-Injected: yes"
 	client2.connect_db("http://127.0.0.1:3000", "testdb", opts)
+	await process_frame
 	f += _check_s("connect_db did not store a refused token", client2._token, "")
 	f += _check_i("connect_db reported the refusal", _errors.size(), 1)
 	f += _check_b("connect_db did not initialize", client2._is_initialized, false)

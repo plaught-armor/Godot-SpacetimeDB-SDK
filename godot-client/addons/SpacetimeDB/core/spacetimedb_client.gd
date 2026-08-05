@@ -395,7 +395,10 @@ func connect_db(
 		var opt_token_reason: String = SpacetimeDBConnection.token_reject_reason(options.token)
 		if not opt_token_reason.is_empty():
 			push_error("SpacetimeDBClient: refusing options.token — %s." % opt_token_reason)
-			connection_error.emit(ERR_UNAUTHORIZED, "Auth token rejected: %s" % opt_token_reason)
+			_report_connection_error(
+				ERR_UNAUTHORIZED,
+				"Auth token rejected: %s" % opt_token_reason,
+			)
 			return
 		self._token = options.token
 	self.debug_mode = options.debug_mode
@@ -940,7 +943,37 @@ func _load_token_or_request() -> void:
 		_rest_api.request_new_token()
 	else:
 		printerr("SpacetimeDBClient: No token available and auto_request_token is false.")
-		connection_error.emit(-1, "Authentication token unavailable")
+		_report_connection_error(-1, "Authentication token unavailable")
+
+
+## Reports a connection failure that was decided WITHOUT touching the network, deferred
+## by one frame.
+##
+## Everything else that ends a connection attempt — DNS, the socket, the identity
+## request — reports from a later frame by construction. These three do not: a token
+## refused because it carries a control character (from the options, or read back from
+## token_save_path) is decided inside connect_db, so emitting inline reached only the
+## listeners that were already wired. That is the opposite order from the one every
+## caller writes, and it is the order the Blackholio example shipped with — connect
+## first, wire the handlers on the next lines — which lost the report entirely and left
+## the game waiting on a connection the SDK had already given up on. Deferring makes the
+## signal arrive the same way in every case, so wiring order stops mattering.
+##
+## A caller that frees the client in the same frame never sees it: the deferred call is
+## dropped when its object is gone, which is the correct outcome.
+func _report_connection_error(code: int, reason: String) -> void:
+	_emit_connection_error_deferred.call_deferred(code, reason, _session_intent)
+
+
+## Emits the deferred report unless the session it belongs to is gone. connect_db and
+## disconnect_db both bump _session_intent, so a caller that immediately retries or tears
+## the attempt down does not get a frame-late error about the attempt it already
+## abandoned — the same supersede rule connect_db applies to its own cache wipe.
+func _emit_connection_error_deferred(code: int, reason: String, intent: int) -> void:
+	if intent != _session_intent:
+		print_log("SpacetimeDBClient: dropping a connection error from a superseded session.")
+		return
+	connection_error.emit(code, reason)
 
 
 func _generate_connection_id() -> String:
@@ -961,7 +994,7 @@ func _on_token_received(received_token: String) -> void:
 	var reject_reason: String = SpacetimeDBConnection.token_reject_reason(received_token)
 	if not reject_reason.is_empty():
 		push_error("SpacetimeDBClient: refusing the auth token — %s." % reject_reason)
-		connection_error.emit(ERR_UNAUTHORIZED, "Auth token rejected: %s" % reject_reason)
+		_report_connection_error(ERR_UNAUTHORIZED, "Auth token rejected: %s" % reject_reason)
 		return
 
 	print_log("SpacetimeDBClient: Token acquired.")

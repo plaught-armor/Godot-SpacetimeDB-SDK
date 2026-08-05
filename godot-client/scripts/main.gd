@@ -78,16 +78,20 @@ func _ready() -> void:
 	# player row) instead of a fresh one — enables the rejoin path below.
 	options.one_time_token = false
 
+	# Handlers first, then connect — the order docs/quickstart.md asks for. connect_db
+	# can decide a failure without touching the network (a saved token it refuses, for
+	# one), and while the SDK now defers those reports by a frame so this order is not
+	# load-bearing, a game that wires afterwards is one refactor away from missing them.
+	SpacetimeDB.Blackholio.connected.connect(_on_connected)
+	SpacetimeDB.Blackholio.disconnected.connect(_on_disconnected)
+	SpacetimeDB.Blackholio.connection_error.connect(_on_connection_error)
+	SpacetimeDB.Blackholio.reconnected.connect(_on_reconnected)
+
 	SpacetimeDB.Blackholio.connect_db(
 		"http://127.0.0.1:3000",
 		"blackholio",
 		options,
 	)
-
-	SpacetimeDB.Blackholio.connected.connect(_on_connected)
-	SpacetimeDB.Blackholio.disconnected.connect(_on_disconnected)
-	SpacetimeDB.Blackholio.connection_error.connect(_on_connection_error)
-	SpacetimeDB.Blackholio.reconnected.connect(_on_reconnected)
 
 	death_screen.visible = false
 	username_screen.visible = false
