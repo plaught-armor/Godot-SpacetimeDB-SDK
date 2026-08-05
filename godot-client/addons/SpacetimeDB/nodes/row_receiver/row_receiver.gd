@@ -173,7 +173,12 @@ func _get_db(wait_for_init: bool = false) -> LocalDatabase:
 		return null
 	if _current_db_instance == null or not is_instance_valid(_current_db_instance):
 		var constants: Dictionary = (table_to_receive.get_script() as GDScript).get_script_constant_map()
-		var module_name: String = constants.get("module_name", "").to_pascal_case()
+		# Taken as written: the constant already IS the autoload's property name (codegen
+		# writes both from one pass of SpacetimeSchemaParser.module_class_prefix over the
+		# module key). Re-applying to_pascal_case here re-split any prefix carrying
+		# consecutive capitals — a module named `a-b` declares `AB`, and `AB`.to_pascal_case()
+		# is `Ab`, so the lookup missed a client that was sitting right there.
+		var module_name: String = constants.get("module_name", "")
 		# A stub/misconfigured table type may lack the module_name constant; the
 		# empty string would resolve SpacetimeDB[""] to null and crash below.
 		if module_name.is_empty():
