@@ -589,6 +589,25 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   letting that case through.
 
 ### Changed
+- **`connect_db()` no longer reports a failure before it returns.** Three
+  refusals were decided without touching the network — a token from the options
+  or from `token_save_path` that carries a control character, and no token at all
+  with `auto_request_token` off — and each emitted `connection_error` inline, so
+  only handlers wired BEFORE the call heard them. Every other way an attempt ends
+  (DNS, the socket, the identity request) reports from a later frame, and the
+  natural way to write the call is to connect and then wire the handlers: the
+  Blackholio example did exactly that and lost the report, leaving the game
+  waiting on a connection the SDK had already abandoned. Those three now report
+  one frame later, like everything else, so wiring order stops mattering. A
+  caller that read the signal synchronously inside `connect_db()` now sees it on
+  the next frame; the example has been reordered to wire first regardless, which
+  is what `docs/quickstart.md` has always said. The connection layer's own two
+  inline reports go the same way — a URL `WebSocketPeer.connect_to_url` refuses
+  (a scheme that survived the http/https rewrite) and a connect with no token —
+  since the client re-emits whatever they report. A report whose session has
+  since been superseded (`connect_db` again, or `disconnect_db`) is dropped
+  rather than delivered a frame late against a session the caller has already
+  moved on from. Covered by `tests/test_connect_error_signal_order.gd`.
 - **Confirmed reads are on by default**, matching the server and the other SDKs.
   `SpacetimeDBConnectionOptions.confirmed_reads` defaulted to `false` and was
   documented as matching SpacetimeDB's default — it did not. The server treats the

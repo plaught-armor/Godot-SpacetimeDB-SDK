@@ -27,6 +27,12 @@ Connects to a SpacetimeDB database.
 | database_name | The name or identity of the remote database. |
 | options | Client connection options, see the [`SpacetimeDBConnectionOptions`](#spacetimedbconnectionoptions-resource) documentation. |
 
+Failures are reported through [`connection_error`](#connection_error-signal), never
+before this method returns — including the ones decided without touching the network,
+such as a token it refuses. Wiring the handlers first is still the documented order, but
+a game that connects and then wires them on the following lines does not lose the
+report.
+
 This method *starts* a session; it does not re-point a live one. Called while the client is
 already connected it is refused with an error and changes nothing — not the host, not the
 database name, not the options. Call [`disconnect_db()`](#disconnect_db-method) first to

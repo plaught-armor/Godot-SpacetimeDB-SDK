@@ -558,7 +558,11 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		# happen, and this arm is also where a token set_token refused lands, which
 		# print_log would have hidden outside debug_mode.
 		printerr("SpacetimeDBConnection: Cannot connect without auth token.")
-		connection_error.emit(ERR_UNAUTHORIZED, "No auth token")
+		# Deferred for the same reason as SpacetimeDBClient._report_connection_error: this
+		# arm and the connect_to_url one below are decided inside the call, so emitting
+		# inline reached only the listeners that were already wired — and the client's own
+		# handler re-emits, so the game heard nothing either.
+		connection_error.emit.call_deferred(ERR_UNAUTHORIZED, "No auth token")
 		return
 
 	if connection_id.is_empty():
@@ -592,7 +596,10 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 	var err: Error = _websocket.connect_to_url(_target_url)
 	if err != OK:
 		printerr("SpacetimeDBConnection: Error initiating connection: ", err)
-		connection_error.emit(err, "Failed to initiate connection")
+		# connect_to_url refuses a URL it cannot use (a host_url whose scheme survived
+		# build_socket_url's http/https rewrite, say) without any I/O, so this lands in the
+		# caller's frame. Deferred, like the no-token arm above.
+		connection_error.emit.call_deferred(err, "Failed to initiate connection")
 	else:
 		_print_log("SpacetimeDBConnection: Connection initiated.")
 		_connection_requested = true
