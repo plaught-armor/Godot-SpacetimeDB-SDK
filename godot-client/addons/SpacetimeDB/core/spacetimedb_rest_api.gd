@@ -63,6 +63,12 @@ func _init(base_url: String, debug_mode: bool) -> void:
 	self._debug_mode = debug_mode
 	add_child(_http_request)
 	_http_request.timeout = REQUEST_TIMEOUT_SECONDS
+	# Both requests here are POSTs, and HTTPRequest carries the request body over
+	# to whatever host a Location names — so a redirect would hand a reducer's
+	# arguments to another host (an https endpoint pointing at http is followed
+	# with TLS off). It could not succeed anyway: a 301/302/303/305 is rewritten
+	# to GET, which neither route accepts. Report the 3xx instead of following it.
+	_http_request.max_redirects = 0
 	# Fresh HTTPRequest — no prior connections to guard against.
 	_http_request.request_completed.connect(_on_request_completed)
 
