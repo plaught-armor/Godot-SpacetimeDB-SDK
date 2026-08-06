@@ -33,6 +33,31 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A message the engine drops now ends the session with an explanation instead of
+  passing unnoticed.** The receive loop skipped an empty inbound packet and carried
+  on, and an empty packet is exactly what Godot hands over when a message did not fit
+  `inbound_buffer_size`. The SDK documented that case as a 1009 close, which is only
+  what happens when the message arrives as a single frame: wslay compares its limit
+  against a running message length that Godot's `no_buffering` mode never accumulates,
+  so a fragmented message — what a real server sends for a large snapshot — is
+  measured a frame at a time and never trips it. It is reassembled into a ring Godot
+  rounds up to the next power of two, then refused by the read into a buffer that is
+  exactly `inbound_buffer_size`, and `WSLPeer::get_packet` returns OK with nothing in
+  it. Measured against a live SpacetimeDB 2.8.0 server (a 30 000-row, ~3.1 MB snapshot
+  at the 2 MiB default): the subscription never applied, the mirror stayed empty,
+  several later frames decoded as garbage because the refused read consumed the
+  packet's queue slot without draining its payload, and the client reported nothing
+  while still calling itself connected. An empty packet is now taken for what it is —
+  no SpacetimeDB frame is empty — and the session ends with `connection_error` (1009)
+  and a diagnostic naming `inbound_buffer_size`, `compression`, and the subscription
+  that produced it; auto-reconnect then applies as it does for any other mid-session
+  failure. `tests/test_oversized_inbound_message.gd` drives a hand-rolled WebSocket
+  listener (Godot's own peer cannot send a fragmented message) and also pins the band
+  the SDK cannot see: a message past the reassembly ring is never assembled at all, so
+  nothing is reported and only the caller's own subscribe timeout catches it. The test
+  covers the detection, not the frame-offset drift that follows a drop — that half was
+  measured against the live server.
+
 - **A `ScheduleAt` column is recognised by its type, not by being named
   `scheduled_at`.** Codegen decided a column carried the `Interval | Time` sum by
   checking the column's NAME, which is wrong in both directions and reachable from
