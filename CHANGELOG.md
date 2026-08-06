@@ -33,6 +33,22 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **An index on an event table no longer grows without bound.** An event table's rows
+  are never resident — `LocalDatabase` fires `on_insert` for each and stores nothing,
+  so `count()` and `iter()` stay empty and no delete is ever reported — but codegen
+  emitted a unique/btree accessor for every index the schema declared on such a table,
+  and those caches are kept current by exactly the insert/update/delete callbacks that
+  never fire a removal. Every event row was appended to a bucket nothing would ever
+  release: measured on a two-column event table, 40 batches of 3 rows left 120 rows
+  cached while the table reported 0, and `filter()` answered with rows the table itself
+  says do not exist. Codegen now emits no index accessor for an event table (matching
+  the official Rust codegen, which omits them for the same reason); the typed
+  `find_by_<field>` / `first_by_<field>` accessors remain and fall back to the mirror,
+  so they are empty but consistent with `count()` / `iter()`. Non-event tables are
+  unaffected — the emitted text is byte-identical. `tests/test_event_table_no_index.gd`,
+  plus a `vevent` golden fixture carrying an event table and a structurally identical
+  non-event control.
+
 - **A table whose row script never registered now says so.** Without that script the
   mirror has no column list, and for a table with no primary key that is not a
   degraded lookup but a wrong answer: every row compares equal and hashes to one
