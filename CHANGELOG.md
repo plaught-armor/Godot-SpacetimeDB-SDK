@@ -33,6 +33,19 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A table with no primary key is no longer keyed by a column that happens to be
+  called `id`.** The generated row script carries a `PRIMARY_KEY` const exactly when
+  the schema gives the table a primary key, and omits it otherwise. The mirror used
+  to treat a missing const as "look for a column named `id` or `identity` and use
+  that" — but the const is missing precisely because the table HAS no primary key,
+  and such a column promises nothing about uniqueness. A log or junction table (one
+  row per event with `id` naming the entity it is about, or `identity` naming the
+  player it belongs to) was keyed by a value many of its rows share, so those rows
+  collapsed into a single cached entry: the mirror reported one row where the server
+  held several, and stayed wrong for the rest of the session. Such a table is now
+  refcounted by row value, which is what a table without a primary key means. A table
+  that does declare one is unaffected. `tests/test_no_pk_id_column.gd`.
+
 - **An `Option`, sum-type or `scheduled_at` column no longer compares by object
   identity.** The local mirror decides whether two rows carry the same value by
   descending into each column, and it reads a nested record's column list from that

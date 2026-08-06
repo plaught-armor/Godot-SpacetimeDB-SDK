@@ -19,6 +19,7 @@ var _sink: int = 0
 
 class _Row:
 	extends _ModuleTableType
+	const PRIMARY_KEY: StringName = &"id"
 	@export var id: int = 0
 	@export var group: int = 0
 

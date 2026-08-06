@@ -125,6 +125,7 @@ func _check_b(label: String, got: bool, want: bool) -> int:
 
 class _Row:
 	extends _ModuleTableType
+	const PRIMARY_KEY: StringName = &"id"
 	@export var id: int = 0
 	@export var owner: PackedByteArray = []
 
@@ -136,6 +137,7 @@ class _Row:
 
 class _IntRow:
 	extends _ModuleTableType
+	const PRIMARY_KEY: StringName = &"id"
 	@export var id: int = 0
 	@export var group: int = 0
 

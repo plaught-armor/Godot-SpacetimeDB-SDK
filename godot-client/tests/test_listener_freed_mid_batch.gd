@@ -21,6 +21,7 @@ var _db: LocalDatabase
 
 class _Row:
 	extends _ModuleTableType
+	const PRIMARY_KEY: StringName = &"id"
 	@export var id: int = 0
 
 
