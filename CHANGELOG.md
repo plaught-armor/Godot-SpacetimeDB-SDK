@@ -33,6 +33,20 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A reconnect no longer revives a subscription you unsubscribed.** The client
+  forgets a subscription when the server's `UnsubscribeApplied` lands, so a drop
+  between the unsubscribe going out and that reply arriving left the query in the
+  map a reconnect rebuilds its saved query set from — and the new socket
+  re-subscribed a query the caller had explicitly dropped. It could not be dropped
+  a second time either: the resubscribe makes a fresh internal handle nothing
+  outside the client can reference, so the rows came back and stayed for the rest
+  of the session. Such a query is now excluded from the saved set. The same fault
+  crossed sessions: `disconnect_db()` left its subscriptions standing, so the
+  first drop of the *next* session resubscribed the previous one's queries. Every
+  outstanding handle now ends with the session (`end` fires for each before
+  `disconnected`, so `ended` reads true for a subscription nothing can deliver to
+  any more). Covered by `tests/test_unsubscribe_session_scope.gd`.
+
 - **A module's schema no longer picks up another module's row types.** Generated
   scripts were selected by filename prefix, and a filename prefix cannot separate two
   modules whose names prefix each other: `game` and `game_extra` both emit files
