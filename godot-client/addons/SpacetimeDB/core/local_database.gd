@@ -33,6 +33,17 @@ static var _EMPTY_LISTENERS: Array = []
 static var _record_columns_cache: Dictionary[Script, Array] = { }
 ## Shared read-only empty column list for objects that are not generated records.
 static var _EMPTY_COLUMNS: Array = []
+## Component count per column type that can hold a NaN — every entry of
+## [constant BSATNDeserializer.NATIVE_ARRAYLIKE] built from floats (the i-suffixed
+## vectors hold ints and are absent). Components read as floats through `v[i]`.
+## Used by [method _nan_equal]; a type absent here carries no float to compare.
+const _NAN_CARRYING_COMPONENTS: Dictionary[int, int] = {
+	TYPE_VECTOR2: 2,
+	TYPE_VECTOR3: 3,
+	TYPE_VECTOR4: 4,
+	TYPE_QUATERNION: 4,
+	TYPE_COLOR: 4,
+}
 var _pk_less_tables: Dictionary[StringName, Array] = { } ## Array[_ModuleTableType]
 var _row_property_cache: Dictionary[StringName, Array] = { } ## Array[StringName] — storage props per table
 ## Tables already reported as having no registered row script, so the error in
@@ -375,7 +386,38 @@ static func _values_equal(a: Variant, b: Variant) -> bool:
 			if not _values_equal(aa[i], ba[i]):
 				return false
 		return true
-	return a == b
+	if a == b:
+		return true
+	return _nan_equal(a, b, ta)
+
+
+# Two values Variant `==` calls different are still the same row value when the only
+# difference is NaN. `NAN == NAN` is false in GDScript, while `hash(NAN)` is a single
+# value — Godot's hash_djb2_one_float normalizes NaN (and -0.0) before hashing — and
+# [method _value_hash] is built on that hash. Without this the two disagree: a PK-less
+# row carrying NaN is found by hash and then never matched, so every delivery cached
+# another copy and every delete was dropped (the row could never leave the mirror), and
+# a PK row carrying NaN was reported as an update on every unchanged re-delivery.
+#
+# It also follows the server, which holds ONE such row: sats types a float column as
+# `decorum::Total<f32>` (crates/sats/src/algebraic_value.rs), a total order in which NaN
+# equals itself.
+#
+# Reached only from the values-differ path of [method _values_equal] /
+# [method _rows_equal], so an equal row that carries no NaN pays nothing for it. An equal
+# row that DOES carry one walks this, because a NaN makes even `Vector2 == Vector2` false.
+static func _nan_equal(a: Variant, b: Variant, t: int) -> bool:
+	if t == TYPE_FLOAT:
+		return is_nan(a) and is_nan(b)
+	var components: int = _NAN_CARRYING_COMPONENTS.get(t, 0)
+	if components == 0:
+		return false
+	for i: int in components:
+		var ca: float = a[i]
+		var cb: float = b[i]
+		if ca != cb and not (is_nan(ca) and is_nan(cb)):
+			return false
+	return true
 
 
 # Value-hash consistent with [method _values_equal] (equal values hash equal).
@@ -423,7 +465,12 @@ func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array[StringNa
 			if not _values_equal(av, bv):
 				return false
 		elif av != bv:
-			return false
+			# Nested rather than `and`-ed into the branch above: a compound condition
+			# materializes both operands' results per column even when the first
+			# short-circuits, and this runs once per column of every compared row
+			# (measured +17% on an all-primitive row, tests/bench_rows_equal.gd).
+			if not _nan_equal(av, bv, ta):
+				return false
 	return true
 
 

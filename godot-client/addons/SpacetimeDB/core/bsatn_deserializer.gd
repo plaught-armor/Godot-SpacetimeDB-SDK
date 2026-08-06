@@ -37,6 +37,11 @@ const NATIVE_ARRAYLIKE_BY_META_NAME: Dictionary[StringName, Variant.Type] = {
 	&"color": TYPE_COLOR,
 }
 
+## Adding a float-carrying type here also needs an entry in
+## [code]LocalDatabase._NAN_CARRYING_COMPONENTS[/code], or a column of it holding a NaN
+## compares unequal to itself while hashing equal — a row that can never leave a PK-less
+## mirror. [Plane] would need its own branch there rather than a component count: it has
+## no [code]p[i][/code] indexing.
 const NATIVE_ARRAYLIKE: Array[Variant.Type] = [
 	TYPE_VECTOR2,
 	TYPE_VECTOR2I,
