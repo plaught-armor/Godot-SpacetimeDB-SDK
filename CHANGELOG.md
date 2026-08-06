@@ -33,6 +33,31 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A view is no longer described to the client as the table it shares a row type
+  with.** A view arrives like any other table (one `TableUpdate` under the view's
+  name), so the SDK synthesizes a table entry for it from the schema's `Views`
+  section — and that entry was a copy of the first table built on the same row
+  type, which handed the view that TABLE's primary key, unique/btree indexes and
+  `is_event` flag. None of them belong to the view. A procedural view (`Vec<T>` /
+  `Option<T>`) has a primary key only when the module declared one
+  (`#[view(primary_key = ...)]`); the server infers one from the source table for
+  `Query<T>` views only (`assign_query_view_primary_keys`), and builds a view's
+  schema with empty index/constraint lists and `is_event: false`
+  (`TableSchema::from_view_def_for_codegen`). Measured against a live SpacetimeDB
+  2.8.0 server: a view returning two rows that share the source table's key column
+  — legal, since a view's rows are whatever the view function built rather than a
+  table's set — arrived as two rows and the mirror kept ONE, reporting the second
+  as an update of the first. A view whose row type belongs to an event table
+  inherited `is_event` and so lost its index accessors although its rows are
+  resident. A view's entry now carries only what the view declares. Where a row
+  type's tables disagree about the key, codegen emits `PRIMARY_KEY_BY_TABLE` on
+  the row script (`PRIMARY_KEY` still covers every type whose tables agree) and
+  `LocalDatabase` prefers it — previously a view's declared key was written onto
+  the shared row type, re-keying the underlying table too. Generated output is byte-identical for every
+  module whose tables agree on the key (every fixture in the repo). `tests/test_view_table_shape.gd` and a
+  `vview` golden fixture (a real 2.8.0 schema with four views); the
+  behaviour-change half is `tests/test_view_primary_key.gd`.
+
 - **An index on an event table no longer grows without bound.** An event table's rows
   are never resident — `LocalDatabase` fires `on_insert` for each and stores nothing,
   so `count()` and `iter()` stay empty and no delete is ever reported — but codegen

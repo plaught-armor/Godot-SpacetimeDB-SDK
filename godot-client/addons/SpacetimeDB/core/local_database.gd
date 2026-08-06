@@ -235,7 +235,18 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 	# single cached entry, so the mirror silently showed one row where the server held
 	# several. A table with no primary key is refcounted by row value instead.
 	var constants: Dictionary = schema.get_script_constant_map()
-	var pk_field: StringName = constants.get(&"PRIMARY_KEY", &"")
+	# One row type can back several tables that disagree about the key — a procedural view
+	# returning a table's row type has a primary key only when the module declared one, so
+	# the table may be keyed while the view is not. Codegen spells that case out per table;
+	# PRIMARY_KEY is the answer for every row type whose tables agree.
+	# Codegen keys that map by the LOWER-CASED table name, which is what this function is
+	# handed, so a table missing from it simply has no key.
+	var pk_by_table: Dictionary = constants.get(&"PRIMARY_KEY_BY_TABLE", { })
+	var pk_field: StringName = &""
+	if pk_by_table.is_empty():
+		pk_field = constants.get(&"PRIMARY_KEY", &"")
+	else:
+		pk_field = pk_by_table.get(table_name_lower, &"")
 	_primary_key_cache[table_name_lower] = pk_field
 	return pk_field
 
