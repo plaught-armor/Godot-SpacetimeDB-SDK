@@ -572,6 +572,13 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			continue
 		var type_index: int = -1
 		var return_type: Dictionary
+		# A `Query<T>` view (the `{ __query__: Ref(T) }` product below) inherits the primary
+		# key of the table it reads from — the server does that itself in
+		# `assign_query_view_primary_keys`, and only for that view kind. A PROCEDURAL view
+		# (`Vec<T>` / `Option<T>`) has a primary key only when the module declared one, which
+		# reaches us as a ViewPrimaryKeys entry; its rows are whatever the view function
+		# returned, so a column that happens to be a table's key promises nothing here.
+		var is_query_view: bool = false
 		SpacetimePlugin.print_log("parsing return type for view: %s" % name)
 		if return_type_dict.get("Array", { }).is_empty():
 			if not return_type_dict.get("Sum", { }).is_empty():
@@ -593,6 +600,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				if elements.size() == 1 and elements[0].get("name", { }).get("some", "") == "__query__":
 					var ref_val = elements[0].get("algebraic_type", { }).get("Ref", null)
 					if ref_val != null:
+						is_query_view = true
 						type_index = int(ref_val)
 						if type_index >= 0 and type_index < parsed_types_list.size():
 							return_type = parsed_types_list[type_index]
@@ -630,6 +638,34 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				view_pk_idx = 0
 				view_pk_name = ""
 
+		var tables_of_same_type: Array = []
+		for table: Dictionary in parsed_tables_list:
+			if table.get("type_idx", -1) == type_index:
+				tables_of_same_type.append(table)
+
+		# A `Query<T>` view with no ViewPrimaryKeys entry takes the primary key of a table
+		# built on the same row type — `assign_query_view_primary_keys` does exactly that
+		# server-side, and serializes nothing, so the client has to redo it. Its rules,
+		# followed here: a table with no key of its own does not count, and two keyed
+		# tables naming different columns leave the view without one ("Ambiguous source
+		# table: keep the view without a primary key"). A procedural view never inherits.
+		if view_pk_name.is_empty() and is_query_view:
+			var inherited_pk_name: String = ""
+			var inherited_pk_idx: int = 0
+			for table: Dictionary in tables_of_same_type:
+				var candidate_pk_name: String = String(table.get("primary_key_name", ""))
+				if candidate_pk_name.is_empty():
+					continue
+				if inherited_pk_name.is_empty():
+					inherited_pk_name = candidate_pk_name
+					inherited_pk_idx = int(table.get("primary_key", 0))
+				elif candidate_pk_name != inherited_pk_name:
+					inherited_pk_name = ""
+					inherited_pk_idx = 0
+					break
+			view_pk_name = inherited_pk_name
+			view_pk_idx = inherited_pk_idx
+
 		if return_type.get("table_names", []).is_empty():
 			return_type = {
 				"name": return_type["name"],
@@ -651,36 +687,34 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			var is_public_list = return_type["is_public"]
 			is_public_list.append(true)
 			return_type["is_public"] = is_public_list
-			# Query-builder view reusing an existing table's row type: only override
-			# the PK when this view declares its own ViewPrimaryKeys entry. An empty
-			# view_pk_name must NOT clobber the underlying table's PK — the type_def is
-			# shared by every table of this row type, and dropping it kills row_updated
-			# for the table and the view alike. Leaving it inherits the table's PK,
-			# matching SpacetimeDB's assign_query_view_primary_keys.
-			if not view_pk_name.is_empty():
+			# The type_def is shared by every table and view of this row type, so its
+			# primary key is only a default for the ones that agree; a disagreement is
+			# carried per table (codegen emits PRIMARY_KEY_BY_TABLE). Never overwrite a
+			# key that is already there — this view's key is not the table's — and leave
+			# the field absent when neither has one, which is what a plain key-less table
+			# does.
+			if not view_pk_name.is_empty() and String(return_type.get("primary_key_name", "")).is_empty():
 				return_type["primary_key"] = view_pk_idx
 				return_type["primary_key_name"] = view_pk_name
 		parsed_types_list[type_index] = return_type
 
-		var tables_of_same_type: Array = []
-		for table: Dictionary in parsed_tables_list:
-			if table.get("type_idx", -1) == type_index:
-				tables_of_same_type.append(table)
-		var new_table_dict: Dictionary
-		if tables_of_same_type.is_empty():
-			new_table_dict = {
-				"name": name,
-				"type_idx": type_index,
-				"primary_key": view_pk_idx,
-				"primary_key_name": view_pk_name,
-				"unique_indexes": [],
-				"is_public": true,
-			}
-		else:
-			new_table_dict = tables_of_same_type[0].duplicate()
-			new_table_dict["name"] = name
-			new_table_dict["is_public"] = true
-		parsed_tables_list.append(new_table_dict)
+		# A view's backing table carries ONLY what the view declares: its own primary key
+		# (above), no indexes, no constraints, no schedule, and never `is_event` — the
+		# server builds it the same way (`TableSchema::from_view_def_for_codegen` passes
+		# empty index/constraint/sequence lists and `is_event: false`). Copying the source
+		# table's entry instead handed the view an index accessor whose column carries no
+		# uniqueness promise, and dropped its accessors entirely when the row type belonged
+		# to an event table.
+		parsed_tables_list.append({
+			"name": name,
+			"type_idx": type_index,
+			"primary_key": view_pk_idx,
+			"primary_key_name": view_pk_name,
+			"unique_indexes": [],
+			"btree_indexes": [],
+			"is_event": false,
+			"is_public": true,
+		})
 
 	# Second flush. The one above runs before reducers and procedures are parsed, so
 	# a Result<T, E> first seen in a RETURN type registered after it and was never
