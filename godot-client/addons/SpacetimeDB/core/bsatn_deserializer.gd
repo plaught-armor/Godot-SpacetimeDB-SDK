@@ -11,9 +11,21 @@
 class_name BSATNDeserializer
 extends RefCounted
 
-const MAX_STRING_LEN: int = 4 * 1024 * 1024 # 4 MiB
+## How many elements a `Vec<T>` may claim with FEWER bytes left in the buffer than
+## elements — the one case a count cannot be checked against the data behind it. A
+## zero-width element type (a struct with no fields, which SpacetimeDB accepts and this
+## SDK decodes) encodes N elements in no bytes at all, so a purely byte-derived bound
+## would refuse it. Every count with bytes behind it is bounded by those bytes instead
+## and may run far past this number — see [method _read_array]. So this is NOT a ceiling
+## on rows or elements; the only shape it still refuses is more than 131072 ZERO-WIDTH
+## elements, which no allocation-free bound can tell from a hostile u32.
 const MAX_VEC_LEN: int = 131072
-const MAX_BYTE_ARRAY_LEN: int = 16 * 1024 * 1024 # 16 MiB
+## Byte length a `String` or `Vec<u8>` field is given without consulting the buffer.
+## Same role as [constant MAX_VEC_LEN]'s floor and NOT a ceiling — a longer field is
+## accepted when the bytes are there. It exists so the two engine calls that measure the
+## buffer stay off the row-parsing hot path, where every string column would pay them
+## for a length no message could abuse.
+const UNCHECKED_BYTE_LEN: int = 4 * 1024 * 1024 # 4 MiB
 const IDENTITY_SIZE: int = 32
 const CONNECTION_ID_SIZE: int = 16
 const U128_SIZE: int = 16
@@ -242,9 +254,20 @@ func read_string_with_u32_len(spb: StreamPeerBuffer) -> String:
 	var length: int = read_u32_le(spb)
 	if has_error() or length == 0:
 		return ""
-	if length > MAX_STRING_LEN:
-		_set_error("String length %d exceeds limit %d" % [length, MAX_STRING_LEN], start_pos)
-		return ""
+	# A byte length is checkable against the bytes present, so it needs no fixed ceiling:
+	# the server allows itself 32 MiB per message and a game may raise
+	# inbound_buffer_size to match, which a 4 MiB cap refused for a legitimate column.
+	# read_bytes below would refuse an unbacked length anyway; checking here keeps the
+	# malformed-stream status (a length past the buffer inside an already bounds-checked
+	# row block is corruption, not a partial arrival) and names the field's own limit.
+	if length > UNCHECKED_BYTE_LEN:
+		var remaining: int = spb.get_size() - spb.get_position()
+		if length > remaining:
+			_set_error(
+				"String length %d exceeds the %d bytes left in the buffer" % [length, remaining],
+				start_pos,
+			)
+			return ""
 	var str_bytes: PackedByteArray = read_bytes(spb, length)
 	if has_error():
 		return ""
@@ -300,9 +323,17 @@ func read_vec_u8(spb: StreamPeerBuffer) -> PackedByteArray:
 	var length: int = read_u32_le(spb)
 	if has_error() or length == 0:
 		return PackedByteArray()
-	if length > MAX_BYTE_ARRAY_LEN:
-		_set_error("Vec<u8> length %d exceeds limit %d" % [length, MAX_BYTE_ARRAY_LEN], start_pos)
-		return PackedByteArray()
+	# Bounded by the bytes present rather than a fixed ceiling, for the same reason as
+	# read_string_with_u32_len: a blob column can legitimately run to the server's 32 MiB
+	# message limit.
+	if length > UNCHECKED_BYTE_LEN:
+		var remaining: int = spb.get_size() - spb.get_position()
+		if length > remaining:
+			_set_error(
+				"Vec<u8> length %d exceeds the %d bytes left in the buffer" % [length, remaining],
+				start_pos,
+			)
+			return PackedByteArray()
 	return read_bytes(spb, length)
 
 
@@ -334,12 +365,22 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 		if data_len % row_size != 0:
 			_set_error("FixedSize data_len %d not divisible by row_size %d" % [data_len, row_size], start_pos)
 			return { }
-		var num_rows: int = data_len / row_size
-		if num_rows > MAX_VEC_LEN:
-			# Guard the resize below — data_len/row_size is an attacker-influenced u32
-			# ratio; an unchecked huge count would allocate gigabytes before any read.
-			_set_error("FixedSize row count %d exceeds limit %d" % [num_rows, MAX_VEC_LEN], start_pos)
+		# Guard the resize below against a data_len no bytes back — the lever an unchecked
+		# u32 would pull to allocate gigabytes before any read. The bound is what the
+		# buffer actually holds rather than a row-count ceiling: rows here are
+		# row_size >= 1 bytes each, so a block that fits is a count that fits, and a real
+		# server sends whatever the query matched in ONE list (encode_list chunks
+		# nothing) — a fixed ceiling refused a legitimate large table outright. Status
+		# matches the same condition's check in _read_bsatn_row_list_as_resources.
+		var remaining: int = spb.get_size() - spb.get_position()
+		if data_len > remaining:
+			_set_error(
+				"FixedSize block needs %d bytes, buffer has %d" % [data_len, remaining],
+				start_pos,
+				ParseStatus.NEEDS_MORE,
+			)
 			return { }
+		var num_rows: int = data_len / row_size
 		offsets.resize(num_rows + 1)
 		for i: int in num_rows + 1:
 			offsets[i] = i * row_size
@@ -348,10 +389,18 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 		var num_offsets: int = read_u32_le(spb)
 		if has_error():
 			return { }
-		if num_offsets > MAX_VEC_LEN:
-			# Guard the resize below — num_offsets is a raw u32 off the wire; an
-			# unchecked value near u32_max would allocate ~32 GiB before reading.
-			_set_error("RowOffsets count %d exceeds limit %d" % [num_offsets, MAX_VEC_LEN], start_pos)
+		# Guard the resize below — num_offsets is a raw u32 off the wire; an unchecked
+		# value near u32_max would allocate ~32 GiB before reading. Each offset is a u64
+		# in the stream, so requiring the offsets themselves to be present bounds the
+		# allocation by the bytes received (8 allocated per 8 present) without imposing a
+		# row-count ceiling a legitimate large table would hit.
+		var offsets_remaining: int = spb.get_size() - spb.get_position()
+		if num_offsets * 8 > offsets_remaining:
+			_set_error(
+				"RowOffsets needs %d bytes of offsets, buffer has %d" % [num_offsets * 8, offsets_remaining],
+				start_pos,
+				ParseStatus.NEEDS_MORE,
+			)
 			return { }
 		offsets.resize(num_offsets + 1)
 		for i: int in num_offsets:
@@ -542,9 +591,19 @@ func _read_array(spb: StreamPeerBuffer, prop: Dictionary, bsatn_type_str: String
 	var length: int = read_u32_le(spb)
 	if has_error() or length == 0:
 		return []
+	# Bound the resize below by the bytes actually behind the count, not by a fixed
+	# element ceiling: a Vec<f32> column carrying a heightmap or a tile grid runs to
+	# hundreds of thousands of elements and is still a fraction of the inbound buffer.
+	# MAX_VEC_LEN survives only as the floor for a zero-width element type, whose count
+	# has no bytes to be checked against — see its doc comment.
 	if length > MAX_VEC_LEN:
-		_set_error("Array length %d exceeds limit %d for property '%s'" % [length, MAX_VEC_LEN, prop_name], start_pos)
-		return []
+		var remaining: int = spb.get_size() - spb.get_position()
+		if length > remaining:
+			_set_error(
+				"Array length %d for property '%s' exceeds both %d elements and the %d bytes left in the buffer" % [length, prop_name, MAX_VEC_LEN, remaining],
+				start_pos,
+			)
+			return []
 
 	# Determine element type from hint_string
 	var hint: int = prop.hint
@@ -875,12 +934,17 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 			return null
 		if array_length == 0:
 			return []
+		# Same bound as _read_array: bytes present, with MAX_VEC_LEN as the floor for a
+		# zero-width element type. This path has no property to name, so it reports the
+		# BSATN type instead.
 		if array_length > MAX_VEC_LEN:
-			_set_error(
-				"Array length %d for '%s' exceeds limit %d (context: '%s')" % [array_length, bsatn_type_str, MAX_VEC_LEN, context_prop_name],
-				spb.get_position() - 4,
-			)
-			return null
+			var remaining: int = spb.get_size() - spb.get_position()
+			if array_length > remaining:
+				_set_error(
+					"Array length %d for '%s' exceeds both %d elements and the %d bytes left in the buffer (context: '%s')" % [array_length, bsatn_type_str, MAX_VEC_LEN, remaining, context_prop_name],
+					spb.get_position() - 4,
+				)
+				return null
 		var temp_array: Array[Variant] = []
 		for i: int in array_length:
 			if has_error():
