@@ -310,12 +310,31 @@ static func _values_equal(a: Variant, b: Variant) -> bool:
 		if not (is_instance_valid(a) and is_instance_valid(b)):
 			return a == b
 		var cols: Array = _record_columns(a)
-		if cols.is_empty():
-			return a == b # not a generated record — nothing to descend into
-		for col: StringName in cols:
-			if not _values_equal(a.get(col), b.get(col)):
-				return false
-		return true
+		if not cols.is_empty():
+			for col: StringName in cols:
+				if not _values_equal(a.get(col), b.get(col)):
+					return false
+			return true
+		# No BSATN_TYPES. The SDK's own wrapper types carry their payload in named
+		# members instead, so each needs its own descent — without it an Option, a
+		# sum-type or a scheduled_at column compares by identity, and every delivery
+		# builds a fresh instance, so two structurally equal rows never match. These
+		# three are every wrapper the deserializer can put in a column (option.gd,
+		# rust_enum.gd — the base of every generated sum type — and schedule_at.gd);
+		# a fourth would have to be added here and to [method _value_hash] together.
+		if a is Option:
+			if b is Option:
+				return _values_equal(a.data, b.data)
+			return false
+		if a is RustEnum:
+			if b is RustEnum:
+				return a.value == b.value and _values_equal(a.data, b.data)
+			return false
+		if a is ScheduleAt:
+			if b is ScheduleAt:
+				return a.kind == b.kind and a.micros == b.micros
+			return false
+		return a == b # not a record and not a wrapper — nothing to descend into
 	if ta == TYPE_ARRAY:
 		var aa: Array = a
 		var ba: Array = b
@@ -335,12 +354,21 @@ static func _value_hash(v: Variant) -> int:
 	# null is TYPE_NIL (not TYPE_OBJECT) so it skips to hash(v) below.
 	if t == TYPE_OBJECT and is_instance_valid(v):
 		var cols: Array = _record_columns(v)
-		if cols.is_empty():
-			return hash(v)
-		var h: int = 17
-		for col: StringName in cols:
-			h = h * 31 + _value_hash(v.get(col))
-		return h
+		if not cols.is_empty():
+			var h: int = 17
+			for col: StringName in cols:
+				h = h * 31 + _value_hash(v.get(col))
+			return h
+		# Mirrors the wrapper descent in [method _values_equal] — equal values must
+		# hash equal, or the PK-less bucket lookup never finds the entry it matches.
+		# The per-type seeds keep two wrappers holding the same payload apart.
+		if v is Option:
+			return 5 * 31 + _value_hash(v.data)
+		if v is RustEnum:
+			return (11 * 31 + hash(v.value)) * 31 + _value_hash(v.data)
+		if v is ScheduleAt:
+			return (23 * 31 + hash(v.kind)) * 31 + hash(v.micros)
+		return hash(v)
 	if t == TYPE_ARRAY:
 		var h: int = 7
 		for e: Variant in (v as Array):
