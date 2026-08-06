@@ -1181,7 +1181,8 @@ func _generate_table_gdscript(
 ## Restricted to value-comparable built-in types — find_by does an `==` match, so a
 ## generated Resource field (reference equality, never matches a fresh value), a native
 ## vector/color, or a nested array would all produce a finder that can't work. This
-## also (deliberately) excludes enum columns: every enum — even a unit-variant one —
+## also excludes a ScheduleAt column (a Resource for the same reason) and (deliberately)
+## enum columns: every enum — even a unit-variant one —
 ## codegens as a `RustEnum` Resource (the tag lives in `.value`), so it is a Resource
 ## field too and an `==` finder on it would never match. Don't add enum finders here
 ## without first making find_by compare by the enum tag.
@@ -1194,8 +1195,6 @@ func _table_scalar_fields(schema: SpacetimeParsedSchema, type_def: Dictionary) -
 		if not field.get("nested_type", []).is_empty():
 			continue
 		var field_name: String = _safe_field_name(field.get("name", ""))
-		if field_name == "scheduled_at":
-			continue
 		var gd_type: String = schema.type_map.get(field.get("type", "Variant"), "Variant")
 		if gd_type not in VALUE_TYPES:
 			continue
@@ -1276,12 +1275,6 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 		nested_type.append(schema.type_map.get(original_type_name, "Variant"))
 		var add_meta_for_field: bool = false
 
-		# The scheduled_at column of a #[scheduled] table is the ScheduleAt sum type.
-		# Fix the doc-comment type here (before the create-func doc is appended below);
-		# the field/bsatn type override happens after the type-branch resolves.
-		if field_name == "scheduled_at":
-			nested_type = ["ScheduleAt"]
-
 		var parser_nested_type: Array = field.get("nested_type", [])
 		if not parser_nested_type.is_empty():
 			# Has nesting — use nested_type to determine GDScript type and BSATN
@@ -1314,10 +1307,6 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 			create_func_documentation_comment += format_cfdc.call(i, field_name, nested_type)
 			add_meta_for_field = schema.meta_type_map.has(original_type_name) \
 					or not SpacetimeSchemaParser._is_gd_native(original_type_name)
-		if field_name == "scheduled_at":
-			bsatn_meta_type_string = "scheduled_at"
-			gd_field_type = "ScheduleAt"
-			add_meta_for_field = true
 		if add_meta_for_field and not bsatn_meta_type_string.is_empty():
 			bsatn_type_entries.append("&\"%s\": &\"%s\"" % [field_name, bsatn_meta_type_string])
 
