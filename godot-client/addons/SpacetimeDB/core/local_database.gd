@@ -733,8 +733,9 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			row_transactions_completed.emit(table_name_lower)
 		return
 
-	# PK table: refcounted single pass. Within one update the server sends each pk at
-	# most once per list, so no per-pk accumulation is needed. on_insert fires on
+	# PK table: refcounted single pass. One pk may appear several times in each list —
+	# every query of a set that matches the row contributes its own copy — so the
+	# insert/delete pairing below counts rather than flags. on_insert fires on
 	# refcount 0->1, on_delete on 1->0; a delete+insert of the same pk in one update is
 	# an update (net refcount 0, value may change). A row delivered by N overlapping
 	# query sets has refcount N; an identical re-delivery bumps it silently. When
@@ -749,16 +750,27 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 
 	# Update detection (delete+insert of the same pk) only matters when this update has
 	# BOTH inserts and deletes. Pure inserts (subscribe) and pure deletes (rows leaving)
-	# skip the pk-set build entirely. Null PKs are warned in the delete pass below.
+	# skip the pk-count build entirely. Null PKs are warned in the delete pass below,
+	# which a batch whose every delete pairs with an insert skips — so such a row is
+	# dropped silently, the same as it always was.
 	var detect_updates: bool = (
 		not table_update.inserts.is_empty() and not table_update.deletes.is_empty()
 	)
+	# pk -> deletes not yet paired with an insert, plus the running total of those. A row
+	# held by N overlapping queries of one set is reported N times in a single update (the
+	# server groups every fragment's rows under one TableUpdate, flattened into these two
+	# lists above), so a COUNT is what pairs them: min(inserts, deletes) of a pk are one
+	# update delivered N times, and only the surplus is a new reference or a real delete.
+	# A set here consumed one delete and dropped the rest, which both inflated the refcount
+	# and skipped the delete pass — a row that outlived its own deletion.
 	var deleted_pks: Dictionary = { }
+	var unpaired_deletes: int = 0
 	if detect_updates:
 		for deleted_row: _ModuleTableType in table_update.deletes:
 			var del_pk: Variant = deleted_row.get(pk_field)
 			if del_pk != null:
-				deleted_pks[del_pk] = true
+				deleted_pks[del_pk] = deleted_pks.get(del_pk, 0) + 1
+				unpaired_deletes += 1
 
 	for inserted_row: _ModuleTableType in table_update.inserts:
 		var pk_value: Variant = inserted_row.get(pk_field)
@@ -769,17 +781,22 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			)
 			continue
 		var old_ref: int = ref_table.get(pk_value, 0)
-		if detect_updates and deleted_pks.has(pk_value):
-			# Update: delete+insert of the same pk. Refcount unchanged; mark handled so
-			# the delete pass skips it. Fire on_update only when the value differs.
-			deleted_pks.erase(pk_value)
+		var pending_deletes: int = deleted_pks.get(pk_value, 0) if detect_updates else 0
+		if pending_deletes > 0:
+			# Update: delete+insert of the same pk. Refcount unchanged; consume one delete
+			# so the delete pass skips exactly this pairing. Fire on_update only when the
+			# value differs.
+			deleted_pks[pk_value] = pending_deletes - 1
+			unpaired_deletes -= 1
 			if old_ref == 0:
 				# Nothing held this pk yet, so "unchanged" would leave the row cached at
 				# refcount 0: the matching delete is consumed here, so the delete pass
 				# never records this delivery's reference. An unreferenced cached row is
 				# permanent — a later delete reads refcount 0 and skips it, so the row
-				# never leaves the cache and no on_delete ever fires. Record the
-				# reference this delivery carries.
+				# never leaves the cache and no on_delete ever fires. Record ONE reference,
+				# whatever the pair count: this only happens on a desync (a delete for a pk
+				# the mirror never held), and under-counting self-heals — the first later
+				# delete evicts the row — while over-counting is the ghost above.
 				ref_table[pk_value] = 1
 				if track_query:
 					qmem[pk_value] = inserted_row
@@ -850,7 +867,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 
 	# Delete pass: skip entirely when there are no deletes, or (when detecting updates)
 	# when every delete was consumed as an update above.
-	if not table_update.deletes.is_empty() and not (detect_updates and deleted_pks.is_empty()):
+	if not table_update.deletes.is_empty() and not (detect_updates and unpaired_deletes == 0):
 		for deleted_row2: _ModuleTableType in table_update.deletes:
 			var pk_value: Variant = deleted_row2.get(pk_field)
 			if pk_value == null:
@@ -859,8 +876,11 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 					% [table_name_lower, pk_field]
 				)
 				continue
-			if detect_updates and not deleted_pks.has(pk_value):
-				continue # consumed as an update above
+			if detect_updates:
+				var unpaired: int = deleted_pks.get(pk_value, 0)
+				if unpaired <= 0:
+					continue # consumed as an update above
+				deleted_pks[pk_value] = unpaired - 1
 			var old_ref: int = ref_table.get(pk_value, 0)
 			if old_ref <= 0:
 				continue
