@@ -33,6 +33,23 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A table whose row script never registered now says so.** Without that script the
+  mirror has no column list, and for a table with no primary key that is not a
+  degraded lookup but a wrong answer: every row compares equal and hashes to one
+  bucket, so the whole table collapses into a single cached entry and its deletes
+  release the wrong row. The condition was reported only as a per-update
+  `No schema found ... to determine PK` line that said nothing about the
+  consequence. It is now one error per table, naming what goes wrong.
+
+- **A listener whose subscriber was freed is dropped instead of kept forever.**
+  `LocalDatabase` skips a `Callable` whose object is gone, so a subscriber that
+  disappears without calling the matching `unsubscribe_from_*` was never a
+  correctness problem — but nothing removed the entry either, and code that
+  subscribes a raw callback per pooled instance grew the array for the life of the
+  connection, paying a validity check per dead entry on every dispatch. Subscribing
+  to a table now prunes that table's dead listeners first, which keeps the cost on
+  the cold path. `RowReceiver` was never affected; it unsubscribes in `_exit_tree`.
+
 - **A table with no primary key is no longer keyed by a column that happens to be
   called `id`.** The generated row script carries a `PRIMARY_KEY` const exactly when
   the schema gives the table a primary key, and omits it otherwise. The mirror used

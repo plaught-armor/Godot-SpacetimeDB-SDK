@@ -35,6 +35,9 @@ static var _record_columns_cache: Dictionary[Script, Array] = { }
 static var _EMPTY_COLUMNS: Array = []
 var _pk_less_tables: Dictionary[StringName, Array] = { } ## Array[_ModuleTableType]
 var _row_property_cache: Dictionary[StringName, Array] = { } ## Array[StringName] — storage props per table
+## Tables already reported as having no registered row script, so the error in
+## [method _get_row_properties] fires once each instead of once per update.
+var _unresolved_row_scripts: Dictionary[StringName, bool] = { }
 ## Per-table refcount of cached PK rows: table -> { pk -> int }. A row shared by N
 ## overlapping query sets has count N; on_insert fires on 0->positive, on_delete on
 ## positive->0. Lets an unsubscribe drop only rows no longer held by another query.
@@ -118,13 +121,27 @@ func _normalize(table_name: StringName) -> StringName:
 	return normalized
 
 
+# Adds [param callable] to a table's listener array, dropping any listener whose object
+# has since been freed. A subscriber that goes away without calling the matching
+# unsubscribe leaves its Callable in the array for good: the dispatch loops skip an
+# invalid one, so it is not a correctness problem, but nothing ever removed it and a
+# pool that subscribes raw callbacks per instance grew the array without bound. Pruning
+# here rather than per update keeps the cost on the cold path — the next subscriber on
+# that table clears the previous generation's dead entries.
+func _add_listener(by_table: Dictionary, key: StringName, callable: Callable) -> void:
+	if not by_table.has(key):
+		by_table[key] = []
+	var listeners: Array = by_table[key]
+	for i: int in range(listeners.size() - 1, -1, -1):
+		if not (listeners[i] as Callable).is_valid():
+			listeners.remove_at(i)
+	if not listeners.has(callable):
+		listeners.append(callable)
+
+
 ## Registers [param callable] to be called with the inserted row for [param table_name].
 func subscribe_to_inserts(table_name: StringName, callable: Callable) -> void:
-	var key: StringName = _normalize(table_name)
-	if not _insert_listeners_by_table.has(key):
-		_insert_listeners_by_table[key] = []
-	if not _insert_listeners_by_table[key].has(callable):
-		_insert_listeners_by_table[key].append(callable)
+	_add_listener(_insert_listeners_by_table, _normalize(table_name), callable)
 
 
 ## Removes an insert listener for [param table_name].
@@ -138,11 +155,7 @@ func unsubscribe_from_inserts(table_name: StringName, callable: Callable) -> voi
 
 ## Registers [param callable] to be called with [code](old_row, new_row)[/code] for [param table_name].
 func subscribe_to_updates(table_name: StringName, callable: Callable) -> void:
-	var key: StringName = _normalize(table_name)
-	if not _update_listeners_by_table.has(key):
-		_update_listeners_by_table[key] = []
-	if not _update_listeners_by_table[key].has(callable):
-		_update_listeners_by_table[key].append(callable)
+	_add_listener(_update_listeners_by_table, _normalize(table_name), callable)
 
 
 ## Removes an update listener for [param table_name].
@@ -163,11 +176,7 @@ func unsubscribe_from_updates(table_name: StringName, callable: Callable) -> voi
 ## batch reports every before-delete first and then every delete. Each row still gets
 ## exactly one of each, in the order the batch evicted them.
 func subscribe_to_before_deletes(table_name: StringName, callable: Callable) -> void:
-	var key: StringName = _normalize(table_name)
-	if not _before_delete_listeners_by_table.has(key):
-		_before_delete_listeners_by_table[key] = []
-	if not _before_delete_listeners_by_table[key].has(callable):
-		_before_delete_listeners_by_table[key].append(callable)
+	_add_listener(_before_delete_listeners_by_table, _normalize(table_name), callable)
 
 
 ## Removes a before-delete listener for [param table_name].
@@ -181,11 +190,7 @@ func unsubscribe_from_before_deletes(table_name: StringName, callable: Callable)
 
 ## Registers [param callable] to be called with the deleted row for [param table_name].
 func subscribe_to_deletes(table_name: StringName, callable: Callable) -> void:
-	var key: StringName = _normalize(table_name)
-	if not _delete_listeners_by_table.has(key):
-		_delete_listeners_by_table[key] = []
-	if not _delete_listeners_by_table[key].has(callable):
-		_delete_listeners_by_table[key].append(callable)
+	_add_listener(_delete_listeners_by_table, _normalize(table_name), callable)
 
 
 ## Removes a delete listener for [param table_name].
@@ -199,11 +204,7 @@ func unsubscribe_from_deletes(table_name: StringName, callable: Callable) -> voi
 
 ## Registers [param callable] to be called (no args) after all changes in a batch for [param table_name].
 func subscribe_to_transactions_completed(table_name: StringName, callable: Callable) -> void:
-	var key: StringName = _normalize(table_name)
-	if not _transactions_completed_listeners_by_table.has(key):
-		_transactions_completed_listeners_by_table[key] = []
-	if not _transactions_completed_listeners_by_table[key].has(callable):
-		_transactions_completed_listeners_by_table[key].append(callable)
+	_add_listener(_transactions_completed_listeners_by_table, _normalize(table_name), callable)
 
 
 ## Removes a transactions-completed listener for [param table_name].
@@ -221,15 +222,8 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 	if _primary_key_cache.has(table_name_lower):
 		return _primary_key_cache[table_name_lower]
 
-	# Exact wire name, not the underscore-stripped type key: `user_data` and `userdata`
-	# are both legal table names and collapse onto one entry in schema.types.
-	var schema: GDScript = _schema.get_table(table_name_lower)
+	var schema: GDScript = _resolve_row_script(table_name_lower)
 	if schema == null:
-		printerr(
-			"LocalDatabase: No schema found for table '",
-			table_name_lower,
-			"' to determine PK.",
-		)
 		return &""
 	# The generated row script's PRIMARY_KEY const is the whole answer: codegen emits it
 	# for every table the schema gives a primary key and omits it for every table it does
@@ -246,12 +240,40 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 	return pk_field
 
 
+# The row script registered for a table, or null. Reports a missing one ONCE per table:
+# both callers below need it on every update, so the old per-call printerr repeated for
+# the life of the connection, and neither said what goes wrong when it is absent.
+#
+# What goes wrong is not a degraded lookup but a wrong answer. Without the script there is
+# no column list, so _rows_equal reports every row equal and _row_hash sends them all to
+# one bucket: a table with no primary key collapses into a single cached entry and its
+# deletes release the wrong row. Nothing is cached here, so a script registered later
+# still resolves.
+#
+# Exact wire name, not the underscore-stripped type key: `user_data` and `userdata` are
+# both legal table names and collapse onto one entry in schema.types.
+func _resolve_row_script(table_name_lower: StringName) -> GDScript:
+	var schema: GDScript = _schema.get_table(table_name_lower)
+	if schema != null:
+		return schema
+	if not _unresolved_row_scripts.has(table_name_lower):
+		_unresolved_row_scripts[table_name_lower] = true
+		push_error(
+			(
+				"LocalDatabase: no row script registered for table '%s'. Its primary key "
+				+ "and columns are unknown, so rows in it cannot be told apart and a table "
+				+ "without a primary key will collapse into one cached entry."
+			)
+			% table_name_lower
+		)
+	return null
+
+
 # --- PK-less Row Helpers ---
 func _get_row_properties(table_name_lower: StringName) -> Array[StringName]:
 	if _row_property_cache.has(table_name_lower):
 		return _row_property_cache[table_name_lower]
-	# Exact wire name — see _get_primary_key_field.
-	var schema: GDScript = _schema.get_table(table_name_lower)
+	var schema: GDScript = _resolve_row_script(table_name_lower)
 	if schema == null:
 		return []
 	var props: Array[StringName] = []
