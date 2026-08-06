@@ -42,6 +42,7 @@ const QUERIES: int = 3
 
 class Row:
 	extends _ModuleTableType
+	const PRIMARY_KEY: StringName = &"id"
 	@export var id: int = 0
 	@export var key: int = 0
 	@export var grp: int = 0

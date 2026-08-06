@@ -231,21 +231,19 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 			"' to determine PK.",
 		)
 		return &""
+	# The generated row script's PRIMARY_KEY const is the whole answer: codegen emits it
+	# for every table the schema gives a primary key and omits it for every table it does
+	# not. There used to be a fallback here that took a storage property named `id` or
+	# `identity` as the key when the const was absent — but the const is absent precisely
+	# because the table HAS no primary key, and such a table's `id` column carries no
+	# uniqueness promise. Two rows sharing one (a log or junction table keyed by an entity,
+	# `identity` appearing once per row rather than once per player) collapsed into a
+	# single cached entry, so the mirror silently showed one row where the server held
+	# several. A table with no primary key is refcounted by row value instead.
 	var constants: Dictionary = schema.get_script_constant_map()
-	if constants.has(&"PRIMARY_KEY"):
-		var pk_field: StringName = constants[&"PRIMARY_KEY"]
-		_primary_key_cache[table_name_lower] = pk_field
-		return pk_field
-
-	var properties: Array = schema.get_script_property_list()
-	for prop: Dictionary in properties:
-		if (prop.usage & PROPERTY_USAGE_STORAGE):
-			if prop.name == &"identity" or prop.name == &"id":
-				_primary_key_cache[table_name_lower] = prop.name
-				return prop.name
-
-	_primary_key_cache[table_name_lower] = &""
-	return &""
+	var pk_field: StringName = constants.get(&"PRIMARY_KEY", &"")
+	_primary_key_cache[table_name_lower] = pk_field
+	return pk_field
 
 
 # --- PK-less Row Helpers ---

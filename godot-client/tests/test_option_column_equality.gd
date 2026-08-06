@@ -273,6 +273,7 @@ class _FlatRow:
 
 class _KeyedRow:
 	extends _ModuleTableType
+	const PRIMARY_KEY: StringName = &"id"
 	@export var id: int = 0
 	@export var value: int = 0
 	@export var extra: Variant = null
