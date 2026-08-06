@@ -788,7 +788,16 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			SpacetimePlugin.print_log("Skipping private table: %s" % table_name)
 			continue
 
-		var unique_indexes = table_def.get("unique_indexes", [])
+		# An event table's rows are never resident (LocalDatabase fires on_insert and
+		# stores nothing), so an index over one can only accumulate — see
+		# _generate_table_gdscript for what that costs. Decided ONCE here and handed to
+		# the wrapper generator below: the accessor files and the members that construct
+		# them cannot then disagree about which tables get an index.
+		var emit_indexes: bool = not table_def.get("is_event", false)
+
+		var unique_indexes: Array = []
+		if emit_indexes:
+			unique_indexes = table_def.get("unique_indexes", [])
 		for unique_index in unique_indexes:
 			var content: String = _generate_table_unique_index_gdscript(schema, unique_index, table_def)
 
@@ -810,7 +819,9 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			file.close()
 			generated_files.append(output_file_path)
 
-		var btree_indexes = table_def.get("btree_indexes", [])
+		var btree_indexes: Array = []
+		if emit_indexes:
+			btree_indexes = table_def.get("btree_indexes", [])
 		for btree_index in btree_indexes:
 			var content: String = _generate_table_btree_index_gdscript(schema, btree_index, table_def)
 
@@ -832,7 +843,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			file.close()
 			generated_files.append(output_file_path)
 
-		var content: String = _generate_table_gdscript(schema, table_def)
+		var content: String = _generate_table_gdscript(schema, table_def, emit_indexes)
 
 		var output_file_name: String = "%s_%s_table.gd" % \
 				[schema.module.to_snake_case(), table_name.to_snake_case()]
@@ -999,7 +1010,9 @@ func _generate_table_btree_index_gdscript(schema: SpacetimeParsedSchema, btree_i
 	return "".join(out)
 
 
-func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictionary) -> String:
+func _generate_table_gdscript(
+	schema: SpacetimeParsedSchema, table_def: Dictionary, emit_indexes: bool
+) -> String:
 	var table_name: String = table_def.get("name", "")
 	var type_def: Dictionary = _get_type_def(schema, table_def.get("type_idx", -1)) if table_def.has("type_idx") else { }
 	var original_type_name: String = type_def.get("name", "Variant")
@@ -1007,19 +1020,31 @@ func _generate_table_gdscript(schema: SpacetimeParsedSchema, table_def: Dictiona
 	# Key by the _safe_name: these keys become the index member var names + are matched
 	# against _table_scalar_fields (also _safe_name'd) to route the typed finders. The
 	# PascalCase class-name part is unaffected by keywords (keywords are lowercase).
+	# [param emit_indexes] is false for an event table, which gets no index accessors
+	# whatever indexes the schema declares on it. Its rows are ephemeral: LocalDatabase
+	# fires on_insert for each and stores nothing, so count() and iter() stay empty and no
+	# delete is ever reported. An index cache is kept current by exactly those
+	# insert/update/delete callbacks, so over an event table it only ever grows — measured
+	# on a two-column event table, 40 batches of 3 rows left 120 rows in one btree bucket
+	# while count() read 0, and filter() answered with rows the table itself says do not
+	# exist. The official Rust codegen omits them for the same reason ("no resident rows
+	# means these would always be empty", crates/codegen/src/rust.rs). Without an index
+	# member the typed finders below fall back to find_by/first_by, which read the (empty)
+	# mirror — empty, but consistent with count()/iter().
 	var unique_index_fields: Dictionary[String, String] = { }
-	for unique_index_def in table_def.get("unique_indexes", []):
-		var field_name: String = _safe_field_name(unique_index_def.get("name", ""))
-		var unique_index_class_name: String = "%s%s%sUniqueIndex" % \
-				[schema.module, table_name.to_pascal_case(), field_name.to_pascal_case()]
-		unique_index_fields[field_name] = unique_index_class_name
-
 	var btree_index_fields: Dictionary[String, String] = { }
-	for btree_index_def in table_def.get("btree_indexes", []):
-		var field_name: String = _safe_field_name(btree_index_def.get("name", ""))
-		var btree_index_class_name: String = "%s%s%sBTreeIndex" % \
-				[schema.module, table_name.to_pascal_case(), field_name.to_pascal_case()]
-		btree_index_fields[field_name] = btree_index_class_name
+	if emit_indexes:
+		for unique_index_def: Dictionary in table_def.get("unique_indexes", []):
+			var field_name: String = _safe_field_name(unique_index_def.get("name", ""))
+			var unique_index_class_name: String = "%s%s%sUniqueIndex" % \
+					[schema.module, table_name.to_pascal_case(), field_name.to_pascal_case()]
+			unique_index_fields[field_name] = unique_index_class_name
+
+		for btree_index_def: Dictionary in table_def.get("btree_indexes", []):
+			var field_name: String = _safe_field_name(btree_index_def.get("name", ""))
+			var btree_index_class_name: String = "%s%s%sBTreeIndex" % \
+					[schema.module, table_name.to_pascal_case(), field_name.to_pascal_case()]
+			btree_index_fields[field_name] = btree_index_class_name
 
 	var _class_name: String = "%s%sTable" % [schema.module, table_name.to_pascal_case()]
 	var out: PackedStringArray = [
