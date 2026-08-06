@@ -33,6 +33,29 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A `ScheduleAt` column is recognised by its type, not by being named
+  `scheduled_at`.** Codegen decided a column carried the `Interval | Time` sum by
+  checking the column's NAME, which is wrong in both directions and reachable from
+  ordinary module source. `#[table(accessor = job2, scheduled(run_job2, at =
+  fire_at))]` puts the schedule column under another name — it was typed `int` /
+  BSATN `i64`, so the reader took eight bytes where the row carries nine (a `u8`
+  tag plus an `i64`) and every field after it came out of the wrong offset. And an
+  ordinary unscheduled table is free to carry an unrelated column named
+  `scheduled_at` — a `Timestamp`, say — which was typed `ScheduleAt`, so the reader
+  ate the first byte of the `i64` as a sum tag. Neither is a one-row problem: a row
+  that fails to parse fails the whole packet, so the subscription never applied and
+  the client's buffer was cleared — one such column took down every table in the
+  session. Measured against a live SpacetimeDB 2.8.0 server: "Invalid ScheduleAt tag
+  143" and "Attempted to read 1536 bytes past end of buffer" respectively. The
+  reducer-argument path never got the name-based override at all, so a reducer
+  taking a bare `ScheduleAt` argument was typed `int` and wrote eight bytes for a
+  nine-byte value. The schema parser now matches the sum structurally, exactly as
+  SpacetimeDB's own `SumType::is_schedule_at` does (two variants, `Interval`
+  carrying a `TimeDuration` and `Time` carrying a `Timestamp`). Generated output is
+  byte-identical for every module whose schedule column is named `scheduled_at`
+  (every fixture in the repo). `tests/test_schedule_at_by_type.gd` and a new
+  `vsched` golden fixture (a real 2.8.0 schema carrying all three shapes).
+
 - **A view is no longer described to the client as the table it shares a row type
   with.** A view arrives like any other table (one `TableUpdate` under the view's
   name), so the SDK synthesizes a table entry for it from the schema's `Views`

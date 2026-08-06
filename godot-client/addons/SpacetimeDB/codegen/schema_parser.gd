@@ -28,8 +28,14 @@ const GDNATIVE_ARRAYLIKE_TYPES: Dictionary[String, String] = {
 const GDNATIVE_DICTLIKE_TYPES: Dictionary[String, String] = {
 	"Plane": "Plane",
 }
+## Type name stood up for the ScheduleAt sum. Not a wire name the server sends — the sum
+## is anonymous — so it is spelled like the magic wrapper element names it sits beside in
+## the type maps, and cannot collide with a module's own type (a Rust/C# identifier
+## cannot look like this).
+const SCHEDULE_AT_TYPE_NAME: String = "__schedule_at__"
 const DEFAULT_TYPE_MAP: Dictionary[String, String] = {
 	"__identity__": "PackedByteArray",
+	"__schedule_at__": "ScheduleAt",
 	"__connection_id__": "PackedByteArray",
 	"__uuid__": "PackedByteArray",
 	"__timestamp_micros_since_unix_epoch__": "int",
@@ -72,6 +78,8 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 	"__uuid__": "u128",
 	"__timestamp_micros_since_unix_epoch__": "i64",
 	"__time_duration_micros__": "i64",
+	# The ScheduleAt sum: u8 tag + i64, read by BSATNDeserializer.read_scheduled_at.
+	"__schedule_at__": "scheduled_at",
 }
 
 
@@ -868,6 +876,39 @@ static func _is_sum_option(sum_def: Dictionary) -> bool:
 	return found_some and found_none and none_is_unit
 
 
+# Structural ScheduleAt: exactly two variants, `Interval` carrying a TimeDuration and
+# `Time` carrying a Timestamp — the shape SpacetimeDB's `SumType::is_schedule_at`
+# matches (crates/sats/src/sum_type.rs). Recognised by TYPE, never by column name: the
+# `#[scheduled]` macro accepts `scheduled(my_reducer, at = other_column)`, so the column
+# can be called anything, and an ordinary table is free to carry an unrelated column
+# actually named `scheduled_at`. Getting either wrong desyncs the row — a ScheduleAt is
+# a tag byte plus an i64, an i64 is eight bytes — and one bad row fails the whole packet.
+static func _is_sum_schedule_at(sum_def: Dictionary) -> bool:
+	var variants: Array = sum_def.get("variants", [])
+	if variants.size() != 2:
+		return false
+	if variants[0].get("name", { }).get("some", "") != "Interval":
+		return false
+	if variants[1].get("name", { }).get("some", "") != "Time":
+		return false
+	return (
+		_is_wrapper_product(variants[0].get("algebraic_type", { }), "__time_duration_micros__")
+		and _is_wrapper_product(
+			variants[1].get("algebraic_type", { }), "__timestamp_micros_since_unix_epoch__"
+		)
+	)
+
+
+# True when [param type] is a single-element Product whose element is named
+# [param element_name] — the shape SpacetimeDB gives Timestamp, TimeDuration, Identity
+# and the other magic wrappers.
+static func _is_wrapper_product(type: Dictionary, element_name: String) -> bool:
+	var elements: Array = type.get("Product", { }).get("elements", [])
+	if elements.size() != 1:
+		return false
+	return elements[0].get("name", { }).get("some", "") == element_name
+
+
 # Structural Result: exactly two variants named "ok" then "err" (lowercase, ok first).
 # Matches SpacetimeDB's `SumType::is_result`. Option is checked separately and wins.
 static func _is_sum_result(sum_def: Dictionary) -> bool:
@@ -947,6 +988,11 @@ static func _parse_field_type(field_type: Dictionary, data: Dictionary, schema_t
 		# generic collapse below, which would otherwise drop the err variant).
 		if _is_sum_result(field_type.Sum):
 			return _synthesize_result_type(field_type.Sum, schema_types, depth)
+		# ScheduleAt keeps its sum shape on the wire (tag byte + i64), so it cannot ride
+		# the collapse below — that would take the Interval variant's payload and read
+		# eight bytes where the row carries nine.
+		if _is_sum_schedule_at(field_type.Sum):
+			return SCHEDULE_AT_TYPE_NAME
 		if _is_sum_option(field_type.Sum):
 			var nested_type = data.get("nested_type", [])
 			nested_type.append(&"Option")

@@ -422,7 +422,8 @@ For every value-typed scalar field (`int` / `float` / `String` / `bool` /
 `StringName` / `PackedByteArray`), the table wrapper also generates a typed
 `find_by_<field>(value)` / `first_by_<field>(value)` pair — a compile-checked field
 name, value type, and return type, instead of the stringly-typed `find_by(&"field",
-value)`. Nested / Resource fields and the `scheduled_at` column are skipped.
+value)`. Nested and Resource fields are skipped — a `ScheduleAt` column among them,
+whatever it is named, since an `==` match against a fresh Resource never succeeds.
 
 ```gdscript
 class ModuleTable:
