@@ -33,6 +33,26 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **An `Option`, sum-type or `scheduled_at` column no longer compares by object
+  identity.** The local mirror decides whether two rows carry the same value by
+  descending into each column, and it reads a nested record's column list from that
+  record's generated `BSATN_TYPES` const. The SDK's own wrapper types — `Option`,
+  `RustEnum` (the base of every generated sum type) and `ScheduleAt` (the
+  `scheduled_at` column of every `#[scheduled]` table) — keep their payload in named
+  members and declare no such const, so the comparison fell through to Godot's
+  default: object identity. Every delivered row is a fresh instance, so no two of
+  them ever matched. On a table with a primary key that meant a spurious
+  `row_updated` whenever an unchanged row was re-delivered, which is what two
+  overlapping subscriptions produce. On a table WITHOUT a primary key it was worse:
+  rows are tracked by value there, so each delivery of one value cached another copy,
+  and a delete — also a fresh instance — hashed into a bucket holding nothing and was
+  skipped, leaving the row in the mirror for the rest of the session. Both wrapper
+  kinds now compare and hash by their payload. `tests/test_option_column_equality.gd`
+  covers all three wrappers on both storage paths, with an int and a nested-record
+  case as controls and a set of near-miss values (`Some(5)` vs `None`, two enum tags,
+  an interval vs an absolute time with the same micros) pinning that distinct values
+  are still kept apart.
+
 - **A reconnect no longer revives a subscription you unsubscribed.** The client
   forgets a subscription when the server's `UnsubscribeApplied` lands, so a drop
   between the unsubscribe going out and that reply arriving left the query in the
