@@ -173,6 +173,16 @@ var _disconnected_emitted: bool = false
 const RESUBSCRIBE_TIMEOUT_SECONDS: float = 15.0
 
 var _saved_subscription_queries: Array[PackedStringArray] = []
+## Query ids whose Unsubscribe has gone out but whose UnsubscribeApplied has not come
+## back. Membership, not a flag on the handle: the server owns when a subscription
+## really ends, and until it answers the entry has to stay in current/pending (that is
+## where its rows and its handle live). What this set adds is that a drop in that window
+## must not carry the query into the reconnect — without it, a query the caller
+## explicitly dropped comes back on the new socket and can never be dropped again,
+## because the resubscribe makes a fresh internal handle the caller has no reference to.
+## Only ever holds ids that were in current/pending when the Unsubscribe was sent, so it
+## is bounded by the live subscription count; cleared with those maps.
+var _unsubscribing_query_ids: Dictionary[int, bool] = { }
 ## Bumped on every new reconnect cycle (start/cancel/resubscribe). A resubscribe
 ## settle-callback captures the epoch live when it was armed and bails if the epoch
 ## has since moved on, so a superseded cycle's late `applied`/`end` can't clear the
@@ -478,7 +488,10 @@ func connect_db(
 		_load_token_or_request()
 
 
-## Intentionally disconnects from the database. Does not trigger auto-reconnect.
+## Intentionally disconnects from the database. Does not trigger auto-reconnect.[br]
+## Every outstanding [SpacetimeDBSubscription] ends with it — [signal SpacetimeDBSubscription.end]
+## fires for each before [signal disconnected], and the next session starts with none.
+## The mirror is deliberately left in place as last-known state.
 func disconnect_db() -> void:
 	_cancel_reconnection()
 	# States an intent, so a connect_db still reporting its cache wipe stops rather than
@@ -519,6 +532,12 @@ func _emit_disconnected() -> void:
 		return
 	_disconnected_emitted = true
 	_drop_dead_session_traffic()
+	# The session is over, so its subscriptions are too. Left standing, they were still
+	# in current/pending when a later connect_db started a NEW session — and the first
+	# drop of that session rebuilt its saved query set from them, resubscribing the dead
+	# session's queries on top of the live one's. Ending them here also stops
+	# `sub.ended` reading false for a subscription nothing can deliver to any more.
+	_end_all_subscriptions()
 	disconnected.emit()
 
 
@@ -673,6 +692,11 @@ func unsubscribe(query_id: int) -> Error:
 			"SpacetimeDBClient: Unsubscribe request sent successfully (BSATN), Query ID: %d"
 			% query_id
 		)
+		# Recorded only for a query this client holds a handle for (applied or still
+		# pending), so a caller passing an id the client never issued cannot grow the
+		# set. See _unsubscribing_query_ids.
+		if current_subscriptions.has(query_id) or pending_subscriptions.has(query_id):
+			_unsubscribing_query_ids[query_id] = true
 		return OK
 
 	printerr("SpacetimeDBClient: Internal error - WebSocket peer not available in connection.")
@@ -1559,6 +1583,9 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			_stats.record_response(message.request_id)
 		if message.has_query_id():
 			var qid: int = message.query_id.id
+			# The error ends the subscription either way, so an unsubscribe still in
+			# flight for it has nothing left to answer for.
+			_unsubscribing_query_ids.erase(qid)
 			if pending_subscriptions.has(qid):
 				var sub: SpacetimeDBSubscription = pending_subscriptions[qid]
 				pending_subscriptions.erase(qid)
@@ -1584,6 +1611,7 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			for table_update: TableUpdateData in message.tables:
 				_local_db.apply_table_update(table_update, qid)
 		_local_db.forget_query(qid)
+		_unsubscribing_query_ids.erase(qid)
 		# Also handle a query unsubscribed before its SubscribeApplied arrived: its
 		# handle still sits in pending_subscriptions, and without this it would leak
 		# there forever and its `end` would never fire.
@@ -1759,14 +1787,17 @@ func _start_reconnection(immediate: bool = false) -> void:
 	# must keep the queries from the interrupted cycle — at that moment they sit in
 	# pending_subscriptions (not yet applied), so rebuilding from current_subscriptions
 	# alone would lose them.
+	# A query whose Unsubscribe was still in flight when the socket died is NOT saved:
+	# the caller already dropped it, and the server having never answered is not consent
+	# to bring it back. See _unsubscribing_query_ids.
 	if _saved_subscription_queries.is_empty():
 		for sub_id: int in current_subscriptions:
 			var sub: SpacetimeDBSubscription = current_subscriptions[sub_id]
-			if not sub.queries.is_empty():
+			if not sub.queries.is_empty() and not _unsubscribing_query_ids.has(sub_id):
 				_saved_subscription_queries.append(sub.queries.duplicate())
 		for sub_id: int in pending_subscriptions:
 			var sub: SpacetimeDBSubscription = pending_subscriptions[sub_id]
-			if not sub.queries.is_empty():
+			if not sub.queries.is_empty() and not _unsubscribing_query_ids.has(sub_id):
 				_saved_subscription_queries.append(sub.queries.duplicate())
 	print_log(
 		"SpacetimeDBClient: Saved %d subscription query sets for re-subscription."
@@ -1946,12 +1977,7 @@ func _prepare_for_reconnect() -> void:
 	_one_off_query_cache.clear()
 	_fail_pending_calls_disconnected()
 
-	for sub: SpacetimeDBSubscription in pending_subscriptions.values():
-		sub.end.emit()
-	for sub: SpacetimeDBSubscription in current_subscriptions.values():
-		sub.end.emit()
-	pending_subscriptions.clear()
-	current_subscriptions.clear()
+	_end_all_subscriptions()
 
 	_received_initial_subscription = false
 	_next_query_id = 0
@@ -1959,9 +1985,10 @@ func _prepare_for_reconnect() -> void:
 
 	_drop_dead_session_traffic()
 
-	# The cache wipe goes LAST, because it is the one step here that runs game code:
-	# clear_local_db reports every cached row as deleted, and a listener that reads
-	# client state (or calls back in) has to see the finished reconnect-prep state,
+	# The cache wipe goes LAST, because it is the step here most likely to be observed
+	# from game code (the subscription `end` signals above are the other one that runs
+	# any): clear_local_db reports every cached row as deleted, and a listener that
+	# reads client state (or calls back in) has to see the finished reconnect-prep state,
 	# not a half-reset one. Reporting the rows is the point — the resubscribe only
 	# re-delivers rows that still exist, so a row deleted server-side while the
 	# client was away would otherwise leave the mirror with nothing to tell a
@@ -1969,6 +1996,28 @@ func _prepare_for_reconnect() -> void:
 	# for the rest of the session. Rows that do come back arrive as inserts again.
 	if _local_db:
 		_local_db.clear_local_db()
+
+
+# Ends every subscription handle this session held and drops the bookkeeping that goes
+# with them. A handle is connection-scoped (see SpacetimeDBSubscription), so both session
+# boundaries — the reconnect prep and the terminal `disconnected` — pass through here.
+#
+# The maps are emptied BEFORE the first `end` goes out, because emitting is game code: a
+# handler that calls disconnect_db() re-enters this function through _emit_disconnected,
+# and on the reconnect path (where `disconnected` has not fired, so its once-per-session
+# guard is not yet set) it would find both maps still populated and emit `end` a second
+# time on every handle the outer call had not reached. Clearing first makes the re-entrant
+# call a no-op, so each handle ends exactly once.
+func _end_all_subscriptions() -> void:
+	var ending: Array[SpacetimeDBSubscription] = []
+	ending.append_array(pending_subscriptions.values())
+	ending.append_array(current_subscriptions.values())
+	pending_subscriptions.clear()
+	current_subscriptions.clear()
+	# Every id it could hold belonged to one of those two maps.
+	_unsubscribing_query_ids.clear()
+	for sub: SpacetimeDBSubscription in ending:
+		sub.end.emit()
 
 
 func _cancel_reconnection() -> void:

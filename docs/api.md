@@ -122,6 +122,8 @@ class SpacetimeDBClient:
 
 Close a subscription by calling `unsubscribe(query_id)` with the query id of an existing query. A Godot `Error` is returned to indicate success or failure. The subscription's `end` signal will fire when the server confirms the unsubscribe.
 
+If the connection drops before that confirmation arrives, the query is dropped anyway: an auto-reconnect re-subscribes the queries you still hold, never one you already unsubscribed.
+
 ### Call reducers
 
 #### `call_reducer()` method
@@ -896,7 +898,7 @@ class SpacetimeDBSubscription:
     func unsubscribe() -> Error
 ```
 
-Sends an unsubscribe request to the server. The `end` signal fires when the server confirms the unsubscribe via `UnsubscribeAppliedMessage`.
+Sends an unsubscribe request to the server. The `end` signal fires when the server confirms the unsubscribe via `UnsubscribeAppliedMessage`, or when the session ends first — a disconnect (including `disconnect_db()`) ends every outstanding handle, and a query whose unsubscribe was still in flight is not brought back by the reconnect.
 
 Returns `ERR_DOES_NOT_EXIST` if the subscription has already ended.
 
