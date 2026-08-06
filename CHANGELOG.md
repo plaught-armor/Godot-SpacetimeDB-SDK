@@ -33,6 +33,24 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A handshake that never opened is no longer reported as a dropped connection.**
+  Godot's `WebSocketPeer` keeps neither the HTTP status nor a transport error, so a
+  server answering the upgrade with 404 (no database by that name), a server answering
+  401 (rejected token), a DNS miss and a proxy that closed the connection all land in
+  `STATE_CLOSED` with close code -1 and an empty close reason — identical to a
+  mid-session TCP drop, which is what the SDK reported them as (`Abnormal closure: `,
+  nothing after the colon). Measured against a live server for the 404 and 401 cases.
+  What the SDK *can* know locally is that the socket never opened, so that is now what
+  it says: the report names the server-side causes and the transport-side causes as two
+  possibilities and points at `curl -v` to tell them apart, rather than asserting one it
+  cannot see. The URL is cut at the `?` so the Web handshake's token stays out of the
+  console — as is the connect log line, which was printing it in full under
+  `debug_mode`. The close code is unchanged at -1, and a drop after the socket opened
+  still reports as an abnormal closure. The stall guard now also requires the socket to
+  have been open: the engine keepalive only pings an open socket, so a frame-loop freeze
+  overlapping a refused handshake was being answered with a no-backoff reconnect into
+  the same refusal. `tests/test_handshake_refusal_diagnostic.gd`.
+
 - **A message the engine drops now ends the session with an explanation instead of
   passing unnoticed.** The receive loop skipped an empty inbound packet and carried
   on, and an empty packet is exactly what Godot hands over when a message did not fit
