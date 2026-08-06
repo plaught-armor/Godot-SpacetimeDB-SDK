@@ -44,11 +44,36 @@ const BSATN_PROTOCOL_V3 = "v3.bsatn.spacetimedb"
 
 ## WebSocket close code 1009. Godot hands [member WebSocketPeer.inbound_buffer_size]
 ## to wslay as the maximum receivable message length, so a server message larger than
-## that buffer is never delivered: wslay stops reading and closes the socket itself
-## with this code and the reason "Message too big". The server's own ceiling is 32 MiB
+## that buffer is never delivered. The server's own ceiling is 32 MiB
 ## (`WebSocketConfig::max_message_size` in `crates/client-api`), well above this
 ## client's default buffer, so a large enough subscription or transaction update is a
-## message the server considers perfectly legal and this client cannot receive.
+## message the server considers perfectly legal and this client cannot receive.[br]
+## [br]
+## An oversized message arrives one of TWO ways, and only the first announces itself:[br]
+## - Sent as a SINGLE frame, wslay compares the frame's payload length against the
+##   limit and closes the socket itself with this code and the reason "Message too
+##   big".[br]
+## - Sent as FRAGMENTS (what a real server does with a large snapshot), the limit is
+##   never reached: Godot runs wslay with `no_buffering`, and the running message
+##   length is only accumulated by the chunk-append call that no-buffering skips
+##   (`wslay_event.c`), so each fragment is measured on its own. The message is
+##   reassembled into a ring sized `Math::nearest_shift(inbound_buffer_size)` — the
+##   next power of two AT OR ABOVE it, so up to twice the number set here — while the
+##   buffer it is read out into is exactly this size. A message between the two is
+##   assembled, queued, and then refused by `PacketBuffer::read_packet`;
+##   `WSLPeer::get_packet` ignores that failure and returns OK with a zero-length
+##   packet — no close, no error, no packet. Worse, the refused read has already
+##   consumed the packet's queue slot without draining its payload, so the frames
+##   after it are read at the wrong offset (measured against a live 2.8.0 server:
+##   "Unknown compression tag 120" for several frames afterwards).[br]
+## - Past the ring as well, nothing is assembled at all: no packet, no error, no
+##   close, and nothing for this SDK to notice. That band is beyond reach from here —
+##   the caller sees it as a subscribe that never applies. Pinned by
+##   `tests/test_oversized_inbound_message.gd` so a future engine that does report it
+##   shows up as a failing test.[br]
+## [br]
+## The second shape is why an empty inbound packet is treated as fatal rather than
+## skipped — see [method dropped_message_diagnostic].
 const CLOSE_MESSAGE_TOO_BIG: int = 1009
 
 var version: String = "v1"
@@ -157,7 +182,15 @@ func _physics_process(_delta: float) -> void:
 		while _websocket.get_available_packet_count() > 0:
 			var packet_bytes: PackedByteArray = _websocket.get_packet()
 			if packet_bytes.is_empty():
-				continue
+				# The peer counted a packet and then handed over nothing. No
+				# SpacetimeDB frame is empty — every one carries a compression byte
+				# and a payload — so this is the engine dropping a message that did
+				# not fit inbound_buffer_size (see CLOSE_MESSAGE_TOO_BIG). Skipping
+				# it, which is what this branch used to do, left the session running
+				# on a stream that had silently lost a message AND been left at the
+				# wrong offset, with nothing reported to the game at all.
+				_abort_on_dropped_message()
+				return
 
 			_total_bytes_received += packet_bytes.size()
 			_second_bytes_received += packet_bytes.size()
@@ -301,6 +334,49 @@ func _abort_stalled_handshake(waiting_ms: int) -> void:
 	connection_error.emit(
 		ERR_TIMEOUT,
 		"WebSocket handshake timed out after %.1fs" % (waiting_ms / 1000.0),
+	)
+
+
+## Ends the session after the engine dropped an inbound message, reporting what the
+## game has to change. The socket is not salvageable: the drop consumed the packet's
+## queue slot without draining its payload, so every later frame is read at the wrong
+## offset. A fresh peer is the only way back to a coherent stream, and the mirror needs
+## a fresh snapshot anyway — whatever the lost message carried is never resent.
+##
+## Reported as a connection error rather than a clean disconnect so auto-reconnect
+## applies exactly as it does for any other mid-session failure. The reconnect meets
+## the same message again if the subscription reproduces it, which is loud, bounded by
+## max_reconnect_attempts, and preferable to a client that sits connected and silent.
+func _abort_on_dropped_message() -> void:
+	var diagnostic: String = dropped_message_diagnostic(_options.inbound_buffer_size)
+	push_error(diagnostic)
+	# State first, signal last: a handler is free to call disconnect_db() or start a
+	# new connect_db(), and it must not find this peer half torn down.
+	_reset_peer()
+	_is_connected = false
+	_connection_requested = false
+	_connect_started_ms = -1
+	set_physics_process(false)
+	connection_error.emit(CLOSE_MESSAGE_TOO_BIG, "Inbound message dropped (too big to receive)")
+
+
+## The operator-facing explanation for a message the engine dropped instead of
+## delivering. Pure, so the text — including the buffer size the game is actually
+## running with — is testable without a socket.
+static func dropped_message_diagnostic(inbound_buffer_size: int) -> String:
+	return (
+		(
+			"SpacetimeDBConnection: the server sent a message larger than "
+			+ "inbound_buffer_size (%d bytes) and the engine dropped it — a fragmented "
+			+ "message never trips wslay's own limit, so no 1009 close is raised and "
+			+ "the packet arrives empty instead. The session is being ended because the "
+			+ "frames after a dropped one are read at the wrong offset. Raise "
+			+ "SpacetimeDBConnectionOptions.inbound_buffer_size (the server allows "
+			+ "itself up to 32 MiB per message), turn on "
+			+ "SpacetimeDBConnectionOptions.compression so large payloads arrive "
+			+ "compressed, or narrow the subscription that produced it."
+		)
+		% inbound_buffer_size
 	)
 
 
