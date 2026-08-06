@@ -219,12 +219,27 @@ func _physics_process(_delta: float) -> void:
 		var reason: String = _websocket.get_close_reason()
 		if _is_connected or _connection_requested: # Only report if we were connected or trying
 			if code == -1: # Abnormal closure
-				if _post_stall_polls > 0: # heartbeat tripped by a local stall, not a network drop
+				# `and _is_connected`: the engine keepalive only pings an OPEN socket, so
+				# a stall can only ever have false-killed one that was up. Without that
+				# half, a frame-loop freeze that happens to overlap a refused handshake
+				# was diagnosed as a stall and answered with a no-backoff reconnect into
+				# the same refusal.
+				if _post_stall_polls > 0 and _is_connected:
 					push_warning(
 						"SpacetimeDBConnection: abnormal close right after a main-thread stall — stall-induced, fast reconnect"
 					)
 					_post_stall_polls = 0
 					connection_stalled.emit(code)
+				elif not _is_connected:
+					# The socket never opened, so nothing was closed mid-session. What
+					# ended it is not knowable from here (Godot keeps neither the HTTP
+					# status nor a transport error), so the report says that and names
+					# both families of cause — "Abnormal closure:" with an empty reason,
+					# which is what this used to say, asserts a network drop and sends
+					# the reader looking in the wrong place for a typo'd database name.
+					var refusal: String = handshake_refused_diagnostic(_target_url, _db_name)
+					printerr(refusal)
+					connection_error.emit(code, refusal)
 				else:
 					printerr(
 						"SpacetimeDBConnection: connection_error %d, abnormal closure. Reason: %s"
@@ -358,6 +373,38 @@ func _abort_on_dropped_message() -> void:
 	_connect_started_ms = -1
 	set_physics_process(false)
 	connection_error.emit(CLOSE_MESSAGE_TOO_BIG, "Inbound message dropped (too big to receive)")
+
+
+## The target URL with its query string cut off. On Web the token travels in that
+## query string (the handshake there cannot carry an Authorization header), so every
+## line that prints the URL — the connect log, the stalled-handshake report, the
+## refusal diagnostic — has to drop it or a credential lands in the console.
+func _url_without_query() -> String:
+	return _target_url.get_slice("?", 0)
+
+
+## The operator-facing explanation for a handshake that ended before the socket opened.
+## Pure, so the text is testable without a socket.
+##
+## Says what was observed, not what caused it: Godot's WebSocketPeer keeps neither the
+## HTTP status nor a transport error, so a 404 for an unknown database, a 401 for a
+## rejected token, a DNS miss and a proxy that dropped the connection all arrive here
+## as the same close code -1 with an empty reason. Both families are named, and so is
+## the one command that tells them apart.
+static func handshake_refused_diagnostic(target_url: String, database_name: String) -> String:
+	return (
+		(
+			"SpacetimeDBConnection: the handshake for '%s' at %s ended without the socket "
+			+ "opening, so nothing was dropped mid-session. Godot's WebSocketPeer keeps "
+			+ "neither the HTTP status nor a transport error, so the cause is either "
+			+ "server-side (no database by that name — 404; the auth token was rejected "
+			+ "— 401; or the server is too old to speak %s, which SpacetimeDB 2.2.0 and "
+			+ "up do) or transport-side (DNS did not resolve, a proxy or firewall closed "
+			+ "the connection, the host accepted the TCP connection and then reset it). "
+			+ "`curl -v` against the same URL tells the two apart."
+		)
+		% [database_name, target_url.get_slice("?", 0), BSATN_PROTOCOL_V3]
+	)
 
 
 ## The operator-facing explanation for a message the engine dropped instead of
@@ -664,7 +711,10 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		_websocket.handshake_headers = [auth_header]
 
 	_target_url = "%s%s" % [ws_url_base, query_params]
-	_print_log("SpacetimeDBConnection: Attempting to connect to: " + _target_url)
+	# Query string cut off: on Web the token travels in it (the handshake there cannot
+	# carry an Authorization header), so the full URL would put a credential in the
+	# console for anyone running with debug_mode on. Same cut as the two diagnostics.
+	_print_log("SpacetimeDBConnection: Attempting to connect to: " + _url_without_query())
 
 	# v3 only — servers below 2.2.0 (which speak just v2) will fail the handshake.
 	_websocket.supported_protocols = [BSATN_PROTOCOL_V3]
