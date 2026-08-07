@@ -33,6 +33,30 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **Two modules in one project no longer overwrite each other's saved identity.**
+  `token_save_path` is a per-client `@export` with one hardcoded default and the file
+  held a single bare token, so every generated client in a process — the shape codegen's
+  autoload emits, one client per module — read and wrote the same value. Measured with
+  two clients against a loopback identity server: the first run issued two identities
+  and saved whichever finished last, and the next run handed *both* modules that one
+  token, so one module silently connected as a different identity and every row it owned
+  went missing, with no error anywhere. The file is now a JSON object keyed by
+  `module_name`, so each module keeps its own token; saves read-modify-write it, and go
+  through a sibling `.tmp` + rename (atomic on POSIX; Windows' delete-then-move narrows
+  the window rather than closing it) so a crash mid-save cannot cost every module's token
+  at once. A save whose token already resolves for that module is a no-op, so the file is
+  not rewritten on every connect, and a save is refused outright rather than rebuilt from
+  nothing when the existing file cannot be read or the new one cannot be written in full.
+  Upgrading changes no identity: a file written before the store existed is kept under the
+  reserved key `"*"` and handed to any module without an entry of its own, and a module
+  takes an entry of its own only once it acquires a different token — an installation
+  where every module keeps working with that one token is never rewritten at all.
+  A file that opens like a JSON object and does not parse is now treated as a corrupt
+  store — reported once, ignored, fresh token requested — instead of being sent to the
+  server as a bearer credential. `tests/test_token_store.gd` (35 assertions),
+  `tests/_probe_token_store.gd` (the two-client, two-run measurement; 1/5 failed before
+  the fix).
+
 - **A handshake that never opened is no longer reported as a dropped connection.**
   Godot's `WebSocketPeer` keeps neither the HTTP status nor a transport error, so a
   server answering the upgrade with 404 (no database by that name), a server answering
