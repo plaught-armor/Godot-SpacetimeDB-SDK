@@ -75,6 +75,26 @@ var _schema_path: String
 ## [method generate_bindings].
 var generation_incomplete: bool = false
 
+## Set by a generation stage at EVERY return it takes deliberately, cleared by its caller
+## immediately before the call. Not "the stage succeeded" — a stage that gave up and
+## reported why sets it too; what it proves is that the stage reached a `return` of its
+## own rather than being unwound. A GDScript runtime fault unwinds only the function it
+## happens in and hands the caller that function's default, so a stage that faulted is
+## otherwise indistinguishable from one that legitimately produced nothing — and
+## "produced nothing" is exactly what makes the pruning pass delete a module's bindings.
+##
+## Every consumer resets it immediately before the call it checks, so one variable covers
+## the nested stages (the inner call's result is checked before the outer stage sets its
+## own). A consumer added later MUST reset it the same way.
+var _stage_reached_return: bool = false
+
+## Set at the tail of [method generate_bindings], cleared at its head. The per-stage
+## sentinel above cannot see a fault in generate_bindings' OWN frame — that unwinds
+## straight to its caller with the flags exactly as the last stage left them, which for a
+## run whose modules all generated cleanly reads as "complete". Required by
+## [method SpacetimePlugin.finalize_bindings] alongside [member generation_incomplete].
+var run_reached_return: bool = false
+
 
 func _init(p_schema_path: String) -> void:
 	_schema_path = p_schema_path
@@ -504,6 +524,7 @@ static func _with_arraylike_components(
 func generate_bindings() -> Array[String]:
 	var generated_files: Array[String] = []
 	generation_incomplete = false
+	run_reached_return = false
 
 	# Sort module names so the per-module output order (and the autoload it
 	# references) is stable across regenerations.
@@ -541,9 +562,41 @@ func generate_bindings() -> Array[String]:
 		return generated_files
 
 	for module_name: String in sorted_module_names:
+		_stage_reached_return = false
 		generated_files.append_array(_generate_module_bindings(module_name))
+		if not _stage_reached_return:
+			SpacetimePlugin.print_err(
+				(
+					"Module %s: code generation stopped part-way (see the errors above). "
+					+ "The existing bindings are left in place."
+				)
+				% module_name
+			)
+			generation_incomplete = true
 
+	# The autoload declares and PRELOADS a client per module, so it is only writable once
+	# every module in the run has files for it to name. A module that aborted wrote none —
+	# and if it is a module the project has never generated, an autoload naming it is a
+	# preload of a file that does not exist, i.e. a project that no longer boots. The
+	# previous autoload still matches the previous bindings, which are exactly what a run
+	# in this state leaves in place.
+	if generation_incomplete:
+		SpacetimePlugin.print_err(
+			(
+				"Skipping the autoload: it would name a module this run did not generate. "
+				+ "The existing bindings and autoload are left as they were."
+			)
+		)
+		run_reached_return = true
+		return generated_files
+
+	_stage_reached_return = false
 	var autoload_content: String = _generate_autoload_gdscript(sorted_module_names)
+	if not _stage_reached_return:
+		SpacetimePlugin.print_err(
+			"The autoload could not be generated (see the errors above); nothing is pruned."
+		)
+		generation_incomplete = true
 	var autoload_output_file_path: String = "%s/%s" % [_schema_path, SpacetimePlugin.AUTOLOAD_FILE_NAME]
 	var autoload_file: FileAccess = FileAccess.open(autoload_output_file_path, FileAccess.WRITE)
 	if autoload_file == null:
@@ -558,10 +611,13 @@ func generate_bindings() -> Array[String]:
 
 	SpacetimePlugin.print_log("Generated files:")
 	for generated_file: String in generated_files:
+		# A fault inside _write_deterministic_uid returns its `-> bool` default, false,
+		# which this branch already reads as a failure — no sentinel needed here.
 		if not _write_deterministic_uid(generated_file):
 			generation_incomplete = true
 		SpacetimePlugin.print_log(generated_file)
 
+	run_reached_return = true
 	return generated_files
 
 
@@ -680,13 +736,54 @@ func _generate_module_bindings(module_name: String) -> Array[String]:
 		)
 		_plugin_config.module_configs[module_name].unparsed_module_schema = ""
 		generation_incomplete = true
+		_stage_reached_return = true
 		return []
 	var project_enums: Dictionary = _scan_project_enums()
-	var schema: SpacetimeParsedSchema = SpacetimeSchemaParser.parse_schema(json, module_name, project_enums)
+	# Untyped on purpose: a GDScript runtime fault inside parse_schema unwinds that
+	# function and hands back its default, `null`. A `: SpacetimeParsedSchema` annotation
+	# turns the null into a SECOND fault here, which unwinds this function too — and an
+	# unwound _generate_module_bindings returns an empty file list without ever setting
+	# generation_incomplete, so the run reported success and cleanup deleted every binding
+	# this module owns (measured: 18 files, from a schema with one unnamed column).
+	var parsed: Variant = SpacetimeSchemaParser.parse_schema(json, module_name, project_enums)
 	_plugin_config.module_configs[module_name].unparsed_module_schema = ""
+	if not (parsed is SpacetimeParsedSchema):
+		SpacetimePlugin.print_err(
+			(
+				"Module %s: the schema could not be parsed (the parser faulted — see the "
+				+ "errors above). Aborting codegen for this module."
+			)
+			% module_name
+		)
+		generation_incomplete = true
+		_stage_reached_return = true
+		return []
+	var schema: SpacetimeParsedSchema = parsed
 	if schema.is_empty():
 		SpacetimePlugin.print_err("Schema parsing failed for module: %s. Aborting codegen for this module." % module_name)
 		generation_incomplete = true
+		_stage_reached_return = true
+		return []
+	# A parse that reported a problem and carried on describes only PART of the module:
+	# a table whose row type did not resolve, an index column out of range and a view with
+	# an unsupported return type are all skipped, not fatal. Generating from that emits
+	# fewer files than the module has, and cleanup then deletes the bindings for whatever
+	# went missing — measured, a single out-of-range product_type_ref took the table
+	# wrapper and its index accessor with it. Abort BEFORE the first file is written: half
+	# the module regenerated against the other half's stale files is a db facade whose
+	# table members no longer match the wrappers beside it, which is a worse state than the
+	# last good run, and refusing the prune alone would not undo it.
+	if schema.incomplete:
+		SpacetimePlugin.print_err(
+			(
+				"Module %s: the schema parsed only partially — the errors above name what "
+				+ "was skipped. Nothing was generated for this module; the existing "
+				+ "bindings are untouched."
+			)
+			% module_name
+		)
+		generation_incomplete = true
+		_stage_reached_return = true
 		return []
 
 	for folder in REQUIRED_FOLDERS_IN_CODEGEN_FOLDER:
@@ -725,7 +822,18 @@ func _generate_module_bindings(module_name: String) -> Array[String]:
 	else:
 		file.store_string(JSON.stringify(json, "\t", false))
 		file.close()
+	_stage_reached_return = false
 	var generated_files: Array[String] = _generate_gdscript_from_schema(module_name, schema)
+	if not _stage_reached_return:
+		SpacetimePlugin.print_err(
+			(
+				"Module %s: the generator stopped part-way through the schema (see the errors "
+				+ "above). The existing bindings are left in place."
+			)
+			% module_name
+		)
+		generation_incomplete = true
+	_stage_reached_return = true
 	return generated_files
 
 
@@ -776,6 +884,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 				"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 			)
 			generation_incomplete = true
+			_stage_reached_return = true
 			return generated_files
 		file.store_string(content)
 		file.close()
@@ -815,6 +924,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 					"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 				)
 				generation_incomplete = true
+				_stage_reached_return = true
 				return generated_files
 			file.store_string(content)
 			file.close()
@@ -839,6 +949,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 					"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 				)
 				generation_incomplete = true
+				_stage_reached_return = true
 				return generated_files
 			file.store_string(content)
 			file.close()
@@ -859,6 +970,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 				"failed to open %s: %s" % [output_file_path, FileAccess.get_open_error()],
 			)
 			generation_incomplete = true
+			_stage_reached_return = true
 			return generated_files
 		file.store_string(content)
 		file.close()
@@ -873,6 +985,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			"failed to open %s: %s" % [output_file_path_module, FileAccess.get_open_error()],
 		)
 		generation_incomplete = true
+		_stage_reached_return = true
 		return generated_files
 	file_module.store_string(module_content)
 	file_module.close()
@@ -887,6 +1000,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			"failed to open %s: %s" % [db_output_file_path, FileAccess.get_open_error()],
 		)
 		generation_incomplete = true
+		_stage_reached_return = true
 		return generated_files
 	db_file.store_string(db_content)
 	db_file.close()
@@ -901,6 +1015,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			"failed to open %s: %s" % [output_file_path_reducers, FileAccess.get_open_error()],
 		)
 		generation_incomplete = true
+		_stage_reached_return = true
 		return generated_files
 	file_reducers.store_string(reducers_content)
 	file_reducers.close()
@@ -915,6 +1030,7 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			"failed to open %s: %s" % [output_file_path_procedures, FileAccess.get_open_error()],
 		)
 		generation_incomplete = true
+		_stage_reached_return = true
 		return generated_files
 	file_procedures.store_string(procedures_content)
 	file_procedures.close()
@@ -929,11 +1045,13 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 			"failed to open %s: %s" % [output_file_path_types, FileAccess.get_open_error()],
 		)
 		generation_incomplete = true
+		_stage_reached_return = true
 		return generated_files
 	file_types.store_string(types_content)
 	file_types.close()
 	generated_files.append(output_file_path_types)
 
+	_stage_reached_return = true
 	return generated_files
 
 
@@ -1719,4 +1837,5 @@ func _generate_autoload_gdscript(modules: Array[String]) -> String:
 			"\tadd_child(%s)\n" % [prefix],
 		)
 
+	_stage_reached_return = true
 	return "".join(out)
