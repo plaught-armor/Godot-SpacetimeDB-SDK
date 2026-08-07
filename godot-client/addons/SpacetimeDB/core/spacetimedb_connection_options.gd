@@ -61,16 +61,38 @@ var confirmed_reads: bool = true
 ## fragments — what a real server does with a large snapshot — the engine drops it and
 ## the SDK ends the session with an error naming this setting (see
 ## [constant SpacetimeDBConnection.CLOSE_MESSAGE_TOO_BIG]). The server's own limit is
-## 32 MiB, so raise this — or enable [member compression] — for a subscription whose
-## initial payload runs large.
-var inbound_buffer_size: int = 1024 * 1024 * 2
-## Maximum size in bytes of the WebSocket outbound buffer (default 2 MB).
-var outbound_buffer_size: int = 1024 * 1024 * 2
+## 32 MiB, so enable [member compression] — or, second, raise this — for a subscription
+## whose initial payload runs large. Compression first because a raised buffer is not
+## free: the engine allocates a reassembly ring of twice this size plus a packet buffer
+## of this size, so roughly 3× per direction (measured 4.8.dev: the 2 MiB default costs
+## ~6.2 MiB with both directions set, the 32 MiB ceiling ~90 MiB).
+##
+## Refused below [constant SpacetimeDBConnection.MIN_BUFFER_SIZE], which the default is
+## used in place of: a buffer the engine cannot work with does not fail, it opens a
+## socket that silently receives nothing (0) or hangs the process (negative). Clamped
+## above [constant SpacetimeDBConnection.MAX_BUFFER_SIZE] — the engine's setter is a
+## 32-bit int, so a bigger number truncates into those same two failures, and no legal
+## server message is larger anyway.
+var inbound_buffer_size: int = SpacetimeDBConnection.DEFAULT_BUFFER_SIZE
+## Maximum size in bytes of the WebSocket outbound buffer (default 2 MB). Bounded exactly
+## like [member inbound_buffer_size] — refused below
+## [constant SpacetimeDBConnection.MIN_BUFFER_SIZE], clamped above
+## [constant SpacetimeDBConnection.MAX_BUFFER_SIZE], and it costs the same ~3×.
+var outbound_buffer_size: int = SpacetimeDBConnection.DEFAULT_BUFFER_SIZE
 ## Interval in seconds between WebSocket keepalive pings. The peer sends a PING every
 ## interval and closes the connection — triggering auto-reconnect if enabled — when no
 ## PONG arrives before the next one, detecting a dead/half-open socket within ~2 intervals
 ## instead of waiting out the OS TCP timeout (minutes). [code]0.0[/code] disables keepalive.
-var heartbeat_interval_seconds: float = 15.0
+##
+## Accepted values are [code]0.0[/code] and anything from
+## [constant SpacetimeDBConnection.MIN_HEARTBEAT_SECONDS] to
+## [constant SpacetimeDBConnection.MAX_INTERVAL_SECONDS]; anything else is refused and the
+## default used. The SDK's stall threshold is derived from this same number, so both ends
+## of the range mattered: a negative one left the peer's keepalive off AND the threshold
+## negative (both detectors silently off), while a sub-second one made an ordinary frame
+## gap read as a stall, so every real network drop was reported as a local freeze and
+## answered with a no-backoff reconnect.
+var heartbeat_interval_seconds: float = SpacetimeDBConnection.DEFAULT_HEARTBEAT_SECONDS
 ## Seconds a connection attempt may sit in the WebSocket handshake (TCP connect plus
 ## HTTP upgrade) before it is abandoned and reported as [constant ERR_TIMEOUT].
 ##
@@ -89,8 +111,10 @@ var heartbeat_interval_seconds: float = 15.0
 ## to one budget in total. That rule does not read [member heartbeat_interval_seconds],
 ## so turning keepalive off does not quietly harden this budget.
 ##
-## [code]0.0[/code] disables the timeout and restores that wait-forever behaviour.
-var connect_timeout_seconds: float = 15.0
+## [code]0.0[/code] disables the timeout and restores that wait-forever behaviour. A
+## NEGATIVE value is refused and the default used, so a sign slip cannot bring that
+## behaviour back by accident.
+var connect_timeout_seconds: float = SpacetimeDBConnection.DEFAULT_CONNECT_TIMEOUT_SECONDS
 
 ## Per-frame time budget in microseconds for applying parsed server messages.
 ## Higher values drain bursts (initial subscription, mass updates) faster at the

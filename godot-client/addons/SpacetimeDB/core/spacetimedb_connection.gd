@@ -76,6 +76,87 @@ const BSATN_PROTOCOL_V3 = "v3.bsatn.spacetimedb"
 ## skipped — see [method dropped_message_diagnostic].
 const CLOSE_MESSAGE_TOO_BIG: int = 1009
 
+## Default size of both WebSocket buffers, and what an unusable one falls back to.
+## [SpacetimeDBConnectionOptions] declares its defaults from here so there is one number.
+const DEFAULT_BUFFER_SIZE: int = 1024 * 1024 * 2
+
+## Smallest socket buffer this SDK will hand the engine.
+##
+## Below this a buffer cannot carry a SpacetimeDB message, and the engine answers a
+## degenerate one by breaking rather than complaining — measured on 4.8.dev
+## (`tests/_probe_socket_limits.gd`):[br]
+## - [b]0[/b] is accepted by the setter and by [method WebSocketPeer.connect_to_url]. The
+##   socket OPENS, [method SpacetimeDBClient.is_connected_db] reads true, and every
+##   inbound message is dropped in silence — no packet, no close, no error. The client
+##   waits on a handshake that can never complete and reports nothing.[br]
+## - [b]negative[/b] is also accepted by the setter, and then trips
+##   `Condition "p_size < 0" is true` inside `CowData::resize` on the first poll, and the
+##   headless process HANGS.[br]
+## [br]
+## So a bad value is refused here rather than passed on. The floor is deliberately low —
+## it exists to catch a value that is broken (0, negative, a byte count that was meant to
+## be kilobytes), not to second-guess a small one. It is NOT a recommendation: the
+## practical minimum is tens of KiB, because a buffer only has to be smaller than one
+## server message for the silent band above it to swallow every subscription.
+const MIN_BUFFER_SIZE: int = 4096
+
+## Largest socket buffer this SDK will hand the engine.
+##
+## [method WebSocketPeer.set_inbound_buffer_size] takes a C++ 32-bit int and a GDScript
+## int is 64-bit, so a large enough number does not fail — it TRUNCATES, straight back
+## into the two failures [constant MIN_BUFFER_SIZE] describes. Measured on 4.8.dev:
+## [code]1 << 31[/code] reads back as -2147483648 (the hang) and [code]1 << 32[/code]
+## reads back as 0 (the silent drop), so "give it plenty" is the dangerous input here.
+## [br]
+## The ceiling is the server's own message limit (`WebSocketConfig::max_message_size` in
+## `crates/client-api`), which no legal SpacetimeDB message exceeds as of 2.7.1 — check
+## that before raising this, since a server that lifted its limit would make the SDK the
+## one refusing the message. A value over the ceiling is CLAMPED rather than defaulted —
+## a caller asking for more wants as much as possible, and answering that with the 2 MiB
+## default would be a cut of three orders of magnitude.[br]
+## [br]
+## Note what a big buffer costs. The engine allocates a reassembly ring of
+## `nearest_shift(size)` — for an exact power of two, TWICE the size — plus a packet
+## buffer of the full size, so roughly 3× the number set, per direction. Measured on
+## 4.8.dev across a completed handshake: 2 MiB in + 2 MiB out costs ~6.2 MiB, and this
+## ceiling both ways costs ~90 MiB. Reach for [member
+## SpacetimeDBConnectionOptions.compression] before reaching for the ceiling.
+const MAX_BUFFER_SIZE: int = 1024 * 1024 * 32
+
+## Default keepalive interval, and what a negative one falls back to.
+const DEFAULT_HEARTBEAT_SECONDS: float = 15.0
+
+## Default handshake budget, and what a negative one falls back to.
+const DEFAULT_CONNECT_TIMEOUT_SECONDS: float = 15.0
+
+## Largest interval [method resolve_interval_seconds] accepts, in seconds (one day).
+##
+## Both callers turn seconds into milliseconds as an [code]int[/code], and a float→int
+## conversion that does not fit produces INT64_MIN — measured on 4.8.dev, anything from
+## about 9.3e15 seconds up, and [code]INF[/code] with it. Negative is exactly what every
+## threshold reads as "off", so an interval meant to be enormous switched off the timeout
+## it was meant to stretch. A day is far past any sane keepalive or handshake budget, and
+## nothing is lost by refusing more: [code]0.0[/code] is the documented way to say never.
+const MAX_INTERVAL_SECONDS: float = 86400.0
+
+## Smallest keepalive interval [method apply_options] accepts, in seconds.
+##
+## The heartbeat is also the SDK's stall threshold ([member _stall_threshold_ms]), so a
+## sub-second value reproduces the same silent failures from the other end — measured on
+## 4.8.dev:[br]
+## - [b]0.001[/b] gives a 1 ms threshold, which an ordinary 60 Hz frame gap (~16 ms)
+##   clears on every poll. The stall guard is then permanently armed, so a real network
+##   drop is diagnosed as a local freeze and answered with a no-backoff reconnect —
+##   forever, and the `and _is_connected` half of that branch exists to prevent exactly
+##   this misclassification.[br]
+## - [b]0.0001[/b] truncates to a 0 ms threshold, which reads as "heartbeat disabled", so
+##   stall detection is off while the engine pings at poll rate.[br]
+## [br]
+## Below a second a keepalive means nothing against the server's own idle timeout anyway,
+## and the derived threshold stops being distinguishable from a frame gap. [code]0.0[/code]
+## is still accepted — that is the documented way to turn keepalive off.
+const MIN_HEARTBEAT_SECONDS: float = 1.0
+
 var version: String = "v1"
 ## Sub-protocol the server selected during the handshake (e.g. "v3.bsatn.spacetimedb").
 var negotiated_protocol: String = ""
@@ -86,6 +167,12 @@ var _token: String
 var _is_connected: bool = false
 var _connection_requested: bool = false
 var _options: SpacetimeDBConnectionOptions
+## Socket limits as actually applied — [method apply_options] resolves them once so a
+## refused value is reported once, and [method _reset_peer] restores what is in force
+## rather than re-reading (and re-reporting) the raw option.
+var _inbound_buffer_size: int = DEFAULT_BUFFER_SIZE
+var _outbound_buffer_size: int = DEFAULT_BUFFER_SIZE
+var _heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS
 var _db_name: String
 var _debug_mode: bool = false
 var _total_bytes_sent: int = 0
@@ -149,13 +236,35 @@ func apply_options(options: SpacetimeDBConnectionOptions) -> void:
 	elif not was_monitoring and options.monitor_mode:
 		_register_monitors()
 	_options = options
-	_websocket.inbound_buffer_size = options.inbound_buffer_size
-	_websocket.outbound_buffer_size = options.outbound_buffer_size
+	# Resolved once and kept, so _reset_peer restores the same numbers and a refused
+	# value is reported once per apply rather than once per reconnect.
+	_inbound_buffer_size = resolve_buffer_size(options.inbound_buffer_size, "inbound_buffer_size")
+	_outbound_buffer_size = resolve_buffer_size(
+		options.outbound_buffer_size,
+		"outbound_buffer_size",
+	)
+	_heartbeat_seconds = resolve_interval_seconds(
+		options.heartbeat_interval_seconds,
+		MIN_HEARTBEAT_SECONDS,
+		DEFAULT_HEARTBEAT_SECONDS,
+		"heartbeat_interval_seconds",
+	)
+	# No floor on the handshake budget: an aggressively short one is a deliberate choice
+	# on a LAN, and getting it wrong fails loudly (every attempt times out) rather than
+	# silently — which is the line this whole resolution draws.
+	var timeout_seconds: float = resolve_interval_seconds(
+		options.connect_timeout_seconds,
+		0.0,
+		DEFAULT_CONNECT_TIMEOUT_SECONDS,
+		"connect_timeout_seconds",
+	)
+	_websocket.inbound_buffer_size = _inbound_buffer_size
+	_websocket.outbound_buffer_size = _outbound_buffer_size
 	# Keepalive: peer pings every interval and closes (code -1) if a pong is missed,
 	# surfacing a dead socket as STATE_CLOSED so the reconnect path can fire.
-	_websocket.heartbeat_interval = options.heartbeat_interval_seconds
-	_stall_threshold_ms = int(options.heartbeat_interval_seconds * 1000.0)
-	_connect_timeout_ms = int(options.connect_timeout_seconds * 1000.0)
+	_websocket.heartbeat_interval = _heartbeat_seconds
+	_stall_threshold_ms = int(_heartbeat_seconds * 1000.0)
+	_connect_timeout_ms = int(timeout_seconds * 1000.0)
 	set_compression_preference(options.compression)
 	self._debug_mode = options.debug_mode
 
@@ -254,7 +363,7 @@ func _physics_process(_delta: float) -> void:
 				# suppressed for them — a 1009 raised by one oversized transaction
 				# update is survivable, and only the caller knows whether its
 				# subscription is the kind that will reproduce it.
-				var diagnostic: String = close_diagnostic(code, _options.inbound_buffer_size)
+				var diagnostic: String = close_diagnostic(code, _inbound_buffer_size)
 				if diagnostic.is_empty():
 					_print_log(
 						"SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)"
@@ -363,7 +472,7 @@ func _abort_stalled_handshake(waiting_ms: int) -> void:
 ## the same message again if the subscription reproduces it, which is loud, bounded by
 ## max_reconnect_attempts, and preferable to a client that sits connected and silent.
 func _abort_on_dropped_message() -> void:
-	var diagnostic: String = dropped_message_diagnostic(_options.inbound_buffer_size)
+	var diagnostic: String = dropped_message_diagnostic(_inbound_buffer_size)
 	push_error(diagnostic)
 	# State first, signal last: a handler is free to call disconnect_db() or start a
 	# new connect_db(), and it must not find this peer half torn down.
@@ -435,9 +544,71 @@ func _reset_peer() -> void:
 	if _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED:
 		_websocket.close()
 	_websocket = WebSocketPeer.new()
-	_websocket.inbound_buffer_size = _options.inbound_buffer_size
-	_websocket.outbound_buffer_size = _options.outbound_buffer_size
-	_websocket.heartbeat_interval = _options.heartbeat_interval_seconds
+	_websocket.inbound_buffer_size = _inbound_buffer_size
+	_websocket.outbound_buffer_size = _outbound_buffer_size
+	_websocket.heartbeat_interval = _heartbeat_seconds
+
+
+## [param size] if the engine can work with it, else [constant DEFAULT_BUFFER_SIZE].
+##
+## The engine takes a degenerate buffer size and breaks quietly rather than refusing it:
+## 0 opens the socket and drops every message with no packet, no close and no error, and
+## a negative one hangs the process on the first poll (see [constant MIN_BUFFER_SIZE]).
+## Neither is something a game can diagnose from what it observes, so the value is
+## refused here — loudly, and once per [method apply_options].
+static func resolve_buffer_size(size: int, setting: String) -> int:
+	if size > MAX_BUFFER_SIZE:
+		push_error(
+			(
+				"SpacetimeDBConnection: %s = %d is above the %d-byte maximum, which the "
+				+ "engine would truncate to a 32-bit int; using %d instead."
+			)
+			% [setting, size, MAX_BUFFER_SIZE, MAX_BUFFER_SIZE]
+		)
+		return MAX_BUFFER_SIZE
+	if size >= MIN_BUFFER_SIZE:
+		return size
+	push_error(
+		(
+			"SpacetimeDBConnection: %s = %d is below the %d-byte minimum and cannot carry "
+			+ "a message; using the default %d instead."
+		)
+		% [setting, size, MIN_BUFFER_SIZE, DEFAULT_BUFFER_SIZE]
+	)
+	return DEFAULT_BUFFER_SIZE
+
+
+## [param value] if it is a usable interval, else [param fallback].
+##
+## Zero is legal and documented for both callers — it disables keepalive / the handshake
+## budget. Negative is not: [method WebSocketPeer.set_heartbeat_interval] refuses it
+## (`ERR_FAIL_COND p_interval < 0`) and leaves the property at whatever it already held —
+## 0 on a fresh peer, the previous session's interval on a re-applied one — and the SDK's own
+## thresholds derived from the same number go negative and stop firing — so asking for a
+## SHORTER interval than the default silently turned dead-socket detection off entirely.
+## Falling back keeps the protection on, which is the safer reading of a value that
+## cannot have been meant.
+static func resolve_interval_seconds(value: float, minimum: float, fallback: float, setting: String) -> float:
+	# Zero first, and on its own: it is the documented way to turn the matching timeout
+	# off, so it has to survive a minimum that would otherwise refuse it.
+	if value == 0.0:
+		return 0.0
+	# The upper bound is load-bearing, not defensive: both callers turn the result into
+	# milliseconds as an int, and a conversion that does not fit gives INT64_MIN — so an
+	# interval too large to represent stopped every threshold derived from it, which is
+	# the opposite of what asking for a large one means. NaN fails this test too (every
+	# comparison against it is false), which is the intent, not an accident.
+	if value >= minimum and value <= MAX_INTERVAL_SECONDS:
+		return value
+	push_error(
+		(
+			"SpacetimeDBConnection: %s = %f is not a usable interval (outside %.1f to %.1f "
+			+ "seconds, or NaN) and would leave the matching timeout mis-set; using %.1f "
+			+ "instead. Set 0.0 to disable it deliberately."
+		)
+		% [setting, value, minimum, MAX_INTERVAL_SECONDS, fallback]
+	)
+	return fallback
 
 
 ## Monitor name suffix to the getter [Performance] samples for it. Built per call

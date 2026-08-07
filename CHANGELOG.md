@@ -33,6 +33,39 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A socket limit the engine cannot work with is now refused instead of passed on.**
+  `SpacetimeDBConnectionOptions`' drain knobs were resolved and clamped; its socket knobs
+  went straight to `WebSocketPeer`, which answers a degenerate value by breaking quietly.
+  Measured on 4.8.dev through the real client: `inbound_buffer_size = 0` opens the socket
+  — `is_connected_db()` reads true — and then drops every inbound message with no packet,
+  no close and no error, so the handshake never completes and nothing says why;
+  `inbound_buffer_size = -1` trips `Condition "p_size < 0"` inside `CowData::resize` on
+  the first poll and hangs the process; and because the setter takes a C++ 32-bit int
+  while a GDScript int is 64-bit, `1 << 31` truncates back into the first failure and
+  `1 << 32` into the second, so "give it plenty" was the dangerous input. A negative
+  `heartbeat_interval_seconds` was refused by the engine (leaving the peer at 0.0, i.e.
+  keepalive off) while the SDK's stall threshold, derived from the same number, went
+  negative and stopped firing — asking for a *shorter* interval turned off both
+  dead-socket detectors, and an infinite one did the same through int64 overflow.
+  A sub-second `heartbeat_interval_seconds` was the same failure from the other end:
+  `0.001` gives a 1 ms stall threshold, which an ordinary ~16 ms frame gap clears on every
+  poll, so a real network drop was diagnosed as a local freeze and answered with a
+  no-backoff reconnect — every time.
+  Both buffers are now floored at `SpacetimeDBConnection.MIN_BUFFER_SIZE` (falling back
+  to the default) and clamped at `MAX_BUFFER_SIZE` (the server's own 32 MiB message limit
+  as of 2.7.1). `heartbeat_interval_seconds` is accepted at `0.0` (still "disabled", as
+  documented) or between `MIN_HEARTBEAT_SECONDS` and `MAX_INTERVAL_SECONDS`, and
+  `connect_timeout_seconds` at anything non-negative up to the same ceiling — that upper
+  bound because both are converted to milliseconds as an `int`, and any value from about
+  9.3e15 seconds up converts to INT64_MIN, so an interval too large to represent switched
+  off the very timeout it was meant to stretch. Each refusal is reported once per
+  `connect_db`, the resolved values are what a reconnect's fresh peer restores, and the
+  oversized-message diagnostics now name the size the socket is actually running with
+  rather than the refused option.
+  `tests/test_socket_limits.gd` (44 assertions), `tests/_probe_socket_limits.gd`.
+  Note for anyone carrying a negative `connect_timeout_seconds`: that used to disable the
+  handshake budget, and now gets the 15 s default.
+
 - **Two modules in one project no longer overwrite each other's saved identity.**
   `token_save_path` is a per-client `@export` with one hardcoded default and the file
   held a single bare token, so every generated client in a process — the shape codegen's
