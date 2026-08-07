@@ -709,6 +709,33 @@ class SpacetimeDBConnectionOptions:
 
 Whether the connection's auth token is written to disk so the next connect can reload it (resuming the same identity). Typically paired with `one_time_token = false`.
 
+The file lives at the client's `token_save_path` (default `user://spacetimedb_token.dat`)
+and holds **one token per module** — a JSON object keyed by the client's `module_name`. A
+project that generates bindings for several modules runs one client each, and every one of
+them defaults to that same path, so an unkeyed file let them overwrite each other: two
+modules issued two identities on the first run and both came back as whichever client saved
+last on the next, silently connecting one module as a different identity with every row it
+owned then missing.
+
+A file written before the store existed holds a bare token instead. It is kept under the
+reserved key `"*"` and handed to any module that has no entry of its own, so every module
+keeps the identity it was already using — before the store, all of them read that one token,
+so all of their rows live under it. A module takes an entry of its own only once it acquires
+a *different* token; saving one that already resolves is a no-op, so the file is not
+rewritten on every connect — and an installation whose modules all keep working with the
+pre-store token is never rewritten at all, which is the intended outcome, not a missed
+migration. A file that opens like a JSON object but does not parse is a
+corrupt store, not a bare token: it is reported and ignored, and a fresh token is requested.
+Writes go to a sibling `.tmp` (process-id suffixed, so two copies of the game cannot
+truncate each other's) and are renamed into place — atomic on POSIX; on Windows Godot's
+rename is delete-then-move, which narrows the window rather than closing it.
+
+The store is keyed by module, not by host: a client pointed at a different `base_url` reuses
+the same entry, and a token minted by one server is not valid at another. Give such a client
+its own `token_save_path`, or supply the token yourself.
+
+Give a client its own `token_save_path` to keep it out of the shared file entirely.
+
 #### `token` property
 
 ```gdscript

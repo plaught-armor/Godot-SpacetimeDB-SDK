@@ -60,7 +60,13 @@ signal _response_wait_aborted
 @export var auto_connect: bool = false
 ## If [code]true[/code], automatically requests a new auth token from the REST API when none is saved.
 @export var auto_request_token: bool = true
-## File path where the authentication token is persisted between sessions.
+## File path where authentication tokens are persisted between sessions.
+##
+## The file holds one token per [member module_name], so several generated clients in
+## one project (the multi-module autoload codegen emits) keep their own identity even
+## though they share this default path. Point two clients at the same path deliberately
+## and they still keep separate entries; give one client its own path to isolate it
+## completely.
 @export var token_save_path: String = "user://spacetimedb_token.dat"
 ## If [code]true[/code], the token is not saved to disk (single-use session).
 @export var one_time_token: bool = false
@@ -171,6 +177,15 @@ var _disconnected_emitted: bool = false
 ## the cycle would never complete and `reconnected` would never fire. After this it
 ## is force-completed (epoch-guarded, so a finished/superseded cycle is a no-op).
 const RESUBSCRIBE_TIMEOUT_SECONDS: float = 15.0
+
+## Key the token store keeps a pre-store token under — the single bare token a file
+## written before the store existed holds, which belongs to no module because every
+## module read it. No module can claim it: a generated [member module_name] is a GDScript
+## identifier derived from the database name, and [method token_store_write] refuses this
+## key outright for a client that sets the property by hand. An EMPTY module name is a
+## normal key, not a reserved one — a client built by hand rather than by codegen has no
+## module name, and two of those share one entry the way every client used to.
+const TOKEN_STORE_LEGACY_KEY: String = "*"
 
 var _saved_subscription_queries: Array[PackedStringArray] = []
 ## Query ids whose Unsubscribe has gone out but whose UnsubscribeApplied has not come
@@ -1000,7 +1015,7 @@ func _load_token_or_request() -> void:
 		if FileAccess.file_exists(token_save_path):
 			var file: FileAccess = FileAccess.open(token_save_path, FileAccess.READ)
 			if file:
-				var saved_token: String = file.get_as_text().strip_edges()
+				var saved_token: String = token_store_read(file.get_as_text(), module_name)
 				file.close()
 				if not saved_token.is_empty():
 					print_log("SpacetimeDBClient: Using saved token.")
@@ -1092,12 +1107,203 @@ func _save_token(token_to_save: String) -> void:
 		if err != OK:
 			printerr("SpacetimeDBClient: Failed to create directory for token: ", dir_path)
 			return
-	var file: FileAccess = FileAccess.open(token_save_path, FileAccess.WRITE)
-	if file:
-		file.store_string(token_to_save)
+	# Read-modify-write: every client in the process shares this path by default, so a
+	# plain overwrite would drop whichever module wrote last time. Both clients run on
+	# the main thread and FileAccess is synchronous, so two saves in one frame are
+	# sequential — the second one reads what the first just wrote.
+	var existing: String = ""
+	if FileAccess.file_exists(token_save_path):
+		var read_file: FileAccess = FileAccess.open(token_save_path, FileAccess.READ)
+		if read_file == null:
+			# The file is there and this process cannot read it (permissions, too many
+			# open handles). Carrying on would rebuild the store out of nothing and put
+			# it over entries that are merely unreadable HERE — every other module's
+			# identity, lost to a transient. Refuse the save instead.
+			printerr(
+				"SpacetimeDBClient: the token file exists but could not be read (%s): %s. "
+				% [token_save_path, error_string(FileAccess.get_open_error())]
+				+ "Not saving, so the tokens already in it are left alone."
+			)
+			return
+		existing = read_file.get_as_text()
+		read_file.close()
+	# Nothing to write when this module already resolves to this token — the common case
+	# on a reconnect, where the token came out of this very file. One file now carries
+	# every module's credential, so the cheapest way not to damage it is not to rewrite
+	# it. (Resolves through the pre-store fallback too: a module still living off that
+	# entry keeps doing so rather than minting a duplicate under its own name.)
+	if _token_store_read(existing, module_name, false) == token_to_save:
+		return
+	var contents: String = token_store_write(existing, module_name, token_to_save)
+	if contents == existing:
+		return # nothing to change (a refused write hands the store back as it was)
+	# Written to a sibling and renamed over the real path, so a crash between truncating
+	# the file and filling it cannot leave an empty or half-written one — which, now that
+	# one file carries every module's token, would cost all of them at once instead of
+	# one. The rename is atomic on POSIX; on Windows Godot's DirAccess implements it as
+	# delete-then-move, which leaves a much narrower window than writing in place but not
+	# no window. The sibling name carries the process AND this client's instance id: two
+	# copies of the same game share one user:// directory, and a fixed name would let
+	# them truncate each other's half-written file and then rename the result into place.
+	# The instance id is what covers Web, where OS.get_process_id() is a hardcoded 0 and
+	# two browser tabs are the easiest way to get two instances over one user:// — though
+	# there each tab syncs its own filesystem overlay to IndexedDB wholesale, so a
+	# cross-tab save race is last-writer-wins whatever this file does.
+	var tmp_path: String = (
+		"%s.%d.%d.tmp" % [token_save_path, OS.get_process_id(), get_instance_id()]
+	)
+	var file: FileAccess = FileAccess.open(tmp_path, FileAccess.WRITE)
+	if file != null:
+		# store_string reports a short write (a full disk, a quota). Renaming after one
+		# would install a truncated store over the intact one — the failure this whole
+		# dance exists to prevent — so the sibling is removed and the save refused.
+		var stored: bool = file.store_string(contents)
 		file.close()
-	else:
+		if not stored:
+			DirAccess.remove_absolute(tmp_path)
+			printerr(
+				"SpacetimeDBClient: could not write the token file (%s) — it is unchanged."
+				% token_save_path
+			)
+			return
+		var rename_err: Error = DirAccess.rename_absolute(tmp_path, token_save_path)
+		if rename_err == OK:
+			return
+		# Nothing reads the sibling, and it holds every module's token.
+		DirAccess.remove_absolute(tmp_path)
+		printerr(
+			"SpacetimeDBClient: could not move the token file into place (%s): %s"
+			% [token_save_path, error_string(rename_err)]
+		)
+	# The path above is the one that should run. Writing in place is the fallback for a
+	# filesystem where the sibling or the rename is refused (an exported platform whose
+	# user:// is not a real directory), so persistence keeps working there — at the cost
+	# of the guarantee above, which is why it is not the first choice.
+	var direct: FileAccess = FileAccess.open(token_save_path, FileAccess.WRITE)
+	if direct == null:
 		printerr("SpacetimeDBClient: Failed to save token to path: ", token_save_path)
+		return
+	if not direct.store_string(contents):
+		printerr(
+			"SpacetimeDBClient: the token file (%s) was written short and may be damaged."
+			% token_save_path
+		)
+	direct.close()
+
+
+## This module's token out of the persisted store's [param text], or [code]""[/code].
+##
+## The store is a JSON object keyed by [member module_name], because
+## [member token_save_path] has one default and a project may run a client per module —
+## an unkeyed file let two clients overwrite each other, so the identity a module
+## reconnected with was whichever client saved last (measured: two modules issued two
+## identities on the first run and both came back as one of them on the second, with
+## every row the other identity owned then invisible and nothing reporting it).
+##
+## Three shapes of [param text], deliberately distinguished:
+## [br]- a JSON object: the store. This module's entry, else the pre-store token kept
+## under [constant TOKEN_STORE_LEGACY_KEY], else [code]""[/code].
+## [br]- anything else that is not empty: the pre-store format, one bare token, returned
+## to whichever module asks so an existing installation keeps its identity across the
+## upgrade instead of silently starting a new one.
+## [br]- text that opens like an object but does not parse: a corrupt store. Reported and
+## answered [code]""[/code], so the client asks for a fresh token rather than sending the
+## file's bytes as a bearer credential — which is what folding this case into "pre-store"
+## did.
+static func token_store_read(text: String, p_module_name: String) -> String:
+	return _token_store_read(text, p_module_name, true)
+
+
+## [method token_store_read] with the corrupt-store report under the caller's control.
+## The save path resolves the same text a moment after the load path did, and a corrupt
+## store reported from both is two messages per connect for one file.
+static func _token_store_read(text: String, p_module_name: String, report: bool) -> String:
+	var trimmed: String = text.strip_edges()
+	if trimmed.is_empty():
+		return ""
+	# Only a "{...}" file can be the store. Parsing everything else would push a JSON
+	# error for every pre-store file read — a bare token is not JSON and never was.
+	if not trimmed.begins_with("{"):
+		return trimmed
+	var parsed: Variant = _token_store_parse(trimmed, report)
+	if parsed == null:
+		return ""
+	var stored: Variant = parsed.get(p_module_name)
+	if stored is String:
+		return stored
+	# No entry of this module's own: fall back to a pre-store token carried over by an
+	# earlier save. Every module read that one bare token before the store existed, so
+	# every module's rows live under it — handing it to each module until each has its
+	# own entry is what keeps those rows reachable after the upgrade.
+	var legacy: Variant = parsed.get(TOKEN_STORE_LEGACY_KEY)
+	if legacy is String:
+		return legacy
+	return ""
+
+
+## The persisted store's [param text] with [param p_module_name]'s entry set to
+## [param token]. Entries for other modules are carried over; anything that is not a
+## string value is dropped.
+##
+## Pre-store text (a bare token, owned by no module) is preserved under
+## [constant TOKEN_STORE_LEGACY_KEY] rather than discarded: the module that writes first
+## is not necessarily the only one that was using it, and a module that has not connected
+## yet still needs it to find its rows. A corrupt store cannot be merged into — its
+## entries are already unreadable — so it is replaced, having been reported on the read.
+##
+## A refused write returns [param text] unchanged, so a caller must compare before
+## writing rather than treat the result as always-new.
+static func token_store_write(text: String, p_module_name: String, token: String) -> String:
+	# The reserved key is only unclaimable because module names are identifiers, and
+	# module_name is a plain String nothing validates. A client that set it to the
+	# reserved key would turn its own token into the one handed to every module without
+	# an entry — the leak the key exists to bound — so the write is refused and the store
+	# comes back as it was.
+	if p_module_name == TOKEN_STORE_LEGACY_KEY:
+		push_error(
+			"SpacetimeDBClient: module_name '%s' is reserved by the token store; "
+			% TOKEN_STORE_LEGACY_KEY
+			+ "this client's token was not saved."
+		)
+		return text
+	var store: Dictionary[String, String] = { }
+	var trimmed: String = text.strip_edges()
+	if not trimmed.is_empty():
+		if not trimmed.begins_with("{"):
+			store[TOKEN_STORE_LEGACY_KEY] = trimmed
+		else:
+			# Same guard as token_store_read: no parse attempt on an absent file. Quiet
+			# on a corrupt store — the read that preceded this write already reported it,
+			# and a client that never reads (one_time_token) is overwriting it anyway.
+			var parsed: Variant = _token_store_parse(trimmed, false)
+			if parsed != null:
+				for key: String in parsed:
+					var value: Variant = parsed[key]
+					if value is String:
+						store[key] = value
+	store[p_module_name] = token
+	return JSON.stringify(store)
+
+
+## The token store's [param text] as a [Dictionary], or [code]null[/code] when it opens
+## like a JSON object and does not parse — a torn or truncated file. Uses [JSON]'s
+## instance parse rather than [method JSON.parse_string], which pushes an engine error
+## naming neither the file nor the SDK; [param report] turns that into one message the
+## reader can act on.
+static func _token_store_parse(text: String, report: bool) -> Variant:
+	var json: JSON = JSON.new()
+	var err: Error = json.parse(text)
+	if err == OK and json.data is Dictionary:
+		return json.data
+	if report:
+		push_error(
+			(
+				"SpacetimeDBClient: the saved token store is corrupt (%s) and is being "
+				+ "ignored; a fresh token will be requested."
+			)
+			% json.get_error_message()
+		)
+	return null
 
 
 ## Allocates the deserializer thread + sync primitives when threading is enabled.
