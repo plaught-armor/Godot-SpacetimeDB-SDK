@@ -157,6 +157,13 @@ static func module_class_prefix(module_key: String) -> String:
 
 static func parse_schema(schema: Dictionary, module_name: String, project_enums: Dictionary = { }) -> SpacetimeParsedSchema:
 	_synth_result_types.clear()
+	# Every "reported it and carried on" path in this parser — a table whose row type did
+	# not resolve, an index column out of range, a view with an unsupported return type —
+	# leaves the schema describing only PART of the module, and codegen's pruning pass
+	# DELETES the bindings for whatever went missing. Snapshotting the plugin's error tally
+	# around the parse is what tells the caller that happened, without every site having to
+	# remember to set a flag.
+	var errors_before: int = SpacetimePlugin.error_count
 	var type_map: Dictionary[String, String] = DEFAULT_TYPE_MAP.duplicate() as Dictionary[String, String]
 	type_map.merge(GDNATIVE_PRIMITIVE_TYPES)
 	type_map.merge(GDNATIVE_ARRAYLIKE_TYPES)
@@ -299,6 +306,24 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		if struct_def:
 			var struct_elements: Array[Dictionary] = []
 			for el: Dictionary in struct_def.get("elements", []):
+				# A product element carries an OPTIONAL name (sats `ProductTypeElement.name`
+				# is `Option<RawIdentifier>`), and everything downstream — the @export var,
+				# the BSATN_TYPES key, the primary-key lookup — spells that name into a
+				# String. An unnamed one used to reach `var pk_field_name: String =
+				# ...struct[i].name` as a null and fault there, which unwound the parse to a
+				# null return and took the module's whole binding set with it. Refuse the
+				# schema instead: a column that cannot be named cannot be generated, and the
+				# server forbids one on a table outright ("has unnamed column, which is
+				# forbidden").
+				if not (el.get("name", { }).get("some") is String):
+					SpacetimePlugin.print_err(
+						(
+							"Invalid schema: type '%s' has an element with no name, which "
+							+ "cannot be generated. Element: %s"
+						)
+						% [type_name, el]
+					)
+					return parsed_schema
 				var data: Dictionary = {
 					"name": el.get("name", { }).get("some", null),
 				}
@@ -757,6 +782,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 	parsed_procedures_list.sort_custom(_sort_by_name)
 
 	SpacetimePlugin.print_log("Schema parser finished")
+	parsed_schema.incomplete = SpacetimePlugin.error_count > errors_before
 	parsed_schema.types = parsed_types_list
 	parsed_schema.reducers = parsed_reducers_list
 	parsed_schema.procedures = parsed_procedures_list

@@ -16,6 +16,15 @@ var type_map: Dictionary[String, String] = { }
 var meta_type_map: Dictionary[String, String] = { }
 var typespace: Array = []
 
+## True when the parse reported a problem and carried on — a table whose row type did not
+## resolve, an index column out of range, a view whose return type is unsupported. The
+## schema is then only PART of the module: everything the parser skipped is missing from
+## the lists above, so codegen would emit fewer files than the module has and the pruning
+## pass would delete the bindings for what went missing (see
+## [method SpacetimePlugin.finalize_bindings]). Callers must treat a `true` here as a
+## failed run and leave the existing bindings alone.
+var incomplete: bool = false
+
 
 func is_empty() -> bool:
 	return types.is_empty() and reducers.is_empty()
@@ -31,4 +40,5 @@ func to_dictionary() -> Dictionary:
 		"type_map": type_map,
 		"meta_type_map": meta_type_map,
 		"typespace": typespace,
+		"incomplete": incomplete,
 	}

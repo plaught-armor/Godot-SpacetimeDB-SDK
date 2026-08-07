@@ -35,7 +35,24 @@ static func print_log(text: Variant) -> void:
 		print(text)
 
 
+## Every error this addon reports, counted. Monotonic for the process — callers snapshot
+## it around a step and compare, rather than reading it as a total (see
+## [method SpacetimeSchemaParser.parse_schema], which uses it to tell a whole schema from
+## one it reported problems in and carried on from). Plain [code]var[/code], never
+## [code]const[/code], and never reset: a reset would make one caller's snapshot lie to
+## another's.
+##
+## A snapshot is only as narrow as its window is single-threaded and synchronous: nothing
+## called inside one may [code]await[/code], defer, or emit a signal whose handler reports
+## an error, or that error lands in someone else's window. True of the parse today. The
+## failure direction is the safe one either way — a stray error inside the window makes a
+## caller call a good step incomplete, and the incomplete answer is the one that DOESN'T
+## delete anything.
+static var error_count: int = 0
+
+
 static func print_err(text: Variant) -> void:
+	error_count += 1
 	if instance != null and is_instance_valid(instance.ui) and instance.ui_logging:
 		instance.ui.add_err(text)
 	else:
@@ -299,6 +316,19 @@ static func finalize_bindings(
 		print_err(
 			"Code generation did not finish — see the errors above. The existing bindings "
 			+ "in %s were left untouched; fix the cause and generate again." % dir_path
+		)
+		return false
+
+	# The flag above is only ever set by code that RAN. A GDScript runtime fault unwinds
+	# the function it happens in and hands its caller that function's default, so a run
+	# that died inside generate_bindings' own frame arrives here with every flag exactly as
+	# the last stage left it — indistinguishable from a clean run, and this is the function
+	# that deletes files. Reaching its own tail is the only thing the run can say for
+	# itself that a fault cannot fake.
+	if not codegen.run_reached_return:
+		print_err(
+			"Code generation stopped before it finished (see the errors above). The existing "
+			+ "bindings in %s were left untouched." % dir_path
 		)
 		return false
 
