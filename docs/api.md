@@ -305,6 +305,36 @@ a failed handle if called before the client's database is initialized.
 
 Each table defined by your module has a property, whose name is the table name converted to `snake_case`. The table properties are [`ModuleTable`](#access-the-local-database) instances which have methods for accessing rows and registering `on_insert`, `on_update` and `on_delete` listeners.
 
+#### Rows are the mirror's own instances — do not write to them
+
+Every row returned by `iter()`, `find_by_*()`, `first_by_*()`, the `LocalDatabase`
+accessors, and every listener callback is the object the local mirror stores, not a
+copy. Rows are `Resource`s, so assigning to a field writes into the mirror, and the
+mirror is meant to hold what the server holds.
+
+A local write does not stay local:
+
+* On a table **with no primary key** rows are matched by value, so a mutated row no
+  longer matches the row the server later deletes. The delete is dropped, no
+  `on_delete` runs, and the row stays in `iter()` for the rest of the session while
+  every later delivery of it adds another copy. The SDK reports this once per table
+  as a warning.
+* On a **keyed** table the next delivery of that row corrects the mirror, but reports
+  the correction as an `on_update` the server never made, whose `old_row` carries the
+  value your code wrote.
+
+Copy first when you need a mutable row — for client-side prediction, an editable form,
+a snapshot to diff against later:
+
+```gdscript
+var row: PlayerData = SpacetimeDB.MyModule.db.player_data.first_by_id(id)
+var mine: PlayerData = row.duplicate() # duplicate_deep() if the row carries
+mine.position = predicted_position     # nested records, Options or arrays
+```
+
+`duplicate()` is shallow: a nested column record, `Option` or array is still shared
+with the cached row, so use `duplicate_deep()` when the row has one.
+
 #### `count` method
 
 ```gdscript

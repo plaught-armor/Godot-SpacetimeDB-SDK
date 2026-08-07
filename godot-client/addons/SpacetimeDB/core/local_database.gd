@@ -5,6 +5,25 @@
 ## updates via PK matching, and dispatches per-table listener callbacks and
 ## signals. Game code normally interacts via [_ModuleTable] wrappers rather
 ## than calling [LocalDatabase] directly.
+##
+## [b]The rows this mirror hands out are the instances it stores.[/b] Every accessor
+## ([method get_all_rows], [method get_row_by_pk], [method find_by], [method find_where],
+## the generated table wrappers) and every listener callback returns the cached row
+## object itself, not a copy — rows are [Resource]s, so writing to one writes into the
+## mirror. The mirror is the server's state; a local write makes it disagree with the
+## server and nothing brings it back:
+## [br][br]
+## - A table with no primary key is refcounted by row VALUE (hash + field compare), so a
+##   mutated row no longer matches the row the server later deletes. The delete is
+##   dropped, no [signal row_deleted] fires, and the row stays cached for the session
+##   while every re-delivery caches another copy.
+## - A keyed table recovers on the next delivery of that row, but reports the correction
+##   as a [signal row_updated] the server never made, with an `old_row` carrying the
+##   local value.
+## [br][br]
+## Mutate a copy instead — [method Resource.duplicate] for a flat row,
+## [method Resource.duplicate_deep] when the row carries nested records, [Option]s or
+## arrays, since a shallow copy shares those with the cached row.
 class_name LocalDatabase
 extends Node
 
@@ -49,6 +68,12 @@ var _row_property_cache: Dictionary[StringName, Array] = { } ## Array[StringName
 ## Tables already reported as having no registered row script, so the error in
 ## [method _get_row_properties] fires once each instead of once per update.
 var _unresolved_row_scripts: Dictionary[StringName, bool] = { }
+## Tables already reported as having taken a delete for a row the mirror does not hold,
+## so [method _warn_unmatched_delete] fires once each rather than once per row. The
+## server only deletes rows it delivered, so a miss means the cached row no longer looks
+## like the row it was delivered as — a local write into a handed-out row (see the class
+## note), or a value the mirror's own hash/compare pair disagrees about.
+var _unmatched_delete_warned: Dictionary[StringName, bool] = { }
 ## Per-table refcount of cached PK rows: table -> { pk -> int }. A row shared by N
 ## overlapping query sets has count N; on_insert fires on 0->positive, on_delete on
 ## positive->0. Lets an unsubscribe drop only rows no longer held by another query.
@@ -507,6 +532,27 @@ func _pk_less_remove(counts: Dictionary, h: int, entry: Array) -> void:
 		counts.erase(h)
 
 
+## Reports ONCE per table that a delete arrived for a row value the mirror does not
+## hold. Silent before: the delete was dropped, the row it was meant to remove stayed
+## cached for the rest of the session, and nothing said so — the shape both the NaN
+## column bug and a local write into a handed-out row produce (see the class note).
+## Once per table because the same mutated row is re-delivered by every later
+## subscription, and the second line adds nothing to the first.
+func _warn_unmatched_delete(table_name_lower: StringName) -> void:
+	if _unmatched_delete_warned.has(table_name_lower):
+		return
+	_unmatched_delete_warned[table_name_lower] = true
+	push_warning(
+		(
+			"LocalDatabase: a delete for table '%s' matched no cached row, so the row it "
+			+ "removes stays in the mirror. This table has no primary key, so rows are "
+			+ "matched by value: the usual cause is game code writing to a row the mirror "
+			+ "handed it (rows are the cached instances — duplicate before mutating)."
+		)
+		% table_name_lower
+	)
+
+
 # --- Per-query membership (for prune_query) ---
 ## Records one MORE reference to [param pk] for a query that already holds it, keeping
 ## the newest row. The single-reference case is a bare row (written inline on the hot
@@ -745,6 +791,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				var del_hash: int = _row_hash(deleted_row, props)
 				var del_entry: Array = _pk_less_find(counts, del_hash, deleted_row, props)
 				if del_entry.is_empty() or del_entry[1] <= 0:
+					_warn_unmatched_delete(table_name_lower)
 					continue
 				del_entry[1] -= 1
 				if track_pkless_query:
