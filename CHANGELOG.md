@@ -33,6 +33,38 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A reconnect knob the SDK cannot pace a cycle with is now refused instead of passed on.**
+  `SpacetimeDBConnectionOptions`' socket and drain knobs were resolved and clamped; its
+  reconnect knobs went straight into the backoff. Five separate values computed a `0.0`
+  delay for every attempt — `reconnect_initial_delay <= 0`, `reconnect_max_delay <= 0`,
+  `reconnect_backoff_multiplier <= 0`, a `NAN` in any of the four (it propagates, and
+  `SceneTree.create_timer(NAN)` times out on the NEXT frame), and
+  `reconnect_jitter_fraction > 1.0`, where the random offset can exceed the delay it is
+  subtracted from. A `0.0` delay is one connection attempt per frame, and
+  `max_reconnect_attempts` — documented as "`0` means infinite", and silently infinite for a
+  negative value too — is what would have bounded it. Measured against a closed port: **50
+  attempts in 120 frames, unbounded**, versus 2 for the defaults. Two more shapes went with
+  it: a negative jitter fraction is ADDED to the delay, so the backoff overshot
+  `reconnect_max_delay` (43.9 s against a 30 s cap), and the floor is now applied to the
+  computed backoff rather than only to the knobs it comes from — full jitter (`1.0`) plus a
+  flat multiplier (`1.0`) are each legal on their own and together paced a cycle at a 49.5 ms
+  mean, 17% of attempts under a frame.
+
+  Each delay is now clamped above `SpacetimeDBClient.MAX_RECONNECT_DELAY_SECONDS` and
+  refused below `MIN_RECONNECT_DELAY_SECONDS` (which negative, zero and NaN all are) for the
+  default; the multiplier must escalate; the jitter fraction is clamped into its documented
+  `0.0`–`1.0`; a negative attempt budget falls back rather than reading as infinite. Same
+  split as the socket limits — clamp where the intent is unambiguous, fall back where it is
+  not. **Behaviour changes for a project that set one of these:** `max_reconnect_attempts =
+  -1` now gives up after 10 attempts instead of retrying forever, `reconnect_initial_delay =
+  0.0` waits 1 s instead of retrying instantly (the one path that skips the backoff is a
+  stall-induced drop, which is unchanged), and each refused value names itself in an error.
+  A cap below `reconnect_initial_delay` is honoured as written rather than squared up
+  against it. Note the floor is a frame-resolution one, not a politeness one: a cap at the
+  floor with `max_reconnect_attempts = 0` is still an unbounded cycle, at ten attempts a
+  second. Covered by `tests/test_reconnect_limit_resolution.gd` (70 assertions);
+  `tests/_probe_reconnect_knobs.gd` and `_probe_reconnect_storm.gd` carry the measurements.
+
 - **A socket limit the engine cannot work with is now refused instead of passed on.**
   `SpacetimeDBConnectionOptions`' drain knobs were resolved and clamped; its socket knobs
   went straight to `WebSocketPeer`, which answers a degenerate value by breaking quietly.
