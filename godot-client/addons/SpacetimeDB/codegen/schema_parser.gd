@@ -408,11 +408,30 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 	var parsed_tables_list: Array[Dictionary] = []
 	var scheduled_reducers: Array[String] = []
 	for table_info: Dictionary in schema_tables:
-		var table_name_str: String = table_info.get("name", null)
-		var ref_idx_raw = table_info.get("product_type_ref", null)
-		if ref_idx_raw == null or table_name_str == null:
+		var table_name_str: String = table_info.get("name", "")
+		var ref_idx_raw: Variant = table_info.get("product_type_ref", -1)
+		# Both of these used to `continue` without a word. Every OTHER skip in this loop
+		# reports first, and the report is what marks the parse incomplete — which is what
+		# stops codegen writing a module short of a table and the pruning pass deleting
+		# that table's previous bindings. Measured on the vtypes fixture: one
+		# `product_type_ref: null` generated 17 files instead of 19 with no error at all,
+		# so the table wrapper and its unique-index accessor (plus their `.uid` sidecars)
+		# were deleted by a run that reported success.
+		if table_name_str.is_empty():
+			SpacetimePlugin.print_err(
+				(
+					"Table entry has no name (product_type_ref %s). Nothing can be generated "
+					+ "for it."
+				)
+				% str(ref_idx_raw)
+			)
 			continue
-		var ref_idx: int = int(ref_idx_raw)
+		# A ref that is not a number cannot index anything. -1 is what an ABSENT key
+		# already becomes, and it falls through to the invalid-type report below, so a
+		# null / string / object ref takes that same path rather than a silent skip.
+		var ref_idx: int = -1
+		if ref_idx_raw is int or ref_idx_raw is float:
+			ref_idx = int(ref_idx_raw)
 
 		var original_type_name_for_table: String = "UNKNOWN_TYPE_FOR_TABLE"
 		# Lower-bound guard: a negative ref would index from the tail via Godot's

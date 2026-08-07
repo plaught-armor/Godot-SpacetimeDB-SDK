@@ -66,6 +66,31 @@ func _initialize() -> void:
 	# The shape that used to FAULT rather than report: an unnamed product element reached
 	# `var pk_field_name: String = ...struct[i].name` as a null.
 	f += _degraded("column with no name", _unnamed_column(fixture), fixture)
+	# The shape that used to be SILENT: the table loop's own first guard skipped an entry
+	# it could not key on without a word, so the parse looked clean and the run reported
+	# success. Measured before the fix: `product_type_ref: null` generated 17 files
+	# instead of 19 with zero errors, and the pruning pass deleted the table wrapper and
+	# its unique-index accessor. An ABSENT key already reported (it defaults to -1, which
+	# lands on the invalid-type report), so only a present-but-unusable value got through.
+	f += _degraded(
+		"row type ref is null",
+		_mutate_table(fixture, "product_type_ref", null),
+		fixture,
+	)
+	f += _degraded(
+		"row type ref is a string",
+		_mutate_table(fixture, "product_type_ref", "3"),
+		fixture,
+	)
+	f += _degraded(
+		"row type ref is an object",
+		_mutate_table(fixture, "product_type_ref", { }),
+		fixture,
+	)
+	# The other half of that guard. A table with no name can be generated for even less
+	# than one with no row type — every file name, class name and member name comes from
+	# it — and it was the same silent skip.
+	f += _degraded("table with no name", _mutate_table(fixture, "source_name", ""), fixture)
 
 	f += _test_second_module_not_half_written(fixture)
 
