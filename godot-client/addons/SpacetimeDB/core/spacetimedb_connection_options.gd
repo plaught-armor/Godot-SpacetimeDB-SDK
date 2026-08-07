@@ -152,15 +152,48 @@ var auto_tune_target_fps: int = 0
 ## If [code]true[/code], the client automatically reconnects after unintentional disconnects.
 var auto_reconnect: bool = false
 ## Maximum reconnect attempts before giving up. [code]0[/code] means infinite.
-var max_reconnect_attempts: int = 10
+##
+## A NEGATIVE value reads as infinite too — the cycle gives up only on a positive budget —
+## but nothing documents that, so it is refused and the default used: a sign slip is not
+## consent to an unbounded retry cycle.
+var max_reconnect_attempts: int = SpacetimeDBClient.DEFAULT_MAX_RECONNECT_ATTEMPTS
 ## Initial delay in seconds before the first reconnect attempt.
-var reconnect_initial_delay: float = 1.0
-## Maximum delay cap in seconds after exponential backoff.
-var reconnect_max_delay: float = 30.0
+##
+## Bounded, with the rest of the reconnect pacing, when the client takes these options:
+## clamped down to [constant SpacetimeDBClient.MAX_RECONNECT_DELAY_SECONDS], and refused for
+## the default below [constant SpacetimeDBClient.MIN_RECONNECT_DELAY_SECONDS] — which
+## negative, zero and NaN all are. That floor is not cosmetic: the delay reaches a
+## [SceneTreeTimer], so a value under a frame is no wait at all and the cycle opens a
+## connection every frame, which with [member max_reconnect_attempts] = [code]0[/code] never
+## stops. Retrying instantly is not what this offers; the one path that skips the backoff is
+## a stall-induced drop.
+var reconnect_initial_delay: float = SpacetimeDBClient.DEFAULT_RECONNECT_INITIAL_DELAY
+## Maximum delay cap in seconds after exponential backoff. Bounded exactly like
+## [member reconnect_initial_delay] — it is the ceiling every attempt saturates at, so a
+## degenerate one pins the whole cycle rather than just its first attempt.
+##
+## A cap BELOW [member reconnect_initial_delay] is honoured as written, not squared up
+## against it: the two are different quantities, and "start here, never wait longer than
+## that" is a coherent thing to ask for. The floor on the computed backoff is what keeps
+## even a very low cap a real wait — but note that a cap at the floor with
+## [member max_reconnect_attempts] = [code]0[/code] is an unbounded cycle at the SDK's
+## fastest sustained retry rate. Both values are legal; together they mean that.
+var reconnect_max_delay: float = SpacetimeDBClient.DEFAULT_RECONNECT_MAX_DELAY
 ## Multiplier applied to the delay after each failed attempt.
-var reconnect_backoff_multiplier: float = 2.0
+##
+## Must be at least [code]1.0[/code]: below it the delay shrinks with every failure, which
+## is not a backoff and converges on the per-frame retry described above ([code]0.0[/code]
+## pins every attempt after the first at zero, a negative one alternates). Anything below
+## is refused and the default used; the accepted range tops out at
+## [constant SpacetimeDBClient.MAX_BACKOFF_MULTIPLIER].
+var reconnect_backoff_multiplier: float = SpacetimeDBClient.DEFAULT_BACKOFF_MULTIPLIER
 ## Fraction of the computed delay used as random jitter ([code]0.0[/code]–[code]1.0[/code]).
-var reconnect_jitter_fraction: float = 0.5
+##
+## Clamped into that range rather than refused, because both ends read unambiguously and
+## both are wrong invisibly: above [code]1.0[/code] the offset can exceed the delay it is
+## subtracted from, so attempts land on zero at random; below [code]0.0[/code] it is added
+## instead, so the backoff overshoots [member reconnect_max_delay].
+var reconnect_jitter_fraction: float = SpacetimeDBClient.DEFAULT_JITTER_FRACTION
 ## If [code]true[/code], regaining application focus fires a reconnect attempt that is
 ## still waiting out its backoff delay, instead of letting the delay run down.
 ##

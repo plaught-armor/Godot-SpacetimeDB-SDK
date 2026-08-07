@@ -88,7 +88,16 @@ var module_name: String = ""
 ## Background thread running the BSATN deserializer (only when [member use_threading] is [code]true[/code]).
 var deserializer_worker: Thread
 ## Connection options controlling threading, compression, and reconnection behaviour.
-var connection_options: SpacetimeDBConnectionOptions
+##
+## Assigning resolves the reconnect pacing (see [method _resolve_reconnect_pacing]), so a
+## knob the SDK cannot use is reported at the assignment that set it as well as at the drop
+## that would have run on it. The value a cycle actually runs on is re-resolved when the
+## cycle starts, so mutating a field on an options object already assigned here is honoured
+## — what the setter buys is the early diagnostic, not the value.
+var connection_options: SpacetimeDBConnectionOptions:
+	set(value):
+		connection_options = value
+		_resolve_reconnect_pacing(value)
 ## Subscriptions waiting for a [SubscribeAppliedMessage], keyed by query set id.
 var pending_subscriptions: Dictionary[int, SpacetimeDBSubscription]
 var _packet_queue: Array[PackedByteArray] = []
@@ -163,6 +172,62 @@ enum _ReconnectState {
 }
 var _reconnect_state: _ReconnectState = _ReconnectState.IDLE
 var _reconnect_attempt: int = 0
+
+## Shortest reconnect delay the SDK will pace a cycle at — enforced on the computed backoff
+## itself, not only on the knobs it is computed from.
+##
+## The backoff runs on a [SceneTreeTimer], which cannot resolve finer than a frame, so a
+## delay under this is not a shorter wait — it is no wait at all, and the cycle degenerates
+## into one connection attempt per frame for as long as the budget allows (measured against
+## a closed port: 50 attempts in 120 frames, and with the documented
+## [code]max_reconnect_attempts = 0[/code] that never ends). A delay below it is refused for
+## the default rather than raised to it — see [method _resolve_reconnect_delay].
+##
+## It is a frame-resolution floor, not a politeness one, so it is also the SDK's fastest
+## sustained retry: a caller who sets [member SpacetimeDBConnectionOptions.reconnect_max_delay]
+## to this value and [member SpacetimeDBConnectionOptions.max_reconnect_attempts] to
+## [code]0[/code] gets an unbounded cycle at 1/this — ten attempts a second — because both
+## values are legal and mean what they say. Raise this constant, not the resolvers, if that
+## ceiling ever needs to be lower.
+const MIN_RECONNECT_DELAY_SECONDS: float = 0.1
+## Longest reconnect delay the SDK will wait out, and the ceiling both delay knobs clamp to.
+##
+## Bounding the top is what keeps the computed backoff finite: an infinite or NaN delay
+## reaches [method SceneTree.create_timer], which answers a non-finite wait by either never
+## timing out (INF — the cycle then has no next attempt, no [signal reconnect_failed] and no
+## [signal disconnected], i.e. a wedge with no signal at all) or by firing on the next frame
+## (NaN — the storm above).
+const MAX_RECONNECT_DELAY_SECONDS: float = 3600.0
+## Largest per-attempt multiplier accepted. Anything above this saturates
+## [member SpacetimeDBConnectionOptions.reconnect_max_delay] on the second attempt anyway,
+## so the ceiling costs no reachable behaviour and keeps [method @GlobalScope.pow] finite.
+const MAX_BACKOFF_MULTIPLIER: float = 1000.0
+## Delay before the first reconnect attempt, and the fallback for one that cannot have
+## been meant. See [member SpacetimeDBConnectionOptions.reconnect_initial_delay].
+const DEFAULT_RECONNECT_INITIAL_DELAY: float = 1.0
+## Ceiling the escalating backoff saturates at. See
+## [member SpacetimeDBConnectionOptions.reconnect_max_delay].
+const DEFAULT_RECONNECT_MAX_DELAY: float = 30.0
+## Per-attempt multiplier. See
+## [member SpacetimeDBConnectionOptions.reconnect_backoff_multiplier].
+const DEFAULT_BACKOFF_MULTIPLIER: float = 2.0
+## Attempts before the cycle gives up. See
+## [member SpacetimeDBConnectionOptions.max_reconnect_attempts].
+const DEFAULT_MAX_RECONNECT_ATTEMPTS: int = 10
+## Share of the delay used as random jitter. See
+## [member SpacetimeDBConnectionOptions.reconnect_jitter_fraction]. Unlike its siblings this
+## is not a fallback — the resolver clamps rather than refusing — but the member default has
+## to agree with the option default, so it is named here for both to use.
+const DEFAULT_JITTER_FRACTION: float = 0.5
+# Reconnect pacing resolved from SpacetimeDBConnectionOptions (see
+# _resolve_reconnect_pacing), so a degenerate knob is refused loudly rather than silently
+# shaping every attempt. Defaults mirror the option defaults for a client that was never
+# given any.
+var _reconnect_initial_delay: float = DEFAULT_RECONNECT_INITIAL_DELAY
+var _reconnect_max_delay: float = DEFAULT_RECONNECT_MAX_DELAY
+var _reconnect_backoff_multiplier: float = DEFAULT_BACKOFF_MULTIPLIER
+var _reconnect_jitter_fraction: float = DEFAULT_JITTER_FRACTION
+var _max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS
 ## Set when the next reconnect should skip the backoff delay (stall-induced close —
 ## the socket dropped from a local freeze, not a network fault). Consumed on the
 ## first scheduled attempt.
@@ -447,6 +512,7 @@ func connect_db(
 		return
 	if not options:
 		options = SpacetimeDBConnectionOptions.new()
+	# Resolves the reconnect pacing on the way in — see the setter.
 	connection_options = options
 	# This call may be the first to supply options, or may replace the ones _ready saw.
 	_apply_process_mode()
@@ -466,10 +532,7 @@ func connect_db(
 		var opt_token_reason: String = SpacetimeDBConnection.token_reject_reason(options.token)
 		if not opt_token_reason.is_empty():
 			push_error("SpacetimeDBClient: refusing options.token — %s." % opt_token_reason)
-			_report_connection_error(
-				ERR_UNAUTHORIZED,
-				"Auth token rejected: %s" % opt_token_reason,
-			)
+			_report_connection_error(ERR_UNAUTHORIZED, "Auth token rejected: %s" % opt_token_reason)
 			return
 		self._token = options.token
 	self.debug_mode = options.debug_mode
@@ -1442,12 +1505,15 @@ func _process_results_asynchronously() -> void:
 	# callback, say) drops the dead session's traffic — including this very batch —
 	# out from under the loop. Without this check the next iteration indexes an
 	# emptied array and the frame dies on an out-of-bounds read.
-	while _drain_cursor < _drain_batch.size() and not _should_stop_drain(
-		processed,
-		remaining,
-		_max_msgs_per_frame,
-		Time.get_ticks_usec() - start_us,
-		_frame_budget_us,
+	while (
+		_drain_cursor < _drain_batch.size()
+		and not _should_stop_drain(
+			processed,
+			remaining,
+			_max_msgs_per_frame,
+			Time.get_ticks_usec() - start_us,
+			_frame_budget_us,
+		)
 	):
 		_handle_parsed_message(_drain_batch[_drain_cursor])
 		_drain_cursor += 1
@@ -1510,12 +1576,7 @@ func _auto_tune_budget(pending: int) -> void:
 ## physics tick regardless. A game that caps that low to save power should lower
 ## [member SpacetimeDBConnectionOptions.frame_budget_max_us] or turn
 ## [member SpacetimeDBConnectionOptions.auto_tune_frame_budget] off.
-static func resolve_target_fps(
-	configured: int,
-	max_fps: int,
-	physics_tps: int,
-	measured_fps: float,
-) -> int:
+static func resolve_target_fps(configured: int, max_fps: int, physics_tps: int, measured_fps: float) -> int:
 	if configured > 0:
 		return configured
 	# The cap counts as the target only once the game is actually reaching it. A cap is
@@ -1573,14 +1634,171 @@ static func _resolve_drain_config(
 	var r_max: int = maxi(r_min, max_us)
 	var r_budget: int = clampi(maxi(0, budget_us), r_min, r_max)
 	return PackedInt32Array(
-		[
-			clampi(max_msgs, 1, 8192),
-			r_min,
-			r_max,
-			r_budget,
-			maxi(0, target_fps),
-		],
+		[clampi(max_msgs, 1, 8192), r_min, r_max, r_budget, maxi(0, target_fps)],
 	)
+
+
+## Resolves [param options]' reconnect pacing into the members the cycle is driven from.
+##
+## Two callers, two roles. [method _start_reconnection] is the AUTHORITATIVE one — it
+## resolves at the top of every cycle, so the values the cycle runs on are read from the
+## options object as it stands at the drop, and a field mutated after the object was handed
+## over is honoured. The [member connection_options] setter is the DIAGNOSTIC one — it
+## resolves on assignment so a knob the SDK cannot use is reported at the call that set it
+## rather than only at a drop hours later.
+##
+## Both report. A configuration the SDK refuses is therefore named once when it is set and
+## once per drop for as long as it stays that way, which is the intended trade: a wrong knob
+## that keeps costing the cycle its pacing keeps saying so. Not once per ATTEMPT — the
+## direct [method _schedule_next_reconnect_attempt] callers inside a live cycle do not
+## re-resolve.
+func _resolve_reconnect_pacing(options: SpacetimeDBConnectionOptions) -> void:
+	if options == null:
+		return
+	_reconnect_initial_delay = _resolve_reconnect_delay(
+		options.reconnect_initial_delay,
+		DEFAULT_RECONNECT_INITIAL_DELAY,
+		"reconnect_initial_delay",
+	)
+	# A cap BELOW the starting delay is left alone, unlike the min/max pair
+	# [method _resolve_drain_config] squares up. Those two bound one quantity, so an
+	# inverted pair there is an empty range; these two are different quantities — where the
+	# backoff starts, and how long it may ever get — and a caller who writes a cap under the
+	# starting delay has said something coherent ("never wait more than this"). Honouring it
+	# costs nothing, because the floor below is what keeps even a tiny cap a real wait.
+	_reconnect_max_delay = _resolve_reconnect_delay(
+		options.reconnect_max_delay,
+		DEFAULT_RECONNECT_MAX_DELAY,
+		"reconnect_max_delay",
+	)
+	_reconnect_backoff_multiplier = _resolve_backoff_multiplier(
+		options.reconnect_backoff_multiplier
+	)
+	_reconnect_jitter_fraction = _resolve_jitter_fraction(options.reconnect_jitter_fraction)
+	_max_reconnect_attempts = _resolve_max_reconnect_attempts(options.max_reconnect_attempts)
+
+
+## [param value] if it is a delay the reconnect cycle can be paced by, else a usable one.
+##
+## Clamped at the top, refused at the bottom, for the reason the socket limits split the
+## same way ([method SpacetimeDBConnection.resolve_buffer_size]): above
+## [constant MAX_RECONNECT_DELAY_SECONDS] the intent is unambiguous — a longer wait, and the
+## ceiling is also what keeps the computed backoff finite — while below
+## [constant MIN_RECONNECT_DELAY_SECONDS] it is not. A sub-frame delay is not a shorter
+## wait: the backoff runs on a [SceneTreeTimer], so anything under a frame is no wait at all,
+## and the cycle opens a connection per frame until the attempt budget runs out (with the
+## documented [code]max_reconnect_attempts = 0[/code], never). Instant retry is not what this
+## knob offers — that is the stall path, which sets [member _reconnect_immediate] once — so
+## an unusable value falls back to the default rather than being read as a request for it.
+##
+## Negative and NaN land in the same branch, both deliberately: a negative delay computes a
+## zero backoff, and NaN fails every comparison, which is exactly the value that makes
+## [method SceneTree.create_timer] time out on the next frame.
+static func _resolve_reconnect_delay(value: float, fallback: float, setting: String) -> float:
+	if value > MAX_RECONNECT_DELAY_SECONDS:
+		push_error(
+			(
+				"SpacetimeDBClient: %s = %s is above the %.0f-second maximum; using %.0f "
+				+ "instead."
+			)
+			% [setting, value, MAX_RECONNECT_DELAY_SECONDS, MAX_RECONNECT_DELAY_SECONDS]
+		)
+		return MAX_RECONNECT_DELAY_SECONDS
+	if value >= MIN_RECONNECT_DELAY_SECONDS:
+		return value
+	push_error(
+		(
+			"SpacetimeDBClient: %s = %s is not a usable reconnect delay — under the %.2f-second "
+			+ "minimum the cycle retries every frame, and a negative or NaN one computes a zero "
+			+ "backoff; using the default %s instead."
+		)
+		% [setting, value, MIN_RECONNECT_DELAY_SECONDS, fallback]
+	)
+	return fallback
+
+
+## [param value] if it is a multiplier that escalates, else
+## [constant DEFAULT_BACKOFF_MULTIPLIER].
+##
+## Below 1.0 the delay SHRINKS with each failed attempt, which is not a backoff: 0.0 pins
+## every attempt after the first at zero, a negative one alternates between zero and a
+## growing delay (the sign flips with the exponent), and a fraction converges on zero after
+## a handful of attempts. All three end at the same per-frame storm the floor in
+## [method _resolve_reconnect_delay] exists to prevent, so a multiplier that cannot
+## escalate is refused rather than clamped. NaN fails both comparisons and lands here too.
+static func _resolve_backoff_multiplier(value: float) -> float:
+	if value > MAX_BACKOFF_MULTIPLIER:
+		push_error(
+			(
+				"SpacetimeDBClient: reconnect_backoff_multiplier = %s is above the maximum "
+				+ "%.0f; using %.0f instead."
+			)
+			% [value, MAX_BACKOFF_MULTIPLIER, MAX_BACKOFF_MULTIPLIER]
+		)
+		return MAX_BACKOFF_MULTIPLIER
+	if value >= 1.0:
+		return value
+	push_error(
+		(
+			"SpacetimeDBClient: reconnect_backoff_multiplier = %s does not escalate (below "
+			+ "1.0 the delay shrinks with every failed attempt, reaching a per-frame retry); "
+			+ "using the default %s instead."
+		)
+		% [value, DEFAULT_BACKOFF_MULTIPLIER]
+	)
+	return DEFAULT_BACKOFF_MULTIPLIER
+
+
+## [param value] clamped into the documented 0.0–1.0 jitter range.
+##
+## Both ends are clamped rather than refused because both have an unambiguous reading, and
+## both are wrong in a way the caller cannot see: above 1.0 the random offset can exceed the
+## delay it is subtracted from, so attempts land on zero at random; below 0.0 it is ADDED,
+## so the backoff runs past [member SpacetimeDBConnectionOptions.reconnect_max_delay]
+## (measured 32.4 s against a 30 s cap). NaN takes the same branch as a negative one and
+## disables jitter, which is the only reading that leaves a usable delay — an unclamped NaN
+## makes every backoff NaN, and a NaN wait fires on the next frame.
+static func _resolve_jitter_fraction(value: float) -> float:
+	if value > 1.0:
+		push_error(
+			(
+				"SpacetimeDBClient: reconnect_jitter_fraction = %s is above 1.0, which lets "
+				+ "the jitter cancel the whole delay; using 1.0 instead."
+			)
+			% value
+		)
+		return 1.0
+	if value >= 0.0:
+		return value
+	push_error(
+		(
+			"SpacetimeDBClient: reconnect_jitter_fraction = %s is not in 0.0–1.0 (a negative "
+			+ "fraction ADDS to the delay, past reconnect_max_delay); using 0.0 instead."
+		)
+		% value
+	)
+	return 0.0
+
+
+## [param value] if it is a documented attempt budget, else
+## [constant DEFAULT_MAX_RECONNECT_ATTEMPTS].
+##
+## Zero is legal and documented — it means retry forever — so only a negative value is
+## refused. It reads as infinite too ([method _schedule_next_reconnect_attempt] gates
+## exhaustion on [code]max_attempts > 0[/code]), but nothing says so, and a sign slip
+## asking for an unbounded cycle is the one input where the bounded default is the safer
+## reading of what was meant.
+static func _resolve_max_reconnect_attempts(value: int) -> int:
+	if value >= 0:
+		return value
+	push_error(
+		(
+			"SpacetimeDBClient: max_reconnect_attempts = %d is negative, which would retry "
+			+ "forever (0 is the documented way to ask for that); using the default %d instead."
+		)
+		% [value, DEFAULT_MAX_RECONNECT_ATTEMPTS]
+	)
+	return DEFAULT_MAX_RECONNECT_ATTEMPTS
 
 
 ## Pure stop rule for the per-frame drain loop, so the bounded-loop + at-least-one
@@ -1983,6 +2201,15 @@ func _start_reconnection(immediate: bool = false) -> void:
 	if _reconnect_state == _ReconnectState.RECONNECTING:
 		return
 
+	# Re-resolved per cycle, not only when the options object was assigned. Two of the
+	# knobs on that object are read LIVE every time the cycle consults them
+	# (auto_reconnect just above, reconnect_on_app_resume in _on_app_resumed), so a
+	# snapshot taken at assignment made "assign the options, then set a field on them" —
+	# an idiom this repo's own tests use — silently run the cycle on the defaults while
+	# honouring the fields still read live. Once per drop, not once per attempt, so a
+	# refused knob is reported at a bounded rate.
+	_resolve_reconnect_pacing(connection_options)
+
 	_reconnect_state = _ReconnectState.RECONNECTING
 	_reconnect_attempt = 0
 	_reconnect_immediate = immediate
@@ -2014,7 +2241,7 @@ func _start_reconnection(immediate: bool = false) -> void:
 
 
 func _schedule_next_reconnect_attempt() -> void:
-	var max_attempts: int = connection_options.max_reconnect_attempts
+	var max_attempts: int = _max_reconnect_attempts
 
 	if max_attempts > 0 and _reconnect_attempt >= max_attempts:
 		print_log("SpacetimeDBClient: All %d reconnect attempts exhausted." % max_attempts)
@@ -2093,15 +2320,23 @@ func _on_app_resumed() -> void:
 
 
 func _calculate_backoff(attempt: int) -> float:
-	var base_delay: float = connection_options.reconnect_initial_delay * pow(
-		connection_options.reconnect_backoff_multiplier,
+	var base_delay: float = _reconnect_initial_delay * pow(
+		_reconnect_backoff_multiplier,
 		attempt - 1,
 	)
-	base_delay = minf(base_delay, connection_options.reconnect_max_delay)
+	base_delay = minf(base_delay, _reconnect_max_delay)
 
-	var jitter_range: float = base_delay * connection_options.reconnect_jitter_fraction
+	var jitter_range: float = base_delay * _reconnect_jitter_fraction
 	var jitter_offset: float = randf() * jitter_range
-	return maxf(0.0, base_delay - jitter_offset)
+	# The floor belongs on the PRODUCT, not only on the knobs it is computed from. Every
+	# input can pass its own resolver and the result still land under a frame: the
+	# documented full jitter (1.0) makes the offset uniform over the whole delay, and a
+	# flat multiplier (1.0) means the delay never climbs away from wherever it started —
+	# measured with initial = the minimum, multiplier 1.0, jitter 1.0, a mean of 49.5 ms
+	# and 17% of attempts under a frame, i.e. the same storm at a third of the rate. The
+	# instant-retry path does not come through here: the stall case sets its backoff to
+	# zero directly (see _reconnect_immediate).
+	return maxf(MIN_RECONNECT_DELAY_SECONDS, base_delay - jitter_offset)
 
 
 func _attempt_reconnect() -> void:
@@ -2335,7 +2570,10 @@ func _resubscribe_saved_queries() -> void:
 		)
 		watchdog \
 				.timeout \
-				.connect(_on_resubscribe_watchdog.bind(epoch, applied_count, total_sets), CONNECT_ONE_SHOT)
+				.connect(
+			_on_resubscribe_watchdog.bind(epoch, applied_count, total_sets),
+			CONNECT_ONE_SHOT,
+		)
 
 
 # Watchdog timeout for a resubscribe cycle. Bound with the cycle's captured epoch,
