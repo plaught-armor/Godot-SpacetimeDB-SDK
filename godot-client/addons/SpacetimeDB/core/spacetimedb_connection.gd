@@ -25,6 +25,18 @@ signal total_messages(sent: int, received: int)
 ## Emitted after every send/receive with cumulative byte totals.
 signal total_bytes(sent: int, received: int)
 
+## Why a send was refused. Reported once per cause rather than once per call — see
+## [member _send_refusal].
+enum SendRefusal {
+	## Nothing refused since the last peer, or since the queue last drained.
+	NONE,
+	## The message is larger than this build can put in one frame. Permanent for that
+	## message: it stays refused however many times it is retried.
+	OVERSIZED,
+	## The message fits, but the queue ahead of it is full. Transient.
+	BACKPRESSURE,
+}
+
 ## Payload compression modes for the WebSocket connection.
 enum CompressionPreference {
 	## No compression.
@@ -123,6 +135,17 @@ const MIN_BUFFER_SIZE: int = 4096
 ## SpacetimeDBConnectionOptions.compression] before reaching for the ceiling.
 const MAX_BUFFER_SIZE: int = 1024 * 1024 * 32
 
+## The feature tag for a Web export. Named here rather than spelled at the one use site
+## because a typo is silent: [method OS.has_feature] matches exactly, so
+## [code]"Web"[/code] is permanently false and would put every Web build back on the
+## desktop send boundary with nothing to notice it.
+const WEB_FEATURE_TAG: String = "web"
+
+## Largest close reason, in UTF-8 bytes, that a WebSocket close frame can carry: its
+## payload is capped at 125 and the status code takes two. See [method fit_close_reason]
+## for what the engine does with a longer one.
+const MAX_CLOSE_REASON_BYTES: int = 123
+
 ## Default keepalive interval, and what a negative one falls back to.
 const DEFAULT_HEARTBEAT_SECONDS: float = 15.0
 
@@ -173,6 +196,35 @@ var _options: SpacetimeDBConnectionOptions
 var _inbound_buffer_size: int = DEFAULT_BUFFER_SIZE
 var _outbound_buffer_size: int = DEFAULT_BUFFER_SIZE
 var _heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS
+## Why the last refused send was refused, or [constant SendRefusal.NONE] before the first
+## one. Held for two reasons: the refusals repeat every frame a game keeps sending into
+## the same condition and each report is a paragraph, so an unchanged CAUSE is reported
+## once rather than 60 times a second; and [code]push_error[/code] is not observable
+## in-process, so this is what a test reads to check that the right cause was reported.
+##
+## Keyed on the cause and not on the rendered text on purpose: the backpressure text
+## embeds the live queued-byte count, so a game streaming into a stalled peer changes it
+## every frame and gets no throttling at all (measured: 29 reports in 40 frames).
+##
+## Cleared when a new connection is started and when the peer is replaced — the same
+## condition in a later session is reported again — and, for the transient one, by a send
+## that gets through.
+##
+## The full key is (cause, [member _send_refusal_limit], [member _send_refusal_size]); what
+## each part is for is at the branch that reads it in [method send_bytes].
+var _send_refusal: SendRefusal = SendRefusal.NONE
+## The send boundary in force when [member _send_refusal] was last set. A refusal reported
+## against a boundary that has since moved (a mid-session [method apply_options]) carries
+## numbers that are no longer true, so the next refusal is reported again rather than
+## suppressed against the stale one.
+var _send_refusal_limit: int = 0
+## The message size the last OVERSIZED refusal was reported for, or 0 for a refusal that
+## is not size-specific. Two call sites sending two different oversized messages are two
+## problems and get two reports; one call site retrying the same message gets one.
+var _send_refusal_size: int = 0
+## Whether this build's [WebSocketPeer] is the Web one, which refuses a send one byte
+## sooner than the desktop one. Read once — the answer cannot change at runtime.
+var _is_web: bool = OS.has_feature(WEB_FEATURE_TAG)
 var _db_name: String
 var _debug_mode: bool = false
 var _total_bytes_sent: int = 0
@@ -544,6 +596,10 @@ func _reset_peer() -> void:
 	if _websocket.get_ready_state() != WebSocketPeer.STATE_CLOSED:
 		_websocket.close()
 	_websocket = WebSocketPeer.new()
+	# A fresh peer has a fresh queue — report either condition again.
+	_send_refusal = SendRefusal.NONE
+	_send_refusal_limit = 0
+	_send_refusal_size = 0
 	_websocket.inbound_buffer_size = _inbound_buffer_size
 	_websocket.outbound_buffer_size = _outbound_buffer_size
 	_websocket.heartbeat_interval = _heartbeat_seconds
@@ -727,10 +783,165 @@ func set_compression_preference(preference: CompressionPreference) -> void:
 	self.preferred_compression = preference
 
 
+## The largest message an empty send queue will take, which is NOT the same number on
+## every platform: the desktop peer refuses at `queued + size > outbound_buffer_size`
+## (`WSLPeer::_send`) while the Web peer refuses at `>=` (`EMWSPeer::_send`), so a message
+## the exact size of the buffer goes out on desktop and is refused on Web. Pure, and
+## [param is_web] is passed in rather than read here, so both platforms are testable from
+## either.
+static func largest_sendable_message(outbound_buffer_size: int, is_web: bool) -> int:
+	if is_web:
+		return outbound_buffer_size - 1
+	return outbound_buffer_size
+
+
+## The operator-facing explanation for a message the engine will not queue because it is
+## larger than the outbound buffer, or [code]""[/code] for one that fits. Pure, so the
+## boundary is testable without a socket, and so the numbers the game is actually running
+## with appear in the text rather than the defaults.
+static func oversized_send_diagnostic(message_size: int, outbound_buffer_size: int, is_web: bool) -> String:
+	var largest: int = largest_sendable_message(outbound_buffer_size, is_web)
+	if message_size <= largest:
+		return ""
+	# At the ceiling there is nothing left to raise, and telling the caller most likely to
+	# read this to raise a number it is already at is worse than saying nothing.
+	var remedy: String
+	if outbound_buffer_size >= MAX_BUFFER_SIZE:
+		remedy = (
+			(
+				"There is no room above it: %d bytes is the maximum, and the largest "
+				+ "message the server accepts, so this payload has to be split or sent "
+				+ "another way."
+			)
+			% MAX_BUFFER_SIZE
+		)
+	else:
+		remedy = (
+			(
+				"Raise SpacetimeDBConnectionOptions.outbound_buffer_size — up to %d bytes, "
+				+ "which is also the largest message the server accepts — or send less in "
+				+ "one call."
+			)
+			% MAX_BUFFER_SIZE
+		)
+	return (
+		(
+			"SpacetimeDBConnection: not sending a %d-byte message — the most this build "
+			+ "can send in one message is %d bytes (outbound_buffer_size is %d), and the "
+			+ "engine cannot queue a message that does not fit, so no number of retries "
+			+ "will get it out. %s Nothing partial went out; the connection is unaffected."
+		)
+		% [message_size, largest, outbound_buffer_size, remedy]
+	)
+
+
+## The operator-facing explanation for a send the engine refused for lack of room although
+## the message itself fits the outbound buffer — the queue ahead of it is full, which is
+## backpressure rather than a size mistake — or [code]""[/code] for any other outcome.
+##
+## [param err] is what [method WebSocketPeer.send] returned, and gating on it here rather
+## than at the call site is deliberate: [code]ERR_OUT_OF_MEMORY[/code] is the ONLY code
+## the engine answers a full queue with (`WSLPeer::_send`; a closed socket and a wslay
+## failure are both [constant FAILED]), so which errors this text may describe is a fact
+## about the engine and belongs next to the text, where a test can pin it.
+static func send_backpressure_diagnostic(
+	err: Error,
+	message_size: int,
+	queued_bytes: int,
+	outbound_buffer_size: int,
+	max_queued_packets: int,
+	is_web: bool,
+) -> String:
+	if err != ERR_OUT_OF_MEMORY:
+		return ""
+	# The message-count ceiling is the desktop peer's second test (`WSLPeer::_send`); the
+	# Web peer has only the byte test, so offering the count there would name a cause that
+	# cannot be the cause.
+	var full: String = "%d bytes are already queued and unsent" % queued_bytes
+	if not is_web:
+		full += ", or the queue has hit its %d-message ceiling" % max_queued_packets
+	return (
+		(
+			"SpacetimeDBConnection: the socket refused a %d-byte message that fits "
+			+ "outbound_buffer_size (%d bytes): %s. That is the remote not reading fast "
+			+ "enough (or a saturated link), not a size mistake: the message was dropped, "
+			+ "nothing partial went out, and the next one may well succeed. Send less "
+			+ "often, or wait for the queue to drain."
+		)
+		% [message_size, outbound_buffer_size, full]
+	)
+
+
 ## Sends [param bytes] over the WebSocket. Returns [constant OK] on success.
+##
+## A message larger than the outbound buffer is refused here rather than at the engine:
+## [code]WebSocketPeer.send[/code] answers it with a bare
+## [code]ERR_FAIL_COND_V ... Returning: ERR_OUT_OF_MEMORY[/code] naming a C++ file, which
+## says nothing about which knob bounds it or that the failure is permanent for that
+## message. Both paths return [constant ERR_OUT_OF_MEMORY]. They differ only in what an
+## oversized message gets on a peer that is not OPEN — the engine's not-open test runs
+## first and answers [constant FAILED], this one runs before it — which is reachable both
+## from a direct caller and from the client's own entry points, since those gate on
+## [method is_connected_db] / [method is_websocket_active] and a peer can be CONNECTING or
+## CLOSING under either. Both values are errors and both stamp the caller's handle the
+## same way.
+##
+## Each CAUSE is reported once per boundary (see [member _send_refusal]): the text is a
+## paragraph, the condition repeats every frame a game keeps sending, and the return code
+## is what a caller acts on.
 func send_bytes(bytes: PackedByteArray) -> Error:
+	var largest: int = largest_sendable_message(_outbound_buffer_size, _is_web)
+	if bytes.size() > largest:
+		# Keyed on the boundary AND the refused size. The boundary because one that MOVED
+		# (apply_options resolving a new outbound_buffer_size mid-session) makes the last
+		# report's numbers wrong, and a wrong number left standing is worse than a repeat.
+		# The size because two call sites sending two different oversized messages are two
+		# problems, and the second would otherwise be silent for the rest of the session —
+		# a game retrying ONE of them every frame still reports once, which is the case
+		# this throttle exists for.
+		if (
+			_send_refusal != SendRefusal.OVERSIZED or _send_refusal_limit != largest
+			or _send_refusal_size != bytes.size()
+		):
+			_send_refusal = SendRefusal.OVERSIZED
+			_send_refusal_limit = largest
+			_send_refusal_size = bytes.size()
+			push_error(oversized_send_diagnostic(bytes.size(), _outbound_buffer_size, _is_web))
+		return ERR_OUT_OF_MEMORY
+
 	var err: Error = _websocket.send(bytes)
+	# The size test above already passed, so the only way left to be out of room is a
+	# queue the remote has not drained. The static re-checks the code because which
+	# errors may be described as backpressure is a fact about the engine, and that is
+	# where a test can pin it.
+	# Keyed on the boundary but NOT on the size: the queue is the subject here, the message
+	# only the one that met it, and a game streaming varied payloads into a stalled peer
+	# would otherwise report every frame (measured: 29 reports in 40 frames).
+	if (
+		err == ERR_OUT_OF_MEMORY
+		and (_send_refusal != SendRefusal.BACKPRESSURE or _send_refusal_limit != largest)
+	):
+		_send_refusal = SendRefusal.BACKPRESSURE
+		_send_refusal_limit = largest
+		_send_refusal_size = 0
+		push_error(
+			send_backpressure_diagnostic(
+				err,
+				bytes.size(),
+				_websocket.get_current_outbound_buffered_amount(),
+				_outbound_buffer_size,
+				_websocket.max_queued_packets,
+				_is_web,
+			)
+		)
 	if err == OK:
+		# A send getting through proves the QUEUE drained, so the next backpressure is
+		# worth reporting again. It proves nothing about an oversized message: that one
+		# is a property of the message, not of the socket, and re-arming it here reported
+		# the same paragraph every frame for the shape this guard exists for (a bulk call
+		# refused while ordinary traffic keeps succeeding).
+		if _send_refusal == SendRefusal.BACKPRESSURE:
+			_send_refusal = SendRefusal.NONE
 		_second_bytes_sent += bytes.size()
 		_total_bytes_sent += bytes.size()
 		_second_messages_sent += 1
@@ -892,7 +1103,11 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 
 	var err: Error = _websocket.connect_to_url(_target_url)
 	if err != OK:
-		printerr("SpacetimeDBConnection: Error initiating connection: ", err)
+		# Spelled out, not the bare code: the likeliest values here name a build or a
+		# configuration ("Unavailable" is a WSS URL in a build without TLS,
+		# "Invalid parameter" a scheme the URL builder could not rewrite), and a reader
+		# who gets "2" learns nothing.
+		printerr("SpacetimeDBConnection: Error initiating connection: %s" % error_string(err))
 		# connect_to_url refuses a URL it cannot use (a host_url whose scheme survived
 		# build_socket_url's http/https rewrite, say) without any I/O, so this lands in the
 		# caller's frame. Deferred, like the no-token arm above.
@@ -900,6 +1115,12 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 	else:
 		_print_log("SpacetimeDBConnection: Connection initiated.")
 		_connection_requested = true
+		# A new session reports its own refusals. The peer object survives a reconnect
+		# (connect_to_url clears a CLOSED one in place), so _reset_peer is not on this
+		# path and would not do it.
+		_send_refusal = SendRefusal.NONE
+		_send_refusal_limit = 0
+		_send_refusal_size = 0
 		_last_poll_ms = 0 # fresh poll clock — first poll sets the baseline, no false stall
 		_post_stall_polls = 0
 		_connect_started_ms = Time.get_ticks_msec() # the handshake budget starts here
@@ -907,11 +1128,60 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		set_physics_process(true)
 
 
+## The [param reason] shortened to what a close frame can carry, unchanged if it already
+## fits. Pure, so the boundary is testable without a socket.
+##
+## A close frame's payload is capped at 125 bytes, two of which are the status code, so
+## wslay refuses a reason over [constant MAX_CLOSE_REASON_BYTES] UTF-8 bytes with
+## [code]WSLAY_ERR_INVALID_ARGUMENT[/code] — and [code]WSLPeer::close[/code] ignores that
+## return and moves the peer to [code]STATE_CLOSING[/code] anyway. No close frame is ever
+## queued, so [code]close_sent[/code] stays false, the peer never reaches
+## [code]STATE_CLOSED[/code] on its own, [method is_websocket_active] stays true, and the
+## server keeps the session open with nothing to time it out but its own idle limit. Web
+## reaches the same place by another road: [code]EMWSPeer::close[/code] sets
+## [code]STATE_CLOSING[/code] and then hands the reason to the browser's
+## [code]WebSocket.close[/code], which throws [code]SyntaxError[/code] over the same limit.
+## The close matters more than the wording, so an over-long reason is trimmed rather than
+## refused — trimmed by CHARACTER, so the result is never a broken multi-byte sequence (a
+## combining mark can still lose its base character; grapheme clusters are not preserved).
+static func fit_close_reason(reason: String) -> String:
+	if reason.to_utf8_buffer().size() <= MAX_CLOSE_REASON_BYTES:
+		return reason
+	# Cut to the character count first: a UTF-8 character is at least one byte, so no
+	# string longer than the byte limit in characters can fit, and the loop below then
+	# re-encodes at most 123 characters instead of the whole reason. Without this the
+	# trim is quadratic in the reason's length — measured on 4.8.dev, a 200_000-character
+	# reason took 9.4 SECONDS on the main thread, against 0 for the pre-cut form.
+	var trimmed: String = reason.substr(0, MAX_CLOSE_REASON_BYTES)
+	# One character comes off per pass, so the fit is reached inside the bound; the bound
+	# is what makes that a fact rather than a belief.
+	for i: int in MAX_CLOSE_REASON_BYTES:
+		if trimmed.to_utf8_buffer().size() <= MAX_CLOSE_REASON_BYTES:
+			return trimmed
+		trimmed = trimmed.substr(0, trimmed.length() - 1)
+	# Unreachable: a UTF-8 character is at most 4 bytes, so 123 characters cannot need more
+	# than 93 removals. Loud rather than silent, because the alternative to reaching here
+	# is closing with a reason nobody asked for and no way to tell.
+	push_error("SpacetimeDBConnection: could not fit the close reason; closing without one.")
+	return ""
+
+
 ## Closes the WebSocket connection with the given [param code] and [param reason].
 func disconnect_from_server(code: int = 1000, reason: String = "Client initiated disconnect") -> void:
 	if is_websocket_active():
 		_print_log("SpacetimeDBConnection: Closing connection...")
-		_websocket.close(code, reason)
+		var wire_reason: String = fit_close_reason(reason)
+		if wire_reason != reason:
+			push_error(
+				(
+					"SpacetimeDBConnection: the close reason is %d UTF-8 bytes and a close "
+					+ "frame carries at most %d, which the engine answers by queueing no "
+					+ "close frame at all and leaving the socket open. Sending it trimmed "
+					+ "to \"%s\" instead."
+				)
+				% [reason.to_utf8_buffer().size(), MAX_CLOSE_REASON_BYTES, wire_reason]
+			)
+		_websocket.close(code, wire_reason)
 	_is_connected = false
 	_connection_requested = false
 	_connect_started_ms = -1

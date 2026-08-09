@@ -74,10 +74,24 @@ var confirmed_reads: bool = true
 ## 32-bit int, so a bigger number truncates into those same two failures, and no legal
 ## server message is larger anyway.
 var inbound_buffer_size: int = SpacetimeDBConnection.DEFAULT_BUFFER_SIZE
-## Maximum size in bytes of the WebSocket outbound buffer (default 2 MB). Bounded exactly
-## like [member inbound_buffer_size] — refused below
+## Maximum size in bytes of the WebSocket outbound buffer (default 2 MB).
+##
+## Also the largest message this client can send at all, the mirror of what
+## [member inbound_buffer_size] bounds on the way in: the engine will not queue a message
+## larger than its send buffer, so a reducer call, procedure call or subscribe whose
+## serialized message is bigger than this fails immediately and permanently — retrying it
+## unchanged cannot work. The SDK refuses it with a diagnostic naming this setting rather
+## than letting the engine answer with a bare ERR_OUT_OF_MEMORY (see
+## [method SpacetimeDBConnection.oversized_send_diagnostic]). Bounded exactly like
+## [member inbound_buffer_size] — refused below
 ## [constant SpacetimeDBConnection.MIN_BUFFER_SIZE], clamped above
-## [constant SpacetimeDBConnection.MAX_BUFFER_SIZE], and it costs the same ~3×.
+## [constant SpacetimeDBConnection.MAX_BUFFER_SIZE] (also the server's own per-message
+## limit), and it costs the same ~3×.
+##
+## The buffer is a queue, not just a size limit: a message that fits can still be refused
+## while earlier ones sit unsent because the remote is not reading. That failure is
+## transient and reported separately (see
+## [method SpacetimeDBConnection.send_backpressure_diagnostic]).
 var outbound_buffer_size: int = SpacetimeDBConnection.DEFAULT_BUFFER_SIZE
 ## Interval in seconds between WebSocket keepalive pings. The peer sends a PING every
 ## interval and closes the connection — triggering auto-reconnect if enabled — when no
