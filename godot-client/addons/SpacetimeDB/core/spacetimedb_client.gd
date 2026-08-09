@@ -854,7 +854,7 @@ func call_reducer(
 	if _connection and _connection.is_websocket_active():
 		var err: Error = _connection.send_bytes(message_bytes)
 		if err != OK:
-			printerr("SpacetimeDBClient: Error sending CallReducer message: ", err)
+			printerr("SpacetimeDBClient: Error sending CallReducer message: %s" % error_string(err))
 			return SpacetimeDBReducerCall.fail(err)
 
 		var handle: SpacetimeDBReducerCall = SpacetimeDBReducerCall.create(
@@ -914,7 +914,9 @@ func call_procedure(
 	if _connection and _connection.is_websocket_active():
 		var err: Error = _connection.send_bytes(message_bytes)
 		if err != OK:
-			printerr("SpacetimeDBClient: Error sending CallProcedure message: ", err)
+			printerr(
+				"SpacetimeDBClient: Error sending CallProcedure message: %s" % error_string(err)
+			)
 			return SpacetimeDBProcedureCall.fail(err)
 
 		var handle: SpacetimeDBProcedureCall = SpacetimeDBProcedureCall.create(

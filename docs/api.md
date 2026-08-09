@@ -841,6 +841,30 @@ class SpacetimeDBConnectionOptions:
     var outbound_buffer_size: int = 1024 * 1024 * 2
 ```
 
+The maximum size of the outbound buffer, and with it the largest message this client can
+send at all — the mirror of `inbound_buffer_size`. The engine will not queue a message
+larger than its send buffer, so a reducer call, procedure call, subscribe or one-off query
+whose serialized message runs past this fails immediately and permanently, and retrying it
+unchanged cannot work. A reducer or procedure handle comes back carrying
+`ERR_OUT_OF_MEMORY`, `subscribe()` sets it on the subscription and `unsubscribe()` returns
+it; `query_sql()` has no handle and returns an empty array, which a caller cannot tell from
+a query that matched nothing — read the error it pushes. The SDK refuses
+such a message itself, with an error naming the size, this setting and the 32 MiB ceiling,
+rather than letting the engine answer with a bare `ERR_OUT_OF_MEMORY` out of a C++ file.
+That error is pushed once per refused size per connection, not once per call — a game
+retrying the same send every frame gets one paragraph, not sixty a second — while every
+call still returns the error to its caller.
+Framing costs a few dozen bytes on top of the payload: measured on 4.8.dev, the largest
+string argument that went out under a 4096-byte buffer was 4068 bytes. The boundary itself
+is one byte tighter on Web — the desktop peer refuses a send at `queued + size > buffer`
+and the Web peer at `>=`, so a message the exact size of the buffer goes out on desktop and
+is refused on Web.
+
+The buffer is a queue, not only a size limit. A message that fits can still be refused
+while earlier ones sit unsent because the remote is not reading — measured, a server that
+stopped reading took 7 × 512 KiB before the 8th was refused. That failure is transient, and
+is reported with a different error saying so.
+
 #### `set_all_buffer_size()` method
 
 Sets the inbound and outbound buffer sizes:

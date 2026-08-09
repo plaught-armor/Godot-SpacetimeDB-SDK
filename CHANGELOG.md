@@ -33,6 +33,31 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A message too large to send now says so, and a close reason too long to send no
+  longer wedges the socket.** Two values this SDK hands the engine on the way out were
+  passed on unexamined. A message larger than `outbound_buffer_size` (2 MB by default)
+  can never be queued — the engine answered it with `ERR_FAIL_COND_V ... Returning:
+  ERR_OUT_OF_MEMORY` naming a C++ file, and the SDK printed the bare code `6`, so a
+  reducer call carrying a payload past the buffer failed permanently with nothing naming
+  the knob that bounds it or the fact that a retry cannot help. It is now refused before
+  the engine, with the size, the running buffer and the 32 MiB ceiling in the text, and
+  the identical `ERR_OUT_OF_MEMORY` return. The same code also means the opposite thing —
+  a message that fits, refused because the queue ahead of it is full (measured: a server
+  that stopped reading took 7 × 512 KiB before the 8th was refused) — and that case now
+  gets its own error saying it is the remote not reading and worth retrying. Each CAUSE is
+  reported once rather than once per frame (a successful send re-arms only the transient
+  one), and the boundary follows the platform: the Web peer refuses one byte sooner than
+  the desktop peer, so a message the exact size of the buffer goes out on desktop and is
+  refused on Web. Separately, a close reason over
+  123 UTF-8 bytes makes wslay refuse to queue the close frame at all while
+  `WSLPeer::close` moves the peer to `STATE_CLOSING` regardless: the socket never closed,
+  `is_websocket_active()` stayed true, and the server kept the session alive with nothing
+  to end it. Every caller inside the SDK uses the 27-byte default, so this was reachable
+  only from game code that supplies its own reason; `disconnect_from_server()` now trims an
+  over-long one (by character, so never mid-sequence) and reports the trim.
+  `tests/test_outbound_send_limit.gd`, `tests/test_outbound_socket_close.gd`,
+  `tests/_probe_outbound_send.gd`.
+
 - **A reconnect knob the SDK cannot pace a cycle with is now refused instead of passed on.**
   `SpacetimeDBConnectionOptions`' socket and drain knobs were resolved and clamped; its
   reconnect knobs went straight into the backoff. Five separate values computed a `0.0`
