@@ -332,7 +332,13 @@ static func finalize_bindings(
 		)
 		return false
 
-	if not _check_member_collisions(PackedStringArray(generated_files)):
+	# Both run, then one verdict: a module can hit either kind of collision, and a run
+	# that reports only the first leaves the author fixing them one regeneration at a time.
+	# The member check runs FIRST on purpose — it is the one that reports a file it could
+	# not read back, which the class check then passes over in silence.
+	var members_ok: bool = _check_member_collisions(PackedStringArray(generated_files))
+	var classes_ok: bool = _check_class_collisions(PackedStringArray(generated_files), dir_path)
+	if not (members_ok and classes_ok):
 		print_err("Code generation failed!")
 		return false
 
@@ -423,6 +429,18 @@ static func _check_member_collisions(generated_files: PackedStringArray) -> bool
 			)
 			ok = false
 			continue
+		for variant: String in SpacetimeCodegen.find_duplicate_enum_variants(source):
+			print_err(
+				(
+					"%s declares `%s` more than once. Enum variant names are pascal-cased, "
+					+ "which cannot tell `foo_bar` from `fooBar`, and Godot refuses the whole "
+					+ "script with \"Name was already in this enum\" — for the types facade "
+					+ "that is every type the module declares. Rename one of them in your "
+					+ "module."
+				)
+				% [path, variant]
+			)
+			ok = false
 		for member: String in SpacetimeCodegen.find_duplicate_members(source):
 			print_err(
 				(
@@ -436,3 +454,184 @@ static func _check_member_collisions(generated_files: PackedStringArray) -> bool
 			)
 			ok = false
 	return ok
+
+
+## Fails the run when two generated scripts claim the same global class name, or when two
+## of them are written to the same path.
+##
+## Every generated class name is the module prefix plus a name the module author chose,
+## and the suffixes the generator adds (`Table`, `UniqueIndex`, `BTreeIndex`, and the
+## `Types` / `ModuleDb` / `ModuleClient` / `ModuleReducers` / `ModuleProcedures` facades)
+## are ordinary spellings a module type may already end in. So a module carrying both a
+## table `score` and a type `ScoreTable` emits `class_name <M>ScoreTable` twice, and Godot
+## refuses whichever of the two it registers second — "Class "X" hides a global script
+## class" — so that script does not load at all. Measured: the row type behind a column,
+## or the db facade the generated client assigns to `db`, silently gone.
+##
+## The file-name half is quieter still. Paths are built with [method String.to_snake_case]
+## and class names with [method String.to_pascal_case], and neither is injective across an
+## acronym run: types `AABB` and `Aabb` both land on `<module>_aabb.gd`, so the second
+## overwrites the first and one declared type has no bindings anywhere. Nothing errors,
+## the run reports success, and [method _cleanup_unused_classes] then prunes the previous,
+## working bindings.
+##
+## Deliberately fails the run rather than mangling a name, for the same reason
+## [method _check_member_collisions] does: which of two colliding schema names gets the
+## altered spelling is the module author's call, not ours.
+static func _check_class_collisions(generated_files: PackedStringArray, dir_path: String) -> bool:
+	var ok: bool = true
+	var seen_paths: Dictionary[String, bool] = { }
+	var path_by_class: Dictionary[String, String] = { }
+	var claimed_elsewhere: Dictionary[String, String] = _global_classes_outside(dir_path)
+	var autoload_names: Dictionary[String, String] = _autoload_names_outside(dir_path)
+	for path: String in generated_files:
+		if not path.ends_with(".gd"):
+			continue
+		# The class-name half below would also catch today's same-path pairs — both list
+		# entries read back the one file that survived the overwrite, so its class name
+		# looks declared twice. This branch is what makes the report name the actual cause
+		# (a file that is simply gone, not two files fighting over a name), and it is the
+		# only half that covers an emitted file kind declaring no class name at all.
+		if seen_paths.has(path):
+			print_err(
+				(
+					"two schema names both generated %s, so one overwrote the other and has "
+					+ "no bindings at all. A file name is the schema name put through "
+					+ "to_snake_case, which cannot tell `AABB` from `Aabb`. Rename one of them "
+					+ "in your module."
+				)
+				% path
+			)
+			ok = false
+			continue
+		seen_paths[path] = true
+
+		var source: String = FileAccess.get_file_as_string(path)
+		if source.is_empty():
+			# _check_member_collisions already reported this file as unreadable.
+			continue
+		var declared: String = SpacetimeCodegen.declared_class_name(source)
+		if declared.is_empty():
+			continue
+		if ClassDB.class_exists(declared) or SpacetimeCodegen.is_builtin_type_name(declared):
+			print_err(
+				(
+					"%s declares `class_name %s`, which is a Godot native class or builtin "
+					+ "type — Godot refuses it with \"Class \"%s\" hides a native class\" (or "
+					+ "\"a built-in type\"), so that script does not load. Rename the schema "
+					+ "name it comes from, or give the module an alias."
+				)
+				% [path, declared, declared]
+			)
+			ok = false
+			continue
+		if autoload_names.has(declared):
+			print_err(
+				(
+					"%s declares `class_name %s`, which is the name of the autoload declared "
+					+ "at %s — Godot refuses it with \"Class \"%s\" hides an autoload "
+					+ "singleton\", so that script does not load. Rename the schema name it "
+					+ "comes from, give the module an alias, or rename the autoload."
+				)
+				% [path, declared, autoload_names[declared], declared]
+			)
+			ok = false
+			continue
+		if claimed_elsewhere.has(declared):
+			print_err(
+				(
+					"%s declares `class_name %s`, which %s already declares. Godot registers "
+					+ "one of them and refuses the other, so a script fails to load — the "
+					+ "generated one, or the project's own. Rename the schema name it comes "
+					+ "from, give the module an alias, or rename the other class."
+				)
+				% [path, declared, claimed_elsewhere[declared]]
+			)
+			ok = false
+			continue
+		if path_by_class.has(declared):
+			print_err(
+				(
+					"%s and %s both declare `class_name %s`. Godot registers only one of them "
+					+ "and refuses the other with \"Class \"%s\" hides a global script class\", "
+					+ "so that script does not load. A generated class name is the module "
+					+ "prefix plus a schema name plus the suffix its kind adds (Table, "
+					+ "UniqueIndex, BTreeIndex) — a module type named `ScoreTable` collides "
+					+ "with the table `score`, and one named `Types` or `ModuleDb` collides "
+					+ "with the module's own facade. Rename one of them in your module."
+				)
+				% [path_by_class[declared], path, declared, declared]
+			)
+			ok = false
+			continue
+		path_by_class[declared] = path
+	return ok
+
+
+## Every global class the project registers from OUTSIDE [param dir_path], as
+## name -> script path.
+##
+## The bindings directory is excluded because the previous run's output is registered
+## under exactly the names this run is about to re-declare: comparing against it would
+## refuse every regeneration. Everything else is fair game — a project class named
+## `GamePlayer` beside a module `game` with a type `Player` is the same collision as two
+## generated files claiming one name, and Godot answers it the same way.
+##
+## A headless run whose global class cache was never written (see docs/codegen.md) sees a
+## short list and can only under-report, never refuse a name that is actually free.
+static func _global_classes_outside(dir_path: String) -> Dictionary[String, String]:
+	var out: Dictionary[String, String] = { }
+	# rstrip takes every trailing slash and the format string puts exactly one back, so
+	# "x", "x/" and "x//" all yield the same prefix. (A dir_path of "res://" excludes every
+	# class in the project — correct by this function's own definition, and not a
+	# configuration that exists: the bindings live in BINDINGS_SCHEMA_PATH.)
+	var inside: String = "%s/" % dir_path.rstrip("/")
+	for entry: Dictionary in ProjectSettings.get_global_class_list():
+		var path: String = entry.get("path", "")
+		if path.is_empty() or path.begins_with(inside):
+			continue
+		var declared: String = entry.get("class", "")
+		if not declared.is_empty():
+			out[declared] = path
+	return out
+
+
+## Every autoload the project registers from OUTSIDE [param dir_path], as name -> the
+## path it points at.
+##
+## A SINGLETON autoload's registered name is a global identifier of its own, so a class
+## that reuses it is refused with "hides an autoload singleton" — and an autoload need not
+## declare a `class_name`, so [method _global_classes_outside] cannot see it. Reachable: a
+## module alias `save` plus a type `System` spells `SaveSystem`, which is the canonical
+## name for a save autoload. The bindings directory is excluded for the same reason it is
+## there: the generated autoload is registered from inside it.
+##
+## The leading `*` on the setting's value is the singleton flag, NOT "enabled": the
+## analyzer refuses a name only when [code]has_autoload(name)[/code] AND that autoload's
+## [code]is_singleton[/code] ([code]gdscript_analyzer.cpp[/code]), and `is_singleton` is
+## set by exactly that character ([code]project_settings.cpp[/code]). A plain autoload
+## boots as a node and claims no name, so a class may reuse it — measured, accepted.
+static func _autoload_names_outside(dir_path: String) -> Dictionary[String, String]:
+	var out: Dictionary[String, String] = { }
+	var inside: String = "%s/" % dir_path.rstrip("/") # Same normalisation as above.
+	for property: Dictionary in ProjectSettings.get_property_list():
+		var setting: String = property.get("name", "")
+		# Both registration prefixes: `autoload_prepend/` is equally valid and equally a
+		# global identifier, though nothing in the engine or editor writes it today.
+		if not (setting.begins_with("autoload/") or setting.begins_with("autoload_prepend/")):
+			continue
+		var raw: String = ProjectSettings.get_setting(setting, "")
+		if not raw.begins_with("*"):
+			continue
+		var path: String = raw.substr(1)
+		if path.begins_with("uid://"):
+			# get_id_path on an unknown id is an ERR_FAIL that prints to the engine's own
+			# output, where a codegen run's reader would never look for it. An unresolved
+			# path stays empty, which reads as "outside dir_path" — the direction that
+			# reports a collision rather than hiding one.
+			var id: int = ResourceUID.text_to_id(path)
+			path = ResourceUID.get_id_path(id) if ResourceUID.has_id(id) else ""
+		if path.begins_with(inside):
+			continue
+		out[setting.get_slice("/", 1)] = path
+	return out

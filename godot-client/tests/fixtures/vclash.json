@@ -1,0 +1,182 @@
+{
+ "sections": [
+  {
+   "Typespace": {
+    "types": [
+     {
+      "Product": {
+       "elements": [
+        {
+         "name": {
+          "some": "id"
+         },
+         "algebraic_type": {
+          "U64": []
+         }
+        },
+        {
+         "name": {
+          "some": "name"
+         },
+         "algebraic_type": {
+          "String": []
+         }
+        }
+       ]
+      }
+     },
+     {
+      "Product": {
+       "elements": [
+        {
+         "name": {
+          "some": "n"
+         },
+         "algebraic_type": {
+          "U32": []
+         }
+        }
+       ]
+      }
+     },
+     {
+      "Product": {
+       "elements": [
+        {
+         "name": {
+          "some": "n"
+         },
+         "algebraic_type": {
+          "U32": []
+         }
+        }
+       ]
+      }
+     },
+     {
+      "Product": {
+       "elements": [
+        {
+         "name": {
+          "some": "n"
+         },
+         "algebraic_type": {
+          "U32": []
+         }
+        }
+       ]
+      }
+     },
+     {
+      "Product": {
+       "elements": [
+        {
+         "name": {
+          "some": "n"
+         },
+         "algebraic_type": {
+          "U32": []
+         }
+        }
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "Types": [
+    {
+     "source_name": {
+      "scope": [],
+      "source_name": "Player"
+     },
+     "ty": 0,
+     "custom_ordering": true
+    },
+    {
+     "source_name": {
+      "scope": [],
+      "source_name": "PlayerTable"
+     },
+     "ty": 1,
+     "custom_ordering": true
+    },
+    {
+     "source_name": {
+      "scope": [],
+      "source_name": "Types"
+     },
+     "ty": 2,
+     "custom_ordering": true
+    },
+    {
+     "source_name": {
+      "scope": [],
+      "source_name": "PlayerNameUniqueIndex"
+     },
+     "ty": 3,
+     "custom_ordering": true
+    },
+    {
+     "source_name": {
+      "scope": [],
+      "source_name": "ModuleDb"
+     },
+     "ty": 4,
+     "custom_ordering": true
+    }
+   ]
+  },
+  {
+   "Tables": [
+    {
+     "source_name": "Player",
+     "product_type_ref": 0,
+     "primary_key": [
+      0
+     ],
+     "indexes": [],
+     "constraints": [
+      {
+       "source_name": {
+        "some": "player_name_key"
+       },
+       "data": {
+        "Unique": {
+         "columns": [
+          1
+         ]
+        }
+       }
+      }
+     ],
+     "sequences": [],
+     "table_type": {
+      "User": []
+     },
+     "table_access": {
+      "Public": []
+     },
+     "default_values": [],
+     "is_event": false
+    }
+   ]
+  },
+  {
+   "Reducers": []
+  },
+  {
+   "ExplicitNames": {
+    "entries": [
+     {
+      "Table": {
+       "source_name": "Player",
+       "canonical_name": "player"
+      }
+     }
+    ]
+   }
+  }
+ ]
+}
