@@ -1,7 +1,7 @@
 # A parse failure that drops the buffered stream has to stay visible to the caller.
 #
-# `process_bytes_and_extract_messages()` clears `_pending_data` when a message is
-# malformed, and `SpacetimeDBClient._parse_packet_and_get_resource()` checks
+# `process_bytes_and_extract_messages()` abandons the rest of the packet when a message
+# is malformed, and `SpacetimeDBClient._parse_packet_and_get_resource()` checks
 # `has_error()` right after the call to decide whether to discard the batch. That
 # check only works if the error survives the function that reported it —
 # `get_last_error()` clears the state as a side effect of reading it, so logging the

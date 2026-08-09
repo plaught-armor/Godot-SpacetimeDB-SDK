@@ -67,17 +67,16 @@ const NATIVE_ARRAYLIKE: Array[Variant.Type] = [
 
 var debug_mode: bool = false
 ## Parse outcome, single source of truth. [constant ParseStatus.OK] = clean;
-## [constant ParseStatus.ERROR] = malformed/unrecoverable (framing loop drops the
-## buffer); [constant ParseStatus.NEEDS_MORE] = a read ran past the buffer end and
-## the rest may arrive in a later packet (framing loop keeps the tail). NEEDS_MORE
-## is a recoverable subtype of error — [method has_error] is true for both non-OK
-## states. Lets the framing loop distinguish "wait for more data" from a fatal
-## parse error without matching on the error message text.
+## [constant ParseStatus.ERROR] = malformed; [constant ParseStatus.NEEDS_MORE] = a
+## read ran past the end of the buffer. [method has_error] is true for both non-OK
+## states and the framing loop answers them the same way — it drops the rest of the
+## packet for either, because retaining bytes cannot help: a payload carries WHOLE
+## messages (ws v3), so a continuation is not coming in the next one. The two are
+## still told apart so a diagnostic can say which one happened.
 enum ParseStatus { OK, ERROR, NEEDS_MORE }
 var _status: ParseStatus = ParseStatus.OK
 var _last_error: String = ""
 var _deserialization_plan_cache: Dictionary[Script, Array] = { }
-var _pending_data: PackedByteArray = []
 var _schema: SpacetimeDBSchema
 var _native_arraylike_regex: RegEx = RegEx.new()
 
@@ -110,11 +109,15 @@ func clear_error() -> void:
 	_status = ParseStatus.OK
 
 
-## Discards buffered partial-message bytes AND clears error state. Call on a session
-## boundary (reconnect) so the first fresh-session packet parses against an empty
-## framing buffer instead of a stale partial-message prefix from the dropped session.
+## Clears parse state at a session boundary (reconnect), so nothing the dropped session
+## left behind is read as belonging to the fresh one.[br]
+## [br]
+## Belt and braces as of the packet-scoped framing:
+## [method process_bytes_and_extract_messages] carries no bytes between calls and clears
+## the error at the top of every message, so no observer can reach a stale one today.
+## Kept because the boundary is a real event and stating it here is cheaper than
+## re-deriving that the parse loop happens to cover it.
 func reset_stream_state() -> void:
-	_pending_data.clear()
 	_last_error = ""
 	_status = ParseStatus.OK
 
@@ -448,13 +451,16 @@ func read_bsatn_row_list(spb: StreamPeerBuffer) -> Array[PackedByteArray]:
 	return rows
 
 
-## Appends [param new_data] to the internal buffer and extracts all complete
-## [SpacetimeDBServerMessage] instances. Returns an array of parsed messages.
+## Extracts every [SpacetimeDBServerMessage] in [param new_data], which the v3 framing
+## may pack several of into one packet. Returns them in the order they were read.
 ##
-## Can return with the error state SET: a malformed message drops the buffered stream,
-## and the messages read before it are still returned, so [method has_error] is the only
-## way to tell a whole packet from a truncated one. The caller is expected to consume
-## that with [method get_last_error] (or [method clear_error]) before the next call.
+## Can return with the error state SET: a malformed OR short message ends the packet
+## there, and the messages read before it are still returned, so [method has_error] is
+## the only way to tell a whole packet from a truncated one. The caller is expected to
+## consume that with [method get_last_error] (or [method clear_error]) before the next
+## call. Nothing is carried over between calls — a packet that does not end on a message
+## boundary is corruption on this transport, not the front half of a message still to
+## arrive.
 func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[SpacetimeDBServerMessage]:
 	if new_data.is_empty():
 		# Clear here too: this returns ahead of the parse loop, which is what normally
@@ -462,15 +468,13 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 		# a call that never read a byte.
 		clear_error()
 		return []
-	_pending_data.append_array(new_data)
 	var parsed_messages: Array[SpacetimeDBServerMessage] = []
 	var spb: StreamPeerBuffer = StreamPeerBuffer.new()
 	spb.big_endian = false # BSATN is little-endian; set once so per-read setters drop.
-	# Parse against a single snapshot, advancing a cursor, and slice the
-	# consumed prefix off _pending_data exactly once after the loop — instead of
-	# rebuilding the buffer (O(n)) after every message.
-	spb.data_array = _pending_data
-	var buffer_size: int = _pending_data.size()
+	# One snapshot, a cursor walked message by message — no rebuilding the buffer
+	# (O(n)) after each one.
+	spb.data_array = new_data
+	var buffer_size: int = new_data.size()
 	var cursor: int = 0
 	while cursor < buffer_size:
 		clear_error()
@@ -478,36 +482,48 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 		var message: SpacetimeDBServerMessage = _parse_message_from_stream(spb)
 
 		if _status != ParseStatus.OK:
-			if _status == ParseStatus.NEEDS_MORE:
-				# Incomplete trailing message — keep it for the next packet.
-				clear_error()
-				break
-			# Malformed data: drop the whole buffer to avoid an infinite loop.
+			# Malformed data — including a read that ran off the end (NEEDS_MORE).
+			# A short read is a truncated packet, never the front half of a message
+			# still to arrive: ws v3 states that a payload carries one or more WHOLE
+			# consecutive ServerMessages (client-api-messages/src/websocket/v3.rs), so
+			# a continuation is not coming in the next one. This used to keep the tail
+			# for it and prefix every packet that followed with bytes belonging to
+			# nothing: measured, one frame cut a byte short wedged the session
+			# permanently — not one message reached the game from then on, the carried
+			# buffer grew by the size of every packet, and has_error() stayed false the
+			# whole time because the retain path cleared it. The rest of THIS packet
+			# goes too: a NEEDS_MORE read by definition wanted bytes past the end of
+			# the buffer, so nothing whole follows it anyway, and after a malformed
+			# message of unknown length there is no way to tell where the next starts.
 			# Read _last_error directly rather than through get_last_error(), which
 			# CLEARS the error state: reporting the failure must not also erase it,
 			# or this returns looking like a clean parse and the caller's has_error()
 			# check never fires for the one case it exists to catch.
-			printerr("BSATNDeserializer: Unrecoverable parsing error: %s. Clearing buffer." % _last_error)
-			_pending_data.clear()
+			var kind: String = (
+				"Truncated packet" if _status == ParseStatus.NEEDS_MORE else "Unrecoverable parsing error"
+			)
+			printerr("BSATNDeserializer: %s: %s. Dropping the rest of the packet." % [kind, _last_error])
 			return parsed_messages
 
 		if message == null:
-			break
+			# No reader is supposed to reach this — every null return above sets an
+			# error first. Say so rather than ending the packet quietly, which would
+			# read as a clean parse at the caller.
+			_set_error("Parser returned no message and no error; dropping the rest of the packet.", cursor)
+			return parsed_messages
 
 		var bytes_consumed: int = spb.get_position() - cursor
 		if bytes_consumed <= 0:
-			# Same contract as the malformed branch above: the buffer is dropped, so
+			# Same contract as the malformed branch above: the packet is abandoned, so
 			# the caller has to be able to see that it happened.
-			_set_error("Parser consumed 0 bytes; clearing buffer to prevent an infinite loop.", cursor)
-			_pending_data.clear()
+			_set_error(
+				"Parser consumed 0 bytes; dropping the rest of the packet to prevent an infinite loop.",
+				cursor,
+			)
 			return parsed_messages
 
 		parsed_messages.append(message)
 		cursor = spb.get_position()
-
-	# Drop the consumed prefix once; any incomplete trailing message is retained.
-	if cursor > 0:
-		_pending_data = _pending_data.slice(cursor)
 
 	return parsed_messages
 
@@ -574,8 +590,8 @@ func _read_option(
 
 	if has_error():
 		if not _last_error.contains(str(prop_name)):
-			# Preserve NEEDS_MORE through the wrap so an incomplete trailing
-			# message isn't reclassified as a fatal ERROR (buffer would be dropped).
+			# Preserve NEEDS_MORE through the wrap: the framing loop drops the packet
+			# either way, but "truncated" and "malformed" are different diagnostics.
 			var inner_status: ParseStatus = _status
 			var cause: String = get_last_error()
 			_set_error("Failed reading Some value for Option '%s' (inner type '%s'). Cause: %s" % [prop_name, inner_type, cause], tag_pos + 1, inner_status)
@@ -1265,9 +1281,9 @@ func _read_bsatn_row_list_as_resources(
 	var block_start: int = spb.get_position()
 	var block_end: int = block_start + data_len
 	if block_end > spb.get_size():
-		# Header claims more row data than the buffer holds. Treat as NEEDS_MORE (the
-		# rest may arrive in a later packet) so the framing loop keeps the tail, rather
-		# than seeking past EOF below — which clamps and silently drops every
+		# Header claims more row data than the buffer holds, i.e. the packet is
+		# truncated (NEEDS_MORE) — reported and dropped by the framing loop, rather
+		# than seeking past EOF below, which clamps and silently drops every
 		# subsequent message in the stream.
 		_set_error(
 			"Row block needs %d bytes, buffer has %d" % [block_end, spb.get_size()],

@@ -191,16 +191,17 @@ func _test_new_session_drops_the_old_session_traffic() -> int:
 	client._deserializer = BSATNDeserializer.new(null, false)
 
 	# Half a message: a tag byte the parser recognises with fewer bytes behind it than the
-	# message needs, which is what a socket dying mid-frame leaves behind.
+	# message needs, which is what a socket dying mid-frame leaves behind. The bytes are
+	# dropped where they are read (nothing is carried between packets), so what the dying
+	# session leaves behind is the unconsumed error.
 	var truncated: PackedByteArray = [SpacetimeDBServerMessage.Type.INITIAL_CONNECTION, 0x01]
 	client._deserializer.process_bytes_and_extract_messages(truncated)
-	client._deserializer.clear_error()
 	client._result_queue.append(SubscribeAppliedMessage.new())
 	client._drain_batch = [SubscribeAppliedMessage.new()]
 	client._drain_cursor = 0
 	f += _check_b(
-		"setup: parser holds a prefix",
-		not client._deserializer._pending_data.is_empty(),
+		"setup: parser holds the old session's error",
+		client._deserializer.has_error(),
 		true,
 	)
 
@@ -210,7 +211,7 @@ func _test_new_session_drops_the_old_session_traffic() -> int:
 	f += _check_i("parsed-but-undrained results dropped", client._result_queue.size(), 0)
 	f += _check_i("in-flight drain batch dropped", client._drain_batch.size(), 0)
 	f += _check_i("drain cursor reset", client._drain_cursor, 0)
-	f += _check_b("framing buffer reset", client._deserializer._pending_data.is_empty(), true)
+	f += _check_b("parser state reset", client._deserializer.has_error(), false)
 
 	client.free()
 	db.free()

@@ -46,9 +46,14 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 	var max_passes: int = _MAX_DECOMPRESSED_SIZE / _CHUNK_SIZE * 2 + 2
 	var drained: bool = false
 	for _pass: int in max_passes:
-		var input_result: Array = gzip_stream.put_partial_data(compressed_bytes.slice(last_slice_position, last_slice_position + _CHUNK_SIZE))
+		var input_result: Array = gzip_stream.put_partial_data(
+			compressed_bytes.slice(last_slice_position, last_slice_position + _CHUNK_SIZE)
+		)
 		if input_result[0] != OK:
-			printerr("DataDecompressor Error: Failed to input partial data: " + error_string(input_result[0]))
+			printerr(
+				"DataDecompressor Error: Failed to input partial data: "
+				+ error_string(input_result[0])
+			)
 			input_failed = true
 			break
 		last_slice_position += input_result[1]
@@ -61,7 +66,10 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 				break
 			decompressed_data.append_array(chunk)
 			if decompressed_data.size() > _MAX_DECOMPRESSED_SIZE:
-				printerr("DataDecompressor Error: Decompressed output exceeds %d bytes — aborting (malformed or hostile stream)." % _MAX_DECOMPRESSED_SIZE)
+				printerr(
+					"DataDecompressor Error: Decompressed output exceeds %d bytes — aborting (malformed or hostile stream)."
+					% _MAX_DECOMPRESSED_SIZE
+				)
 				return PackedByteArray()
 		elif status == ERR_UNAVAILABLE:
 			drained = true
@@ -87,31 +95,63 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 			% max_passes
 		)
 		return PackedByteArray()
+	# Both remaining ways out are a partial payload, and both are refused rather than
+	# delivered, which is the opposite of the policy one layer up (a packet that fails
+	# mid-way still delivers the messages read before it). The difference: at this layer
+	# a CUT member and a CORRUPTED one are indistinguishable. The only check that
+	# separates them is the member's CRC32, computed at member end and swallowed by
+	# StreamPeerGZIP — the same swallowing that makes the trailer heuristic below
+	# necessary. Deflate's own structure catches most corruption — Godot runs inflate
+	# inside put_partial_data, so it exits through THAT error branch above (measured: 40
+	# of 40 mid-member corruptions of a valid member) — but a hit inside a stored block's
+	# literals, or one that stays a valid Huffman decode, inflates into plausible-but-
+	# wrong bytes that only the CRC would have caught, and those can parse as
+	# structurally valid BSATN and land wrong values in the mirror. That residual is
+	# reasoned, not reproduced. The parse layer's partial delivery is safe
+	# because what it delivers was verified by the structure that parsed it; nothing
+	# here can make that claim.
 	if last_slice_position < compressed_bytes.size():
-		push_warning(
-			"DataDecompressor: %d compressed bytes left unconsumed — trailing bytes after the gzip member." % (compressed_bytes.size() - last_slice_position),
+		# Input the decoder never consumed: everything past the first member's trailer.
+		# The SpacetimeDB server writes exactly one gzip member per frame, so this is a
+		# re-framing proxy or a corrupt payload, not traffic — and delivering member one
+		# alone is a silent short read of a multi-member stream (measured: a 100 + 50
+		# byte two-member stream delivered 100 bytes as a success).
+		printerr(
+			"DataDecompressor Error: %d compressed bytes left unconsumed after the gzip member — dropping the frame."
+			% (compressed_bytes.size() - last_slice_position),
 		)
-	else:
-		_warn_if_truncated(compressed_bytes, decompressed_data.size())
+		return PackedByteArray()
+	if _is_truncated(compressed_bytes, decompressed_data.size()):
+		return PackedByteArray()
 	return decompressed_data
 
 
-## Cross-checks decompressed output against the gzip ISIZE trailer.[br]
+## Cross-checks decompressed output against the gzip ISIZE trailer. [code]true[/code]
+## means the member did not inflate to the size it declares.[br]
 ## [br]
 ## A truncated gzip stream is otherwise silent: [StreamPeerGZIP] consumes every byte
 ## it was given, emits the partial output it managed to inflate, and reports no error
 ## — [method StreamPeerGZIP.finish] is compression-only and always returns
 ## [constant ERR_UNAVAILABLE] here. Without this check a short frame reaches the BSATN
 ## reader looking like a complete one. Only valid when the payload ends with its
-## member trailer, so the caller rules out leftover input first.
-static func _warn_if_truncated(compressed_bytes: PackedByteArray, decompressed_size: int) -> void:
+## member trailer, so the caller rules out leftover input first.[br]
+## [br]
+## A HEURISTIC, not a checksum: for the case it exists to catch there IS no trailer,
+## so the last four bytes are mid-deflate payload read as a size (a real refusal
+## prints numbers like 3942414814 for that reason). It therefore misses a truncation
+## roughly one time in 2^32, and a payload under four bytes — which inflates to
+## nothing worth delivering anyway — is accepted rather than measured.
+static func _is_truncated(compressed_bytes: PackedByteArray, decompressed_size: int) -> bool:
 	if compressed_bytes.size() < 4:
-		return
+		return false
 	var declared_size: int = compressed_bytes.decode_u32(compressed_bytes.size() - 4)
-	if declared_size != decompressed_size & 0xFFFFFFFF:
-		push_warning(
-			"DataDecompressor: decompressed %d bytes but the gzip trailer declares %d — stream is truncated or corrupt." % [decompressed_size, declared_size],
-		)
+	if declared_size == decompressed_size & 0xFFFFFFFF:
+		return false
+	printerr(
+		"DataDecompressor Error: decompressed %d bytes but the gzip trailer declares %d — stream is truncated or corrupt, dropping the frame."
+		% [decompressed_size, declared_size],
+	)
+	return true
 
 
 ## Starting output-size guess for a Brotli frame, as a multiple of the compressed

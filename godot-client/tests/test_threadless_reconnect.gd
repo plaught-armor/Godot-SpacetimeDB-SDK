@@ -8,10 +8,10 @@
 #      fresh mirror after the reconnect. The threaded path goes to some length (the
 #      _session_epoch check in the worker) to make sure exactly those results never touch
 #      the new database.
-#   2. the deserializer's partial-message buffer. A socket that dies mid-message leaves
-#      the front of it in _pending_data, and the first packet of the new session parses
-#      against that prefix. reset_stream_state() exists for this and its own docstring
-#      says to call it on a session boundary; only the worker thread ever did.
+#   2. the deserializer's parse state. A socket that dies mid-message leaves the error
+#      that short read raised, unconsumed, for the first packet of the new session to be
+#      judged by. reset_stream_state() exists for this and its own docstring says to call
+#      it on a session boundary; only the worker thread ever did.
 #
 # This is not an exotic configuration: _setup_threading() force-disables threading when
 # the build reports no thread support, so every threadless web export runs this path.
@@ -47,15 +47,15 @@ func _test_threadless_boundary() -> int:
 	client._deserializer = BSATNDeserializer.new(null, false)
 
 	# Half a message: a tag byte the parser recognises followed by fewer bytes than the
-	# message needs, which is what a socket dying mid-frame leaves behind. The parser
-	# keeps it for the continuation that never comes.
+	# message needs, which is what a socket dying mid-frame leaves behind. The bytes go
+	# no further than the packet that carried them; the error they raised is what the
+	# dying session leaves for the next one to trip over.
 	var truncated: PackedByteArray = [SpacetimeDBServerMessage.Type.INITIAL_CONNECTION, 0x01, 0x02]
 	var parsed: Array[SpacetimeDBServerMessage] = (
 		client._deserializer.process_bytes_and_extract_messages(truncated)
 	)
-	client._deserializer.clear_error()
 	f += _check_i("setup: nothing parsed from the half message", parsed.size(), 0)
-	f += _check_b("setup: parser is holding the prefix", _has_pending(client), true)
+	f += _check_b("setup: the half message is reported", client._deserializer.has_error(), true)
 
 	# And a message parsed out of the dying session that no frame drained yet.
 	client._result_queue.append(SubscribeAppliedMessage.new())
@@ -64,18 +64,7 @@ func _test_threadless_boundary() -> int:
 	client._prepare_for_reconnect()
 
 	f += _check_i("undrained results dropped", client._result_queue.size(), 0)
-	f += _check_b("parser buffer reset", _has_pending(client), false)
-
-	# The fresh session's first packet must parse on its own terms. Feeding the same
-	# truncated prefix again is enough to show the buffer starts empty: it is held once,
-	# not appended to a leftover.
-	client._deserializer.process_bytes_and_extract_messages(truncated)
-	client._deserializer.clear_error()
-	f += _check_i(
-		"fresh session buffers only its own bytes",
-		client._deserializer._pending_data.size(),
-		truncated.size(),
-	)
+	f += _check_b("parser state reset", client._deserializer.has_error(), false)
 
 	client.free()
 	return f
@@ -102,10 +91,6 @@ func _test_threaded_boundary_unchanged() -> int:
 
 	client.free()
 	return f
-
-
-func _has_pending(client: SpacetimeDBClient) -> bool:
-	return not client._deserializer._pending_data.is_empty()
 
 
 func _check_i(label: String, got: int, want: int) -> int:
