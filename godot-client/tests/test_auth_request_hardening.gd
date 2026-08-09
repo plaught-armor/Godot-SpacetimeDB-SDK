@@ -295,8 +295,8 @@ func _make_auth(port: int) -> SpacetimeAuth:
 	var auth: SpacetimeAuth = SpacetimeAuth.new()
 	auth.token_url = "http://127.0.0.1:%d/" % port
 	auth.max_attempts = 4
-	auth.base_retry_delay_seconds = 0.0
-	auth.max_retry_delay_seconds = 0.0
+	auth.base_retry_delay_seconds = SpacetimeAuthProtocol.MIN_RETRY_DELAY_SECONDS
+	auth.max_retry_delay_seconds = SpacetimeAuthProtocol.MIN_RETRY_DELAY_SECONDS
 	auth.request_timeout_seconds = 5.0
 	return auth
 

@@ -70,7 +70,10 @@ static func fail(p_error: Error) -> SpacetimeDBReducerCall:
 ## then inspect [member outcome] / [method is_ok] / [method is_error] / [method decode] /
 ## [member transaction_update] / [member error_message]. Unlike a bare [TransactionUpdateMessage]
 ## return, this distinguishes OK / OK_EMPTY / ERROR / INTERNAL_ERROR / TIMEOUT / DISCONNECTED.
-func wait_for_response(timeout_sec: float = 10.0) -> SpacetimeDBReducerCall:
+## [param timeout_sec] is resolved before it is waited on — see
+## [method SpacetimeDBClient.resolve_wait_timeout] — so a deadline under a frame is
+## refused for the default rather than read as an instant timeout.
+func wait_for_response(timeout_sec: float = SpacetimeDBClient.DEFAULT_RESPONSE_TIMEOUT_SECONDS) -> SpacetimeDBReducerCall:
 	# fail() handles carry a null _client; short-circuit before awaiting on it.
 	# error != OK covers every fail(err); _client == null also catches fail(OK).
 	if error != OK or _client == null:

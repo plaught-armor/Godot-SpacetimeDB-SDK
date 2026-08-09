@@ -219,6 +219,33 @@ const DEFAULT_MAX_RECONNECT_ATTEMPTS: int = 10
 ## is not a fallback — the resolver clamps rather than refusing — but the member default has
 ## to agree with the option default, so it is named here for both to use.
 const DEFAULT_JITTER_FRACTION: float = 0.5
+## Shortest response deadline a caller can ask an await for, and the floor
+## [method resolve_wait_timeout] refuses below.
+##
+## Every awaited call in the public surface — [method query_sql],
+## [method wait_for_reducer_response], [method wait_for_procedure_response],
+## [method SpacetimeDBReducerCall.wait_for_response],
+## [method SpacetimeDBProcedureCall.wait_for_response],
+## [method SpacetimeDBSubscription.wait_for_applied] and
+## [method SpacetimeDBSubscription.wait_for_end] — measures out on a [SceneTreeTimer], so a
+## deadline under a frame is not a shorter wait but no wait at all: the response the server
+## is already sending arrives after the caller has been told it never came. Three frames at
+## 60 fps is the smallest deadline that can survive a frame of scheduling jitter.
+const MIN_RESPONSE_TIMEOUT_SECONDS: float = 0.05
+## Longest response deadline the SDK will wait out, and the ceiling
+## [method resolve_wait_timeout] clamps to.
+##
+## [code]INF[/code] is the obvious way to spell "no timeout" and is the one value
+## [method SceneTree.create_timer] never answers: the await is suspended for the life of the
+## process, and with it the caller's coroutine, its signal connection and its entry in the
+## response cache. Bounding the top turns that into a wait that ends.
+const MAX_RESPONSE_TIMEOUT_SECONDS: float = 3600.0
+## Deadline an await falls back to when the caller's is not one that can be waited out.
+## Matches the default argument of the client's own waiters, so a refused deadline behaves
+## as if the caller had passed nothing. The subscription handle's waiters default to a
+## different number and pass their own — see
+## [constant SpacetimeDBSubscription.DEFAULT_WAIT_SECONDS].
+const DEFAULT_RESPONSE_TIMEOUT_SECONDS: float = 10.0
 # Reconnect pacing resolved from SpacetimeDBConnectionOptions (see
 # _resolve_reconnect_pacing), so a degenerate knob is refused loudly rather than silently
 # shaping every attempt. Defaults mirror the option defaults for a client that was never
@@ -906,7 +933,7 @@ func call_procedure(
 ## Executes a single SQL query without creating a subscription.[br]
 ## Returns an [Array] of [TableUpdateData] with the result rows, or an empty array on error/timeout.[br]
 ## Use [signal one_off_query_received] for non-blocking access.
-func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdateData]:
+func query_sql(query: String, timeout_seconds: float = DEFAULT_RESPONSE_TIMEOUT_SECONDS) -> Array[TableUpdateData]:
 	if not is_connected_db():
 		push_warning("SpacetimeDBClient: Cannot run one-off query, not connected.")
 		return []
@@ -961,7 +988,10 @@ func query_sql(query: String, timeout_seconds: float = 10.0) -> Array[TableUpdat
 ## Awaits the reducer result for [param request_id_to_match], returning the [TransactionUpdateMessage] or [code]null[/code] on timeout.
 ## [br][b]Warning:[/b] a [code]null[/code] return is ambiguous — it can mean a timeout, an [code]okEmpty[/code] outcome, or a server-side error.
 ## Callers that need the actual outcome should use the [SpacetimeDBReducerCall] returned by generated reducer wrappers and call [code]SpacetimeDBReducerCall.wait_for_response[/code] instead.
-func wait_for_reducer_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> TransactionUpdateMessage:
+func wait_for_reducer_response(
+	request_id_to_match: int,
+	timeout_seconds: float = DEFAULT_RESPONSE_TIMEOUT_SECONDS,
+) -> TransactionUpdateMessage:
 	if request_id_to_match < 0:
 		return null
 	return await _wait_for_response(
@@ -973,7 +1003,10 @@ func wait_for_reducer_response(request_id_to_match: int, timeout_seconds: float 
 
 
 ## Awaits the procedure result for [param request_id_to_match], returning the BSATN [PackedByteArray] or empty on timeout.
-func wait_for_procedure_response(request_id_to_match: int, timeout_seconds: float = 10.0) -> PackedByteArray:
+func wait_for_procedure_response(
+	request_id_to_match: int,
+	timeout_seconds: float = DEFAULT_RESPONSE_TIMEOUT_SECONDS,
+) -> PackedByteArray:
 	if request_id_to_match < 0:
 		return PackedByteArray()
 	var result: Variant = await _wait_for_response(
@@ -983,6 +1016,49 @@ func wait_for_procedure_response(request_id_to_match: int, timeout_seconds: floa
 		timeout_seconds,
 	)
 	return result if result != null else PackedByteArray()
+
+
+## [param timeout_seconds] if it is a deadline an await can be measured out by, else
+## [param fallback]. [param setting] names the caller for the diagnostic. Argument order
+## matches its siblings [method _resolve_reconnect_delay] and
+## [method SpacetimeAuthProtocol.resolve_retry_delay].
+##
+## [param fallback] is the CALLER's default, not one number for the whole SDK: a refused
+## deadline has to behave as if the caller had passed nothing, and the subscription handle's
+## waiters default to a shorter one than the client's.
+##
+## Clamped at the top, refused at the bottom, the same split the socket limits
+## ([method SpacetimeDBConnection.resolve_buffer_size]) and the reconnect delays
+## ([method _resolve_reconnect_delay]) take, and for the same reason: above
+## [constant MAX_RESPONSE_TIMEOUT_SECONDS] the intent is unambiguous (wait longer, and
+## [code]INF[/code] means wait forever, which [method SceneTree.create_timer] answers by
+## never firing at all); below [constant MIN_RESPONSE_TIMEOUT_SECONDS] it is not. Zero,
+## negative and NaN all land in the bottom branch and all mean the same thing to the engine
+## — the timer fires on the very next frame — so the caller is handed a timeout before the
+## server could answer, which reads as "the server did not answer" for a server that did.
+## [code]0[/code] is the shape worth naming: [HTTPRequest] reads it as "no timeout", so it
+## is the value a caller reaches for meaning the opposite of what it does here.
+static func resolve_wait_timeout(timeout_seconds: float, fallback: float, setting: String) -> float:
+	if timeout_seconds > MAX_RESPONSE_TIMEOUT_SECONDS:
+		push_error(
+			(
+				"SpacetimeDBClient: %s = %s is above the %.0f-second maximum (INF lands here "
+				+ "too, and an infinite wait never times out at all); using %.0f instead."
+			)
+			% [setting, timeout_seconds, MAX_RESPONSE_TIMEOUT_SECONDS, MAX_RESPONSE_TIMEOUT_SECONDS]
+		)
+		return MAX_RESPONSE_TIMEOUT_SECONDS
+	if timeout_seconds >= MIN_RESPONSE_TIMEOUT_SECONDS:
+		return timeout_seconds
+	push_error(
+		(
+			"SpacetimeDBClient: %s = %s is not a deadline that can be waited out — under the "
+			+ "%.2f-second minimum the wait ends on the next frame, before any answer could "
+			+ "arrive, and zero, negative and NaN all do the same; using %s instead."
+		)
+		% [setting, timeout_seconds, MIN_RESPONSE_TIMEOUT_SECONDS, fallback]
+	)
+	return fallback
 
 
 ## [param trailing_args_to_drop] is the number of signal arguments past
@@ -997,6 +1073,16 @@ func _wait_for_response(
 	timeout_seconds: float,
 	trailing_args_to_drop: int = 0,
 ) -> Variant:
+	# Resolved here rather than at each public entry point: this is the one place the
+	# caller's float reaches the engine, so a deadline that cannot be waited out is named
+	# once no matter which waiter was called. Before the cache check, not after, or a
+	# caller that always passes a refused deadline would be told about it or not depending
+	# on whether the response happened to have landed already.
+	var deadline: float = resolve_wait_timeout(
+		timeout_seconds,
+		DEFAULT_RESPONSE_TIMEOUT_SECONDS,
+		"timeout_seconds",
+	)
 	if cache.has(request_id):
 		var cached: Variant = cache[request_id]
 		cache.erase(request_id)
@@ -1005,7 +1091,7 @@ func _wait_for_response(
 	# Wall clock (ignore_time_scale): a response timeout measures the server, and a game
 	# frozen with Engine.time_scale = 0 would otherwise leave this await suspended for
 	# the whole freeze — indefinitely, for a pause menu that holds the scale at zero.
-	var timer: SceneTreeTimer = get_tree().create_timer(timeout_seconds, true, false, true)
+	var timer: SceneTreeTimer = get_tree().create_timer(deadline, true, false, true)
 	var result_container: Array = [null]
 	# done lives in a container because GDScript lambdas capture local primitives
 	# by value (godot#69014); a bare `var done` would never reflect the mutation.

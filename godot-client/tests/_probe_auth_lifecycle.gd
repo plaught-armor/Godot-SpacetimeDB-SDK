@@ -9,6 +9,7 @@
 #   3. a 302 redirect — what the redirect target receives
 #   4. a 307 redirect on a POST — Godot refuses to follow unsafe methods
 #   5. request_timeout_seconds = 0 against a silent server (wedge check)
+#     — now refused before any socket opens, so the case measures the refusal
 #
 # Scenarios 3 and 5 each found a defect; both are fixed, and
 # tests/test_auth_request_hardening.gd is the regression test that pins them.
@@ -271,8 +272,8 @@ func _make_auth(port: int) -> SpacetimeAuth:
 	var auth: SpacetimeAuth = SpacetimeAuth.new()
 	auth.token_url = "http://127.0.0.1:%d/" % port
 	auth.max_attempts = 4
-	auth.base_retry_delay_seconds = 0.0
-	auth.max_retry_delay_seconds = 0.0
+	auth.base_retry_delay_seconds = SpacetimeAuthProtocol.MIN_RETRY_DELAY_SECONDS
+	auth.max_retry_delay_seconds = SpacetimeAuthProtocol.MIN_RETRY_DELAY_SECONDS
 	auth.request_timeout_seconds = 5.0
 	return auth
 

@@ -124,6 +124,26 @@ Close a subscription by calling `unsubscribe(query_id)` with the query id of an 
 
 If the connection drops before that confirmation arrives, the query is dropped anyway: an auto-reconnect re-subscribes the queries you still hold, never one you already unsubscribed.
 
+### Response deadlines
+
+Every awaited call below takes a deadline in seconds — `wait_for_reducer_response()`,
+`wait_for_procedure_response()`, `query_sql()`, `SpacetimeDBReducerCall.wait_for_response()`,
+`SpacetimeDBProcedureCall.wait_for_response()`, and `SpacetimeDBSubscription.wait_for_applied()`
+/ `wait_for_end()`. The deadline is measured on a `SceneTreeTimer` and is resolved before it
+reaches one:
+
+| Deadline                                | What happens                                                         |
+| --------------------------------------- | -------------------------------------------------------------------- |
+| `0.05` – `3600.0` seconds                | Used as given.                                                       |
+| Above `3600.0`, including `INF`          | Clamped to `3600.0`. `INF` is not "no timeout" — an infinite timer never fires, so the await would never return. |
+| Below `0.05`, including `0`, negatives and `NAN` | Refused, and the waiter's own default is used instead (`10.0` for the client's, `5.0` for the subscription handle's), with an error naming the setting. A sub-frame deadline is not a shorter wait but no wait: the await ends before any answer could arrive. |
+
+Note that `0` means "no timeout" to Godot's `HTTPRequest` and the opposite here, which is why
+it is refused rather than honoured. The resolution is
+`SpacetimeDBClient.resolve_wait_timeout(seconds, fallback, setting)`, a public static, if you
+want to apply the same rule to a deadline of your own before passing it in. The wait is wall-clock, so `Engine.time_scale = 0` (a
+paused game) does not suspend it. A wait also ends early when the connection drops.
+
 ### Call reducers
 
 #### `call_reducer()` method
@@ -155,7 +175,7 @@ class SpacetimeDBClient:
 | Name            | Description                                                       |
 | --------------- | ----------------------------------------------------------------- |
 | request_id_to_match | The id of the reducer call request to wait for.               |
-| timeout_seconds | The number of seconds to wait for the response before timing out. |
+| timeout_seconds | The number of seconds to wait for the response before timing out. See [Response deadlines](#response-deadlines). |
 
 Waits for the reducer call response and returns the received `TransactionUpdateMessage`, or returns `null` if there is an error or it times out.
 
@@ -172,7 +192,7 @@ class SpacetimeDBClient:
 | Name            | Description                                                       |
 | --------------- | ----------------------------------------------------------------- |
 | query           | A single SQL `SELECT` statement to execute.                       |
-| timeout_seconds | The number of seconds to wait for the response before timing out. |
+| timeout_seconds | The number of seconds to wait for the response before timing out. See [Response deadlines](#response-deadlines). |
 
 Executes a single SQL query without creating a subscription. Returns an array of `TableUpdateData` with the result rows (inserts only), or an empty array on error or timeout.
 
@@ -211,7 +231,7 @@ class SpacetimeDBClient:
 | Name            | Description                                                       |
 | --------------- | ----------------------------------------------------------------- |
 | request_id_to_match | The id of the procedure call request to wait for.             |
-| timeout_seconds | The number of seconds to wait for the response before timing out. |
+| timeout_seconds | The number of seconds to wait for the response before timing out. See [Response deadlines](#response-deadlines). |
 
 Waits for the procedure call response and returns the raw BSATN-encoded return bytes, or returns an empty `PackedByteArray` if there is an error or it times out.
 
@@ -970,7 +990,7 @@ class SpacetimeDBSubscription:
 
 | Name | Description |
 | --- | --- |
-| timeout_sec | The number of seconds to wait for the subscription to be applied before timing out. |
+| timeout_sec | The number of seconds to wait for the subscription to be applied before timing out. See [Response deadlines](#response-deadlines) — a refused value falls back to this method's own `5.0` default, not the client's `10.0`. |
 
 Waits for the subscription to be applied, or until it times out.
 
@@ -989,7 +1009,7 @@ class SpacetimeDBSubscription:
 
 | Name | Description |
 | --- | --- |
-| timeout_sec | The number of seconds to wait for the subscription to be terminated before timing out. |
+| timeout_sec | The number of seconds to wait for the subscription to be terminated before timing out. See [Response deadlines](#response-deadlines) — a refused value falls back to this method's own `5.0` default, not the client's `10.0`. |
 
 Waits for the subscription to be terminated, or until it times out.
 
@@ -1145,7 +1165,7 @@ class SpacetimeDBReducerCall:
 
 | Name        | Description                                                       |
 | ----------- | ----------------------------------------------------------------- |
-| timeout_sec | The number of seconds to wait for the response before timing out. |
+| timeout_sec | The number of seconds to wait for the response before timing out. See [Response deadlines](#response-deadlines). |
 
 Waits for the reducer call response, or until it times out, then returns this handle (`self`) so the result is available in one step. Inspect [`outcome`](#outcome-property), [`transaction_update`](#transaction_update-property), [`error_message`](#error_message-property-1), and [`decode()`](#decode-method) on the returned handle. On timeout `outcome` is set to `TIMEOUT`.
 
@@ -1226,7 +1246,7 @@ class SpacetimeDBProcedureCall:
 
 | Name        | Description                                                       |
 | ----------- | ----------------------------------------------------------------- |
-| timeout_sec | The number of seconds to wait for the response before timing out. |
+| timeout_sec | The number of seconds to wait for the response before timing out. See [Response deadlines](#response-deadlines). |
 
 Waits for the procedure response, or until it times out, then returns this handle (`self`). Inspect `outcome`, `return_bytes`, `error_message`, and [`decode()`](#decode-method-1) on the returned handle. On timeout `outcome` is set to `TIMEOUT`.
 
@@ -1427,6 +1447,18 @@ class SpacetimeAuth:
     @export var max_retry_delay_seconds: float = 4.0
     @export var redact_fields: PackedStringArray   # request fields masked in debug logs
 ```
+
+`request_timeout_seconds` must be between `0.05` and `120.0` seconds. `exchange()` refuses
+anything below that — `0` (which `HTTPRequest` reads as "no timeout"), a negative value,
+`NAN`, and a sub-frame value that would report the request as timed out before a round trip
+could finish. `INF` and anything above `120.0` are clamped to `120.0` rather than refused: a
+huge finite value is the same wedge as an infinite one, since `HTTPRequest` starts a timer
+that will not expire inside the process's life. `max_attempts` is clamped to `10` for the
+same reason — each attempt costs a request timeout plus a backoff delay, the exchange cannot
+be cancelled, and at those two ceilings plus the retry-delay ceiling one exchange can still
+suspend for up to 29 minutes. The two retry delays are resolved once per exchange: anything under `0.05` seconds (including `0`,
+negatives and `NAN`) falls back to the default above, and anything over `60.0` — the ceiling
+on a pause *between two attempts of one exchange*, `INF` included — is clamped to it.
 
 #### `exchange()` method
 

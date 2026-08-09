@@ -9,6 +9,66 @@ extends RefCounted
 ## Characters that carry meaning inside a RegEx pattern, and so have to be
 ## escaped for one to match itself. See [method _escape_regex_literal].
 const _REGEX_METACHARACTERS: String = "\\^$.|?*+()[]{}"
+## Shortest retry delay [method resolve_retry_delay] accepts. The loop waits on a
+## [SceneTreeTimer], so under a frame is not a shorter wait but no wait at all.
+const MIN_RETRY_DELAY_SECONDS: float = 0.05
+## Longest retry delay accepted, and the ceiling both bounds clamp to. Bounding the top is
+## what keeps the delay finite — see [method backoff_delay].
+##
+## An order of magnitude under [constant SpacetimeDBClient.MAX_RESPONSE_TIMEOUT_SECONDS] on
+## purpose: the two bound different quantities. That one is how long a caller is willing to
+## wait for an answer; this one is how long [method SpacetimeAuth.exchange] pauses BETWEEN
+## two attempts of a single exchange, with its coroutine suspended and its in-flight guard
+## held the whole time. Nothing bounds the product of this and
+## [member SpacetimeAuth.max_attempts], so the ceiling is what keeps a degenerate pair from
+## turning "retry a few times" into an hours-long suspension.
+const MAX_RETRY_DELAY_SECONDS: float = 60.0
+## Fallback for a first-retry delay that cannot be waited out. Mirrors
+## [member SpacetimeAuth.base_retry_delay_seconds]'s default, so a refused value behaves as
+## if the node had been left alone.
+const DEFAULT_BASE_RETRY_DELAY: float = 0.5
+## Fallback for an unusable backoff ceiling. Mirrors
+## [member SpacetimeAuth.max_retry_delay_seconds]'s default.
+const DEFAULT_MAX_RETRY_DELAY: float = 4.0
+## Longest single HTTP request [SpacetimeAuth] will wait on, and the ceiling
+## [member SpacetimeAuth.request_timeout_seconds] clamps to.
+##
+## A floor alone is not enough: [HTTPRequest] starts its timeout timer only for a POSITIVE
+## timeout, so [code]INF[/code] starts one that never counts down and a merely enormous
+## finite value (a milliseconds figure typed into a seconds field) is the same wedge without
+## tripping any is-finite check.
+##
+## Far below [constant SpacetimeDBClient.MAX_RESPONSE_TIMEOUT_SECONDS], for the reason
+## [constant MAX_RETRY_DELAY_SECONDS] is: this bounds a pause INSIDE one
+## [method SpacetimeAuth.exchange] — repeated once per attempt, with the coroutine suspended,
+## the in-flight guard held and no abort signal — not a caller's own willingness to wait.
+## Two minutes is long for an OIDC token POST and short enough to keep the worst case in
+## [constant MAX_ATTEMPTS]'s note a wait rather than an outage.
+const MAX_REQUEST_TIMEOUT_SECONDS: float = 120.0
+## Shortest request timeout accepted. Below this the request is answered as timed out before
+## a LAN round trip could finish (measured: 0.01 reported TIMEOUT in 0 ms, before the TCP
+## connection was even accepted), which is the same "told the server did not answer before
+## it could have" this whole resolution exists to prevent.
+const MIN_REQUEST_TIMEOUT_SECONDS: float = 0.05
+## What [method resolve_request_timeout] answers for a value it refuses outright.
+##
+## Negative rather than [code]0.0[/code] deliberately: this is a public static, and
+## [code]0.0[/code] is exactly [HTTPRequest]'s "no timeout" — the wedge the resolution
+## exists to prevent — so a caller who assigned the refusal straight to
+## [member HTTPRequest.timeout] would install the bug instead of being stopped by it.
+## [method HTTPRequest.set_timeout] refuses a negative value loudly and keeps its previous
+## one, so a misuse fails at the boundary.
+const REFUSED_REQUEST_TIMEOUT: float = -1.0
+## Most attempts one [method SpacetimeAuth.exchange] may make.
+##
+## The other factor of the suspension a single exchange can cost: each attempt waits out a
+## request timeout and then a backoff delay, and nothing bounds their product but these
+## three ceilings. Worst case with every knob pushed over its ceiling is
+## [code]10 x 120 + 9 x 60 = 1740[/code] seconds — 29 minutes, against the 10 hours the same
+## arithmetic gave before the request timeout was bounded, and the hours-to-days an
+## unbounded attempt budget gave before that. It is still a long time for an exchange that
+## cannot be cancelled, so it is a bound on damage, not a target.
+const MAX_ATTEMPTS: int = 10
 
 # Maps HTTPRequest.RESULT_* to a readable name for diagnostics (D7 condition
 # table over a value-only match — P2/D7b). `.get(rc, ...)` because `rc` is an
@@ -62,8 +122,114 @@ static func is_transient(code: int) -> bool:
 
 ## Exponential backoff in seconds, clamped to [param cap]. [param attempt] is
 ## 0-based, so attempt 0 returns [param base].
+##
+## Both bounds are resolved again here ([method resolve_retry_delay]) even though
+## [method SpacetimeAuth.exchange] resolves them once before its retry loop — a second pass
+## over already-resolved values reports nothing, and it keeps a direct caller from handing
+## the result to a timer that cannot fire. The result goes straight to
+## [method SceneTree.create_timer] in that loop, which has no way out of a delay that never
+## elapses: zero or negative spends the whole
+## attempt budget inside a handful of frames, and [code]INF[/code] — which survives
+## [method @GlobalScope.minf] when it is the cap AND when it is the base — suspends the
+## exchange for the life of the process with no abort signal to escape it. NaN survives the
+## clamp from either side too ([method @GlobalScope.minf] returns its second argument when
+## [code]a < b[/code] is false, and every comparison against NaN is false), and a NaN wait
+## fires on the next frame.
 static func backoff_delay(attempt: int, base: float, cap: float) -> float:
-	return minf(cap, base * pow(2.0, attempt))
+	var resolved_base: float = resolve_retry_delay(base, DEFAULT_BASE_RETRY_DELAY, "backoff base")
+	var resolved_cap: float = resolve_retry_delay(cap, DEFAULT_MAX_RETRY_DELAY, "backoff cap")
+	return minf(resolved_cap, resolved_base * pow(2.0, attempt))
+
+
+## [param value] if it is a delay the retry loop can wait out, else [param fallback].
+## [param setting] names the caller for the diagnostic.
+##
+## Clamped at the top, refused at the bottom — the split the SDK's other knob resolvers
+## take ([method SpacetimeDBConnection.resolve_buffer_size],
+## [method SpacetimeDBClient.resolve_wait_timeout]). Above
+## [constant MAX_RETRY_DELAY_SECONDS] the intent is unambiguous (wait longer); below
+## [constant MIN_RETRY_DELAY_SECONDS] it is not, since a sub-frame delay is not a shorter
+## wait but no wait, and the retries then land on the endpoint that is already failing as
+## fast as the frame loop allows.
+static func resolve_retry_delay(value: float, fallback: float, setting: String) -> float:
+	if value > MAX_RETRY_DELAY_SECONDS:
+		push_error(
+			(
+				"SpacetimeAuthProtocol: %s = %s is above the %.0f-second maximum (INF lands "
+				+ "here too, and an infinite delay never elapses at all); using %.0f instead."
+			)
+			% [setting, value, MAX_RETRY_DELAY_SECONDS, MAX_RETRY_DELAY_SECONDS]
+		)
+		return MAX_RETRY_DELAY_SECONDS
+	if value >= MIN_RETRY_DELAY_SECONDS:
+		return value
+	push_error(
+		(
+			"SpacetimeAuthProtocol: %s = %s is not a delay the retry loop can wait out — "
+			+ "under the %.2f-second minimum the retries run a frame apart, and zero, "
+			+ "negative and NaN all do the same; using %s instead."
+		)
+		% [setting, value, MIN_RETRY_DELAY_SECONDS, fallback]
+	)
+	return fallback
+
+
+## [param value] if it is a request timeout [HTTPRequest] can act on, else
+## [constant MAX_REQUEST_TIMEOUT_SECONDS] when it is over the ceiling and
+## [constant REFUSED_REQUEST_TIMEOUT] when it cannot be used at all.
+##
+## Zero, negative, NaN and anything under [constant MIN_REQUEST_TIMEOUT_SECONDS] are NOT
+## clamped up to something usable: they are the caller saying something
+## [method SpacetimeAuth.exchange] refuses outright, and it reports the refusal as the
+## exchange's own error rather than silently substituting a deadline. The refusal comes
+## back as a distinct value rather than a substitute, which is why this is not shaped like
+## [method resolve_retry_delay].
+static func resolve_request_timeout(value: float) -> float:
+	if value > MAX_REQUEST_TIMEOUT_SECONDS:
+		push_error(
+			(
+				"SpacetimeAuthProtocol: request_timeout_seconds = %s is above the %.0f-second "
+				+ "maximum (INF lands here too, and HTTPRequest starts a timer that never "
+				+ "counts down); using %.0f instead."
+			)
+			% [value, MAX_REQUEST_TIMEOUT_SECONDS, MAX_REQUEST_TIMEOUT_SECONDS]
+		)
+		return MAX_REQUEST_TIMEOUT_SECONDS
+	if value >= MIN_REQUEST_TIMEOUT_SECONDS:
+		return value
+	if value > 0.0:
+		push_error(
+			(
+				"SpacetimeAuthProtocol: request_timeout_seconds = %s is below the %.2f-second "
+				+ "minimum — the request is reported as timed out before a round trip could "
+				+ "finish — and is refused."
+			)
+			% [value, MIN_REQUEST_TIMEOUT_SECONDS]
+		)
+	return REFUSED_REQUEST_TIMEOUT
+
+
+## [param value] clamped into the attempt budget one exchange may spend.
+##
+## [method SpacetimeAuth.exchange] refuses a budget below one outright, before calling this,
+## so the bottom arm here is only reachable by a direct caller — it exists so this cannot
+## answer with a value nothing can use. See [constant MAX_ATTEMPTS] for what the ceiling
+## bounds.
+static func resolve_attempts(value: int) -> int:
+	if value < 1:
+		push_error("SpacetimeAuthProtocol: max_attempts = %d is not a request; using 1." % value)
+		return 1
+	if value <= MAX_ATTEMPTS:
+		return value
+	push_error(
+		(
+			"SpacetimeAuthProtocol: max_attempts = %d is above the maximum %d; each attempt "
+			+ "waits out a request timeout and a backoff delay, and the exchange cannot be "
+			+ "cancelled, so the budget is capped. Using %d instead."
+		)
+		% [value, MAX_ATTEMPTS, MAX_ATTEMPTS]
+	)
+	return MAX_ATTEMPTS
 
 
 ## Readable name for an [enum HTTPRequest.Result] transport code (e.g.
