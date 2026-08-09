@@ -20,6 +20,12 @@ signal applied
 ## Emitted when the subscription is ended (unsubscribed or errored).
 signal end
 
+## Deadline both waiters default to, and the one they fall back to when the caller's
+## cannot be waited out ([method SpacetimeDBClient.resolve_wait_timeout]). Shorter than the
+## client's own default because a subscription settles on the server's first response,
+## not on a round trip that carries a reducer's work.
+const DEFAULT_WAIT_SECONDS: float = 5.0
+
 ## Client-assigned query set id.
 var query_id: int = -1
 ## The SQL queries registered with this subscription.
@@ -68,12 +74,29 @@ static func fail(error: Error) -> SpacetimeDBSubscription:
 
 
 ## Awaits until the subscription is applied or [param timeout_sec] elapses.[br]
+## [param timeout_sec] is resolved before it is waited on — see
+## [method SpacetimeDBClient.resolve_wait_timeout].[br]
 ## Returns [constant OK] on success, [constant ERR_TIMEOUT] on timeout, or
 ## [constant ERR_DOES_NOT_EXIST] if the subscription ended before applying.
-func wait_for_applied(timeout_sec: float = 5) -> Error:
+func wait_for_applied(timeout_sec: float = DEFAULT_WAIT_SECONDS) -> Error:
+	# Resolved before the state short-circuits below, not after them: a caller
+	# that always passes a deadline the loop cannot be paced by would otherwise be told so
+	# or not depending on whether the subscription happened to have settled already.
+	var deadline: float = SpacetimeDBClient.resolve_wait_timeout(
+		timeout_sec,
+		DEFAULT_WAIT_SECONDS,
+		"timeout_sec",
+	)
 	if _state == State.ACTIVE:
 		return OK
 	if _state == State.ENDED:
+		return ERR_DOES_NOT_EXIST
+	# The owner may have been freed while the caller held this handle (H8): _client is a
+	# Node, so touching it faults, and a fault unwinds the function to its default — Error
+	# 0, i.e. OK, which reads as "applied" for a subscription that never was. Below the
+	# state checks on purpose: a handle that really did settle before its owner died keeps
+	# reporting what happened.
+	if not is_instance_valid(_client):
 		return ERR_DOES_NOT_EXIST
 	var tree: SceneTree = _client.get_tree()
 	if tree == null:
@@ -81,9 +104,12 @@ func wait_for_applied(timeout_sec: float = 5) -> Error:
 	# Per-await LOCAL timer + poll. Concurrent awaiters on the same handle each get
 	# their own deadline instead of clobbering a shared timer/broadcast signal (which
 	# let a short-timeout caller resolve a long-timeout caller early).
+	# A deadline the loop cannot be paced by was refused above the state checks: NaN and
+	# anything <= 0 fail `time_left > 0.0` on the first pass, so the caller would get
+	# ERR_TIMEOUT without ever yielding, and INF would make this loop unbounded.
 	# Wall clock (ignore_time_scale): the deadline is about the server answering, so a
 	# game frozen with Engine.time_scale = 0 must not suspend it for the whole freeze.
-	var timer: SceneTreeTimer = tree.create_timer(timeout_sec, true, false, true)
+	var timer: SceneTreeTimer = tree.create_timer(deadline, true, false, true)
 	while _state == State.PENDING and timer.time_left > 0.0:
 		await tree.process_frame
 		if not is_instance_valid(_client): # client freed mid-await (C5 / H8)
@@ -95,15 +121,26 @@ func wait_for_applied(timeout_sec: float = 5) -> Error:
 	return ERR_TIMEOUT
 
 
-## Awaits until the subscription ends or [param timeout_sec] elapses.
-func wait_for_end(timeout_sec: float = 5) -> Error:
+## Awaits until the subscription ends or [param timeout_sec] elapses, resolved as in
+## [method wait_for_applied].
+func wait_for_end(timeout_sec: float = DEFAULT_WAIT_SECONDS) -> Error:
+	# Resolved up front — see wait_for_applied.
+	var deadline: float = SpacetimeDBClient.resolve_wait_timeout(
+		timeout_sec,
+		DEFAULT_WAIT_SECONDS,
+		"timeout_sec",
+	)
 	if _state == State.ENDED:
 		return OK
+	# Freed owner — see wait_for_applied. Here the unwound default would be OK, which for
+	# this waiter means "the subscription ended cleanly".
+	if not is_instance_valid(_client):
+		return ERR_DOES_NOT_EXIST
 	var tree: SceneTree = _client.get_tree()
 	if tree == null:
 		return ERR_DOES_NOT_EXIST
 	# Wall clock — see wait_for_applied above.
-	var timer: SceneTreeTimer = tree.create_timer(timeout_sec, true, false, true)
+	var timer: SceneTreeTimer = tree.create_timer(deadline, true, false, true)
 	while _state != State.ENDED and timer.time_left > 0.0:
 		await tree.process_frame
 		if not is_instance_valid(_client): # client freed mid-await (C5 / H8)

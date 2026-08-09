@@ -8,7 +8,10 @@
 #   - unreachable port -> transport error after retries exhausted
 #   - node freed mid-backoff -> clean bail, no crash (C5)
 #
-# Retry delays are set to 0 so the retry cases finish in a couple of frames.
+# Retry delays are set to SpacetimeAuthProtocol.MIN_RETRY_DELAY_SECONDS — the shortest
+# value the resolver accepts — so the retry cases finish in a few frames. Zero is
+# refused and replaced by the 0.5 s default, which would put a multi-attempt case
+# most of the way through this file's frame budget.
 #
 # Run:
 #   cd godot-client && <godot> --headless --path . \
@@ -90,8 +93,8 @@ func _case_free_during_backoff() -> int:
 	var auth: SpacetimeAuth = SpacetimeAuth.new()
 	auth.token_url = "http://127.0.0.1:38274/"
 	auth.max_attempts = 4
-	auth.base_retry_delay_seconds = 0.0
-	auth.max_retry_delay_seconds = 0.0
+	auth.base_retry_delay_seconds = SpacetimeAuthProtocol.MIN_RETRY_DELAY_SECONDS
+	auth.max_retry_delay_seconds = SpacetimeAuthProtocol.MIN_RETRY_DELAY_SECONDS
 	root.add_child(auth)
 	await process_frame # let the node actually enter the tree before exchange()
 
@@ -144,8 +147,8 @@ func _serve_and_exchange(
 	var auth: SpacetimeAuth = SpacetimeAuth.new()
 	auth.token_url = "http://127.0.0.1:%d/" % port
 	auth.max_attempts = attempts
-	auth.base_retry_delay_seconds = 0.0
-	auth.max_retry_delay_seconds = 0.0
+	auth.base_retry_delay_seconds = SpacetimeAuthProtocol.MIN_RETRY_DELAY_SECONDS
+	auth.max_retry_delay_seconds = SpacetimeAuthProtocol.MIN_RETRY_DELAY_SECONDS
 	auth.request_timeout_seconds = 5.0
 	root.add_child(auth)
 	await process_frame # let the node actually enter the tree before exchange()

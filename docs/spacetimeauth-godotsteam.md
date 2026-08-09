@@ -67,9 +67,9 @@ Exported knobs (all optional, sensible defaults):
 | export | default | purpose |
 |---|---|---|
 | `token_url` | `https://auth.spacetimedb.com/oidc/token` | override for a self-hosted SpacetimeAuth |
-| `request_timeout_seconds` | `15.0` | bounds a network hang (DNS/TLS stall); must be **greater than zero** — `exchange()` refuses a non-positive value rather than let `HTTPRequest` read it as "no timeout" |
-| `max_attempts` | `4` | transient failures (transport error / 5xx) retry with exponential backoff; a 2xx/4xx is authoritative and never retried |
-| `base_retry_delay_seconds` / `max_retry_delay_seconds` | `0.5` / `4.0` | backoff bounds |
+| `request_timeout_seconds` | `15.0` | bounds a network hang (DNS/TLS stall); must be between **`0.05` and `120.0` seconds** — `exchange()` refuses `0` (which `HTTPRequest` reads as "no timeout"), a negative value, `NAN` and any sub-frame value, and clamps `INF` or anything over `120.0` down to `120.0`, since a huge finite timeout wedges the same way an infinite one does |
+| `max_attempts` | `4` | transient failures (transport error / 5xx) retry with exponential backoff; a 2xx/4xx is authoritative and never retried. Clamped to `10` — each attempt costs a request timeout plus a backoff delay and the exchange cannot be cancelled |
+| `base_retry_delay_seconds` / `max_retry_delay_seconds` | `0.5` / `4.0` | backoff bounds, resolved once per exchange: under `0.05` s (including `0`, negatives, `NAN`) falls back to the default, over `60.0` s (including `INF`) is clamped |
 | `redact_fields` | `["id_token","access_token","refresh_token","token","code","ticket","client_secret"]` | field **values** scrubbed from any error body echoed to the log |
 | `debug_mode` | `false` | set `true` to log the request/response summary |
 
