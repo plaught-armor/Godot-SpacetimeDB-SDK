@@ -33,6 +33,28 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **Subscriptions the server never answers no longer grow without bound, and no longer
+  turn into an unbounded burst on the next reconnect.** Reducer and procedure calls were
+  already capped; the subscription path never was. Measured against a loopback server that
+  accepts Subscribe and answers nothing: 300 subscribes left 300 pending, 600 left 600,
+  each holding a handle and its query strings — and because the reconnect saves pending
+  subscriptions as well as applied ones, 200 unanswered subscribes produced 200 Subscribe
+  messages on the socket after a drop, at the moment the connection is least healthy. A
+  new cap (4096, the same runaway backstop the call caps use) now REFUSES a subscribe made
+  while that many are still unanswered, returning a handle carrying `ERR_BUSY`, rather than
+  evicting an older one: a dropped call loses a response, but a dropped subscription would
+  lose ownership of state the server is still streaming. (Numbers above are from the
+  pre-fix probe at the burst sizes then in force; it now runs 5000 and reports 4096.) The refusal happens before an id
+  is taken or anything is sent, so it creates nothing server-side and is reported once per
+  backlog rather than once per call. The reconnect's own resubscribe loop is exempt — it
+  issues every saved set in one pass, so applying the cap there would have refused and
+  lost the tail of the game's own previously-acknowledged state (measured: 4116
+  live subscriptions, 20 query sets gone, `reconnected` emitted as if it had worked). Also
+  in the same path: `unsubscribe()` now refuses the `-1` a failed handle carries instead of
+  answering with a serializer error about `query_id`, and a resubscribe whose sends fail
+  reports once with a count instead of once per set.
+  `tests/test_pending_subscription_cap.gd`, `tests/_probe_long_session.gd`.
+
 - **A message too large to send now says so, and a close reason too long to send no
   longer wedges the socket.** Two values this SDK hands the engine on the way out were
   passed on unexamined. A message larger than `outbound_buffer_size` (2 MB by default)

@@ -136,6 +136,42 @@ const _MAX_RESULT_CACHE_SIZE: int = 256
 ## Same number as [constant SpacetimeDBStats.MAX_PENDING], which bounds the four-category
 ## total rather than any one kind — the constant is shared, the running counts are not.
 const _MAX_PENDING_CALLS: int = SpacetimeDBStats.MAX_PENDING
+## Cap on subscriptions awaiting their first [code]SubscribeApplied[/code].
+##
+## The same failure the call cap answers, with a second cost on top: a never-applied
+## subscription is SAVED at the next drop and re-sent on the reconnect
+## ([method _start_reconnection] rebuilds from pending as well as current), so a server
+## that stops answering Subscribe while the socket stays up turns into an outbound burst
+## the moment the connection breaks. Measured (`tests/_probe_long_session.gd`): 200
+## unanswered subscribes produced 200 Subscribe messages on the new socket, and nothing
+## bounded either number.
+##
+## Reaching it REFUSES the new subscribe rather than evicting an old one, which is the
+## opposite of what the call caps do, for a reason: a dropped call loses a response, while
+## a dropped subscription loses ownership of state the server is still streaming — no
+## Unsubscribe was ever sent, so the rows keep arriving with no handle left to stop them,
+## and the caller most likely to be waiting is the oldest one. Refusing costs the newest
+## caller a handle it can retry; evicting costs an older caller a query it cannot.
+##
+## Same number as the call cap for the same reason: this is a runaway backstop, not a
+## working limit. What it counts is subscribes IN FLIGHT, not server muteness — a game
+## issuing hundreds in one frame (a chunked world, a per-entity area of interest) stays
+## well under it, and the reconnect's resubscribe loop, which would otherwise cross it by
+## construction, is exempt (see [method _subscribe_uncapped]).
+##
+## Two related gaps this does NOT close, recorded rather than fixed. [member
+## current_subscriptions] is not capped: the ones the server acknowledged are the caller's
+## real state, but the subset the caller has since unsubscribed is only released when the
+## server answers, so a server that applies Subscribe and never answers Unsubscribe grows
+## it (with [member _unsubscribing_query_ids] and the mirror's per-query membership) until
+## the next disconnect. And a [code]SubscriptionError[/code] carrying no query id cannot
+## release its pending entry at all — with a cap in place that entry would be permanent for
+## the session. The second is not representable on this wire: v3's
+## [code]SubscriptionError.query_set_id[/code] is a plain [code]QuerySetId[/code], not an
+## [code]Option[/code] (`client-api-messages/src/websocket/v2.rs`), and only
+## [code]request_id[/code] is optional; this SDK's message class keeps a
+## [code]has_query_id()[/code] from the older protocols and the reader always fills it.
+const _MAX_PENDING_SUBSCRIPTIONS: int = _MAX_PENDING_CALLS
 # Cache of reducer results that arrived before anyone called wait_for_reducer_response
 var _reducer_result_cache: Dictionary[int, TransactionUpdateMessage] = { } # request_id -> TransactionUpdateMessage (or null)
 var _pending_reducer_calls: Dictionary[int, SpacetimeDBReducerCall] = { }
@@ -290,6 +326,14 @@ var _saved_subscription_queries: Array[PackedStringArray] = []
 ## Only ever holds ids that were in current/pending when the Unsubscribe was sent, so it
 ## is bounded by the live subscription count; cleared with those maps.
 var _unsubscribing_query_ids: Dictionary[int, bool] = { }
+## Whether the subscribe backlog has already been reported since the last subscribe that
+## got through. The refusal repeats for every call a game makes while the backlog stands
+## and the text is a paragraph, so it is reported on the way into that state rather than
+## once per call; the ERR_BUSY handle is what every call gets.
+var _subscribe_backlog_reported: bool = false
+## How many times a backlog has been reported this session. Diagnostics only; it exists so
+## a test can pin that a repeat is suppressed, which the flag alone cannot show.
+var _subscribe_backlog_reports: int = 0
 ## Bumped on every new reconnect cycle (start/cancel/resubscribe). A resubscribe
 ## settle-callback captures the epoch live when it was armed and bails if the epoch
 ## has since moved on, so a superseded cycle's late `applied`/`end` can't clear the
@@ -694,12 +738,37 @@ func get_stats() -> SpacetimeDBStats:
 	return _stats
 
 
-## Subscribes to one or more SQL [param queries]. Returns a [SpacetimeDBSubscription] handle.
+## Subscribes to one or more SQL [param queries]. Returns a [SpacetimeDBSubscription]
+## handle, already ended and carrying [constant ERR_BUSY] when
+## [constant _MAX_PENDING_SUBSCRIPTIONS] subscriptions are already unanswered.
 func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 	if not is_connected_db():
 		push_warning("SpacetimeDBClient: Cannot subscribe, not connected.")
 		return SpacetimeDBSubscription.fail(ERR_CONNECTION_ERROR)
 
+	# Refused, not queued: see _MAX_PENDING_SUBSCRIPTIONS. Before the id is taken and
+	# before anything goes out, so a refusal creates no query on the server and no state
+	# here — the alternative, dropping an older pending subscription to make room, would
+	# hand back a handle for a query the server may well still be streaming.
+	if pending_subscriptions.size() >= _MAX_PENDING_SUBSCRIPTIONS:
+		_report_subscribe_backlog()
+		return SpacetimeDBSubscription.fail(ERR_BUSY)
+	_subscribe_backlog_reported = false
+	return _subscribe_uncapped(queries)
+
+
+# The subscribe path without the pending cap, which only the reconnect's resubscribe loop
+# uses. That loop issues every saved set in one synchronous pass, so nothing can be applied
+# while it runs and pending climbs to the whole set by construction — capping it refused
+# and lost the tail of the game's OWN previously-acknowledged state (measured: 4116 live
+# subscriptions, 20 query sets gone, `reconnected` emitted as if it had worked). What it
+# re-sends is bounded by what the server previously acknowledged, which is not the backlog
+# the cap exists to catch.
+#
+# A parameter rather than a flag on the client on purpose: a flag would exempt whatever ran
+# while it was set (the loop can reach game code through `reconnected`), and a fault inside
+# the loop would leave it exempt for the rest of the session.
+func _subscribe_uncapped(queries: PackedStringArray) -> SpacetimeDBSubscription:
 	# 1. Generate a request ID
 	var request_id: int = _next_request_id
 	_next_request_id += 1
@@ -742,7 +811,7 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 				"SpacetimeDBClient: Subscribe request sent successfully (BSATN), Query ID: %d"
 				% query_id
 			)
-			pending_subscriptions.set(query_id, subscription)
+			pending_subscriptions[query_id] = subscription
 			_stats.record_send(request_id, SpacetimeDBStats.Category.SUBSCRIBE)
 
 		return subscription
@@ -759,6 +828,21 @@ func unsubscribe(query_id: int) -> Error:
 	if not is_connected_db():
 		push_warning("SpacetimeDBClient: Cannot unsubscribe, not connected.")
 		return ERR_CONNECTION_ERROR
+
+	# -1 is what a failed handle carries (SpacetimeDBSubscription.fail leaves the default),
+	# and `unsubscribe(handle.query_id)` is the natural next line after a subscribe that
+	# did not go out. Serializing it fails on a u32 field, so the caller used to get a
+	# serializer error about `query_id` instead of being told the handle was never live.
+	if query_id < 0:
+		push_warning(
+			(
+				"SpacetimeDBClient: ignoring unsubscribe for query id %d — that is the id a "
+				+ "subscription handle carries when the subscribe never went out (check "
+				+ "its `error`), not a live query."
+			)
+			% query_id
+		)
+		return ERR_INVALID_PARAMETER
 
 	var request_id: int = _next_request_id
 	_next_request_id += 1
@@ -2550,6 +2634,8 @@ func _end_all_subscriptions() -> void:
 	current_subscriptions.clear()
 	# Every id it could hold belonged to one of those two maps.
 	_unsubscribing_query_ids.clear()
+	# The backlog those refusals were about is gone with the map.
+	_subscribe_backlog_reported = false
 	for sub: SpacetimeDBSubscription in ending:
 		sub.end.emit()
 
@@ -2617,13 +2703,17 @@ func _resubscribe_saved_queries() -> void:
 		_finish_resubscribe(epoch)
 		return
 
+	# One line for the lot rather than one per set: a large saved set that fails to send
+	# would otherwise write thousands of lines in a single frame.
+	var send_failures: int = 0
+	var first_failure: Error = OK
 	for queries: PackedStringArray in query_sets:
-		var sub: SpacetimeDBSubscription = subscribe(queries)
+		# Uncapped: see _subscribe_uncapped.
+		var sub: SpacetimeDBSubscription = _subscribe_uncapped(queries)
 		if sub.error != OK:
-			printerr(
-				"SpacetimeDBClient: Failed to re-subscribe during reconnection: %s"
-				% error_string(sub.error)
-			)
+			send_failures += 1
+			if first_failure == OK:
+				first_failure = sub.error
 			applied_count[0] += 1
 			if applied_count[0] >= total_sets:
 				_finish_resubscribe(epoch)
@@ -2644,6 +2734,15 @@ func _resubscribe_saved_queries() -> void:
 				_finish_resubscribe(epoch)
 		sub.applied.connect(on_settled, CONNECT_ONE_SHOT)
 		sub.end.connect(on_settled, CONNECT_ONE_SHOT)
+
+	if send_failures > 0:
+		push_error(
+			(
+				"SpacetimeDBClient: %d of %d saved subscriptions could not be re-sent on "
+				+ "reconnect (first error: %s). Those queries are gone for this session."
+			)
+			% [send_failures, total_sets, error_string(first_failure)]
+		)
 
 	# Watchdog: a server that accepts a Subscribe but never settles one set would
 	# otherwise hang the cycle (reconnected never fires, saved set never clears).
@@ -2734,6 +2833,27 @@ func _track_procedure_call(request_id: int, handle: SpacetimeDBProcedureCall) ->
 			_pending_procedure_calls.erase(oldest)
 			break
 	_pending_procedure_calls[request_id] = handle
+
+
+# Reports a refused subscribe once per backlog, not once per call. See
+# _subscribe_backlog_reported.
+func _report_subscribe_backlog() -> void:
+	if _subscribe_backlog_reported:
+		return
+	_subscribe_backlog_reported = true
+	_subscribe_backlog_reports += 1
+	push_error(
+		(
+			"SpacetimeDBClient: refusing to subscribe — %d subscriptions are already "
+			+ "waiting for a SubscribeApplied. That is either a server taking Subscribe "
+			+ "messages without answering them, or this game issuing more than %d "
+			+ "subscribes before any of them could be answered. Further subscribes are "
+			+ "refused with ERR_BUSY until one of them is answered (applied, unsubscribed "
+			+ "or errored) or the session ends; the ones already pending are also what the "
+			+ "next reconnect would re-send."
+		)
+		% [_MAX_PENDING_SUBSCRIPTIONS, _MAX_PENDING_SUBSCRIPTIONS]
+	)
 
 
 func _evict_oldest(cache: Dictionary) -> void:
