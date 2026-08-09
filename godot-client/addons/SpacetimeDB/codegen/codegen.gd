@@ -422,6 +422,83 @@ static func find_duplicate_members(source: String) -> PackedStringArray:
 	return duplicates
 
 
+## Variants declared more than once inside one generated [code]enum[/code], as
+## [code]Enum.Variant[/code], in first-seen order.
+##
+## The top-level scan above cannot see these: an enum's variants live in that enum's own
+## namespace, so they are emitted indented and are free to reuse a top-level name. They
+## are not free to repeat each other — Godot answers with
+## [code]Parse Error: Name "X" was already in this enum[/code], and since every plain
+## enum a module declares is emitted into the one [code]<Module>Types[/code] file, that
+## error takes the module's whole type facade with it. Reachable because variant names
+## are pascal-cased on the way in, which cannot tell `foo_bar` from `fooBar`.
+##
+## Reads the emitted text for the same reason [method find_duplicate_members] does, and
+## reads only the two block shapes this generator emits: `enum Name {` at column 0, one
+## indented variant per line, `}` at column 0. An inline `enum K { A, A }`, a variant
+## block interrupted by a column-0 line, or an enum nested in a `class` would be missed —
+## none is emitted, and an emitter that starts producing one has to teach this scan.
+## A variant name ends at the comma, or at the ` = ` an explicit value would add.
+static func find_duplicate_enum_variants(source: String) -> PackedStringArray:
+	var duplicates: PackedStringArray = []
+	var enum_name: String = ""
+	var seen: Dictionary[String, int] = { }
+	for line: String in source.split("\n"):
+		if line.begins_with("enum "):
+			enum_name = _member_name_of(line)
+			seen = { }
+			continue
+		if enum_name.is_empty():
+			continue
+		if not (line.begins_with("\t") or line.begins_with(" ")):
+			enum_name = "" # The block ended: `}` sits at column 0.
+			continue
+		var variant: String = line.strip_edges().trim_suffix(",")
+		var assigned_at: int = variant.find("=")
+		if assigned_at >= 0:
+			variant = variant.substr(0, assigned_at).strip_edges()
+		if variant.is_empty():
+			continue
+		var count: int = seen.get(variant, 0) + 1
+		seen[variant] = count
+		if count == 2:
+			duplicates.append("%s.%s" % [enum_name, variant])
+	return duplicates
+
+
+## The global class name [param source] declares, or [code]""[/code] when it declares
+## none.
+##
+## Read back from the emitted text for the same reason [method find_duplicate_members]
+## is: a row type, a table wrapper, an index accessor and each module facade build their
+## class name at a different site, from a different part of the schema, and only the
+## output knows all of them at once. Every one of those names is
+## [code]<ModulePrefix> + something the module author chose[/code], so two of them can
+## land on one string — a module type named `ScoreTable` spells the same class as the
+## table `score`, and `AABB` and `Aabb` both pascal-case to `Aabb`. Godot registers one
+## and refuses the other with "hides a global script class", i.e. the loser does not load
+## at all. [method SpacetimePlugin._check_class_collisions] turns that into a codegen-time
+## error instead.
+static func declared_class_name(source: String) -> String:
+	for line: String in source.split("\n"):
+		if not line.begins_with("class_name"):
+			continue
+		var rest: String = line.substr("class_name".length())
+		# `class_nameFoo` declares nothing; a tab after the keyword is legal GDScript
+		# this generator never emits, and reading it costs one comparison.
+		if not (rest.begins_with(" ") or rest.begins_with("\t")):
+			continue
+		rest = rest.strip_edges()
+		# The name ends at whatever follows it: `class_name X extends Y`, or the line end.
+		var cut: int = rest.length()
+		for terminator: String in [" ", "\t"]:
+			var at: int = rest.find(terminator)
+			if at >= 0 and at < cut:
+				cut = at
+		return rest.substr(0, cut)
+	return ""
+
+
 ## Formats a single table name as a BSATN StringName literal.
 static func _format_table_name_literal(x: String) -> String:
 	return "&'%s'" % x
@@ -521,6 +598,83 @@ static func _with_arraylike_components(
 	return "%s[%s]" % [base_meta, ",".join(inner_types)]
 
 
+## Whether [param candidate] is the name of a Variant builtin ([code]Color[/code],
+## [code]Signal[/code], [code]Array[/code], [code]Transform3D[/code], …).
+##
+## [method ClassDB.class_exists] knows engine CLASSES and nothing else, so it answers
+## false for all of these — and Godot refuses them just as hard, with its own wording
+## ("cannot have the same name as a builtin type" for a member, "hides a built-in type"
+## for a class). Derived from [method @GlobalScope.type_string] rather than a hand list,
+## so a Variant type added in a later engine build needs no edit here.
+##
+## Mirrors the parser's own table, which is built the same way and skips exactly two
+## entries ([code]gdscript_parser.cpp[/code]): [code]Nil[/code], which is free to use and
+## measured accepted as both a class name and a member, and [code]Object[/code], which is
+## refused — but as a native CLASS, so the [ClassDB] check beside every caller of this one
+## already covers it with the wording Godot actually uses.
+static func is_builtin_type_name(candidate: String) -> bool:
+	for type_id: int in TYPE_MAX:
+		if type_id == TYPE_NIL or type_id == TYPE_OBJECT:
+			continue
+		if type_string(type_id) == candidate:
+			return true
+	return false
+
+
+## The reasons the class-name prefixes of [param module_names] cannot be used, one
+## message per problem, empty when every prefix is free.
+##
+## The prefix is not only the head of every class a module emits — it is also, verbatim,
+## the property the autoload declares for that module's client
+## ([code]var Game: GameModuleClient[/code]). So it has two ways to be taken even when it
+## is a perfectly good identifier:
+##
+## 1. Two module keys that yield one prefix. [method String.to_pascal_case] is not
+##    injective — `foo-bar` and `foo_bar` both give `FooBar` — so the second module
+##    overwrites the first module's files and the autoload declares one property twice.
+##    The remedy is a module ALIAS, which is why this is not reported as a schema-name
+##    collision.
+## 2. A prefix that is a native class or a builtin type name. `time`, `input`, `engine`,
+##    `performance`, `input-map`, `color`, `signal`, `array` and `node-path` are all legal
+##    SpacetimeDB database names, and each yields a property the autoload cannot declare:
+##    [code]Parse Error: The member "Time" shadows a native class[/code], or
+##    [code]... cannot have the same name as a builtin type[/code] — in the one generated
+##    file the project boots through.
+##
+## Pure and public so a test can drive it without generating anything; the caller refuses
+## the run before the first file is written.
+static func module_prefix_problems(module_names: Array[String]) -> PackedStringArray: # gdlint: ignore[S6]
+	var problems: PackedStringArray = []
+	var owner_of_prefix: Dictionary[String, String] = { }
+	for module_name: String in module_names:
+		var prefix: String = SpacetimeSchemaParser.module_class_prefix(module_name)
+		if owner_of_prefix.has(prefix):
+			problems.append(
+				(
+					"Modules '%s' and '%s' both name their classes '%s...': to_pascal_case "
+					+ "cannot tell their keys apart. Every file, class and autoload property "
+					+ "of one would overwrite the other's. Give one of them an alias — the "
+					+ "alias only names the generated classes, the database each client "
+					+ "connects to is unchanged."
+				)
+				% [owner_of_prefix[prefix], module_name, prefix]
+			)
+			continue
+		owner_of_prefix[prefix] = module_name
+		if ClassDB.class_exists(prefix) or is_builtin_type_name(prefix):
+			problems.append(
+				(
+					"Module '%s' yields the class-name prefix '%s', which is a Godot native "
+					+ "class or builtin type. The autoload declares a property per module "
+					+ "('var %s: %sModuleClient'), and a property cannot shadow either one — "
+					+ "the autoload is the one generated file the project boots through. Give "
+					+ "the module an alias."
+				)
+				% [module_name, prefix, prefix, prefix]
+			)
+	return problems
+
+
 func generate_bindings() -> Array[String]:
 	var generated_files: Array[String] = []
 	generation_incomplete = false
@@ -557,6 +711,16 @@ func generate_bindings() -> Array[String]:
 				)
 				% [module_name, SpacetimeSchemaParser.module_class_prefix(module_name)]
 			)
+		SpacetimePlugin.print_err("Nothing was generated; the existing bindings are untouched.")
+		generation_incomplete = true
+		return generated_files
+
+	# The same identifier, checked for the two ways it can be taken rather than malformed.
+	# Also before any file is written, and for the same reason.
+	var prefix_problems: PackedStringArray = module_prefix_problems(sorted_module_names)
+	if not prefix_problems.is_empty():
+		for problem: String in prefix_problems:
+			SpacetimePlugin.print_err(problem)
 		SpacetimePlugin.print_err("Nothing was generated; the existing bindings are untouched.")
 		generation_incomplete = true
 		return generated_files
