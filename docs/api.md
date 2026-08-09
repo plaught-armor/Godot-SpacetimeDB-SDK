@@ -107,6 +107,15 @@ class SpacetimeDBClient:
 
 Subscribe to queries by calling `subscribe(queries)`, which returns a [`SpacetimeDBSubscription`](#spacetimedbsubscription-class) instance.
 
+A returned handle is already ended, with `error` set, when the subscribe never went out:
+`ERR_CONNECTION_ERROR` when not connected, `ERR_PARSE_ERROR` when the message could not be
+built, the send error when the socket refused it, and `ERR_BUSY` when 4096 subscriptions
+are already waiting for a `SubscribeApplied` — a server taking Subscribe messages without
+answering them, or more subscribes issued in one go than could be answered. That last one
+is a runaway backstop: further subscribes are refused until one is applied, and the ones
+already pending are also what a reconnect would re-send. A failed handle carries
+`query_id = -1`, which `unsubscribe()` refuses rather than putting on the wire.
+
 See the [SpacetimeDB SQL Reference](https://spacetimedb.com/docs/sql#subscriptions) for information on the queries SpacetimeDB supports.
 
 #### `unsubscribe()` method
@@ -121,6 +130,8 @@ class SpacetimeDBClient:
 | query_id | The query id of an active subscription. |
 
 Close a subscription by calling `unsubscribe(query_id)` with the query id of an existing query. A Godot `Error` is returned to indicate success or failure. The subscription's `end` signal will fire when the server confirms the unsubscribe.
+
+A negative `query_id` returns `ERR_INVALID_PARAMETER` and sends nothing: `-1` is what a handle carries when the subscribe never went out, so `unsubscribe(handle.query_id)` after a failed `subscribe()` is refused here rather than becoming a serializer error about a `u32` field.
 
 If the connection drops before that confirmation arrives, the query is dropped anyway: an auto-reconnect re-subscribes the queries you still hold, never one you already unsubscribed.
 
