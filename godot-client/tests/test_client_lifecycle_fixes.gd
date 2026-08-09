@@ -219,14 +219,18 @@ func _test_drop_stamps_pending_calls() -> int:
 	return f
 
 
-# MED-1 seam: reset_stream_state() must drop buffered partial bytes + clear error.
+# MED-1 seam: reset_stream_state() must clear the parse state a dying session left.
+# The parser carries no bytes between packets, so what survives a dropped session is
+# an error nobody consumed — a short packet is reported and stays reported.
 func _test_deserializer_reset_stream_state() -> int:
 	var f: int = 0
 	var d: BSATNDeserializer = BSATNDeserializer.new(null, false)
-	d._pending_data = PackedByteArray([1, 2, 3]) # simulate a partial-message prefix
-	d.reset_stream_state()
+	# A tag the parser recognises with fewer bytes behind it than the message needs.
+	var truncated: PackedByteArray = [SpacetimeDBServerMessage.Type.INITIAL_CONNECTION, 0x01]
+	d.process_bytes_and_extract_messages(truncated)
+	f += _check_b("setup: the short packet is still reported", d.has_error(), true)
 
-	f += _check_b("reset clears _pending_data", d._pending_data.is_empty(), true)
+	d.reset_stream_state()
 	f += _check_b("reset clears error state", d.has_error(), false)
 	return f
 

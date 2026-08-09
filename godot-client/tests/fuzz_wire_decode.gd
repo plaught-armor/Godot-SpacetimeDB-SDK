@@ -20,6 +20,7 @@ const MAX_FLIPS_PER_FRAME: int = 48
 const MAX_TRUNCATIONS_PER_FRAME: int = 24
 const MAX_SPLICES_PER_FRAME: int = 24
 const MAX_COMPRESSED_CASES_PER_FRAME: int = 64
+const MAX_RECOMPRESSED_CASES_PER_FRAME: int = 24
 # Captures of the same subscription the uncompressed fixture holds, so a mutation that
 # still inflates produces bytes the reader will genuinely try to parse.
 ## A plain `var`, never `const` — a const Packed*Array reads back wrong (C1, #88753).
@@ -68,6 +69,7 @@ func _initialize() -> void:
 			_fuzz_splices(name, i, payload)
 
 	_fuzz_compressed()
+	_fuzz_recompressed()
 
 	print(
 		"cases=%d error_flagged=%d decoded_without_error=%d"
@@ -103,8 +105,48 @@ func _fuzz_compressed() -> void:
 				_decompress_and_decode("%s#%d comp@%d+%d" % [name, i, at, run], mutated)
 
 
+## The GZIP HALF of the arm above no longer reaches the BSATN reader (its brotli half
+## still does): a mutation inside the deflate data shifts the inflated length, the ISIZE
+## trailer stops matching, and `decompress_packet` refuses the frame — measured, 13 gzip
+## payloads reached the reader when a truncated member was delivered with a warning, 0
+## once it was refused. That half now measures what it should, that a corrupted member is
+## refused without allocating, and none of the 13 was a payload a healthy server could
+## send — but the reader lost its only gzip-path coverage, which is what this restores:
+## mutate the PLAINTEXT and re-gzip it, so the frame is a legal member carrying hostile
+## BSATN and the decode is measured rather than skipped.
+func _fuzz_recompressed() -> void:
+	for name: String in _fixture_names():
+		var frames: Array[PackedByteArray] = _frames("%s/%s" % [FIXTURE_DIR, name])
+		var frame_count: int = mini(frames.size(), MAX_FRAMES_PER_FIXTURE)
+		for i: int in frame_count:
+			var frame: PackedByteArray = frames[i]
+			if frame.size() < 2 or frame[0] != TAG_NONE:
+				continue # only the uncompressed captures carry bare BSATN to mutate
+			for _n: int in MAX_RECOMPRESSED_CASES_PER_FRAME:
+				var mutated: PackedByteArray = frame.slice(1)
+				var at: int = _rng.randi_range(0, mutated.size() - 1)
+				var run: int = mini(_rng.randi_range(1, 8), mutated.size() - at)
+				for k: int in run:
+					mutated[at + k] = _rng.randi_range(0, 255)
+				var recompressed: PackedByteArray = _gzip(mutated)
+				if recompressed.is_empty():
+					continue
+				var reframed: PackedByteArray = [TAG_GZIP]
+				reframed.append_array(recompressed)
+				_decompress_and_decode("%s#%d regzip@%d+%d" % [name, i, at, run], reframed)
+
+
+# One shot: the StreamPeerGZIP drain form emits a ten-byte stub for input that does not
+# compress well, and a mutated capture is exactly that kind of input — a stub would make
+# every case here a decompressor refusal instead of the reader exercise it exists to be.
+func _gzip(data: PackedByteArray) -> PackedByteArray:
+	return data.compress(FileAccess.COMPRESSION_GZIP)
+
+
 ## Mirrors SpacetimeDBClient._decompress_and_parse: read the tag, run the matching
-## decoder, then hand whatever came out to the reader.
+## decoder, then hand whatever came out to the reader. Deliberately NOT mirrored: the
+## client's `raw_bytes.size() < 2` guard, since a sub-2-byte frame is the client's
+## business and the callers here always pass a tag plus a payload.
 func _decompress_and_decode(label: String, frame: PackedByteArray) -> void:
 	_note(label)
 	var tag: int = frame[0]

@@ -1519,9 +1519,11 @@ func _thread_loop() -> void:
 		var batch_epoch: int = _session_epoch
 		_packet_mutex.unlock()
 
-		# Fresh session (reconnect bumped the epoch): discard any trailing partial-
-		# message bytes the prior session left in the deserializer before parsing new
-		# bytes, or the first post-reconnect packet mis-parses against a stale prefix.
+		# Fresh session (reconnect bumped the epoch): clear the parse state the prior
+		# session left. No bytes are carried between packets — the parser drops a short
+		# packet where it reads it — and the parse loop clears the error at every
+		# message, so this is belt and braces rather than the load-bearing step it was
+		# when a partial message was retained across packets.
 		# _deserializer is worker-thread-only, so this needs no lock.
 		if batch_epoch != last_epoch:
 			_deserializer.reset_stream_state()
@@ -1930,7 +1932,10 @@ func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
 			# Gzip failures used to come back as whatever had inflated before the
 			# break; they return empty now, same as Brotli, so they get the same
 			# one-line "this frame is gone" report rather than a silent no-op parse.
-			printerr("SpacetimeDBClient: Gzip decompression failed, dropping frame.")
+			# The cause is not asserted here: the decompressor already named it, and
+			# some of these frames decompressed fine and were refused for what came
+			# after the member.
+			printerr("SpacetimeDBClient: Gzip frame refused by the decompressor, dropping it.")
 			return PackedByteArray()
 	else:
 		printerr("SpacetimeDBClient: Unknown compression tag %d, dropping frame." % compression)
@@ -2457,8 +2462,8 @@ func _attempt_reconnect() -> void:
 
 # Everything the dying session left in flight, dropped so none of it lands in the mirror
 # the next session is about to fill: packets not yet parsed, results parsed but not
-# drained, the batch a frame was midway through, and the front of a message the socket
-# died partway into. Runs no game code, so a caller can call it before its own cache wipe
+# drained, the batch a frame was midway through, and the parse state of the packet the
+# socket died partway into. Runs no game code, so a caller can call it before its own wipe
 # (which does) and know the queues are already settled.
 #
 # Both session boundaries need this — the automatic one in _prepare_for_reconnect and the
@@ -2483,10 +2488,10 @@ func _drop_dead_session_traffic() -> void:
 		#
 		# The queued results were parsed out of the dying session and would otherwise be
 		# drained into the fresh mirror, which is exactly what the worker's epoch check
-		# prevents on the threaded side. And a socket that dies mid-message leaves the
-		# front of that message in the deserializer, so the first packet of the new session
-		# would parse against a prefix belonging to the old one; the worker resets the
-		# stream on an epoch change, and nothing did it here.
+		# prevents on the threaded side. The deserializer reset beside it is belt and
+		# braces — the parse loop clears its error at every message, so nothing observes
+		# a stale one — but the worker does it on an epoch change and this path had no
+		# equivalent at all, which is the asymmetry that let the bug above live here.
 		_result_queue.clear()
 		if _deserializer:
 			_deserializer.reset_stream_state()
