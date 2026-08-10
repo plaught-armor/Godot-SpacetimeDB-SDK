@@ -190,6 +190,10 @@ var _token: String
 var _is_connected: bool = false
 var _connection_requested: bool = false
 var _options: SpacetimeDBConnectionOptions
+## Set when [method apply_options] refused a null options object. Not cleared — the
+## refusal is a programming error, not a transient condition, and this exists so a test
+## can read that it fired ([method push_error] is not observable in-process).
+var _options_refused: bool = false
 ## Socket limits as actually applied — [method apply_options] resolves them once so a
 ## refused value is reported once, and [method _reset_peer] restores what is in force
 ## rather than re-reading (and re-reporting) the raw option.
@@ -268,7 +272,11 @@ var _handshake_credit_ms: int = 0
 
 func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
 	_db_name = db_name
-	apply_options(options)
+	# Defaults rather than the refusal above: a connection with no _options at all is
+	# unusable, and this constructor is the one caller that has no previous options to
+	# keep. The client supplies its own before it gets here; this covers a direct
+	# construction.
+	apply_options(options if options != null else SpacetimeDBConnectionOptions.new())
 	set_physics_process(false) # Don't process until connect is called
 
 
@@ -277,7 +285,25 @@ func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
 ## outlives a disconnect_db()/connect_db() pair, so without this the second call's
 ## compression, buffer sizes and heartbeat would silently stay at whatever the
 ## first call asked for.
+##
+## A null [param options] is refused: nothing is applied and the options already in force
+## stay in force. Every setting below is read off the object, so there is no partial
+## application to undo.
 func apply_options(options: SpacetimeDBConnectionOptions) -> void:
+	if options == null:
+		# Every line below dereferences it, and this used to fault on the first one —
+		# which, being a fault in a callee, unwound only this function and left the
+		# connection with a null _options plus unresolved buffer sizes and heartbeat,
+		# then faulted again on every later read of them. Refused loudly instead, with
+		# the previous options left in place. Recorded as well as printed, following
+		# _send_refusal: push_error is not observable in-process, so this is what a test
+		# reads to check the refusal fired rather than only that nothing changed.
+		_options_refused = true
+		push_error(
+			"SpacetimeDBConnection: apply_options(null) refused for database '%s'; options unchanged."
+			% _db_name
+		)
+		return
 	# Monitor registration is a side effect on the Performance singleton, so it
 	# follows the options rather than the constructor: leaving it behind would make
 	# _options.monitor_mode disagree with what is actually registered, and predelete
