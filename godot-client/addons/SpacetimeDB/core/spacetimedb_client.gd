@@ -2164,7 +2164,17 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				"  Table: '%s' inserts=%d deletes=%d"
 				% [t.table_name, t.inserts.size(), t.deletes.size()]
 			)
+		# Same session boundary as _handle_transaction_update, and the one that bites
+		# hardest: connect_db() wipes the mirror and only THEN re-arms
+		# _received_initial_subscription, so a listener that restarts the session from a
+		# snapshot row leaves this block announcing the dead session's initialization —
+		# and consuming the flag the new session needed, so database_initialized never
+		# fires again and anything awaiting it (RowReceiver does) never resumes. The
+		# handle below belongs to the dead session too; the restart already ended it.
+		var session: int = _local_db.session_generation()
 		_local_db.apply_database_subscription_applied(message)
+		if _local_db.session_generation() != session:
+			return
 		if not _received_initial_subscription:
 			_received_initial_subscription = true
 			self.database_initialized.emit()
@@ -2209,8 +2219,15 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 	elif message is UnsubscribeAppliedMessage:
 		var qid: int = message.query_id.id
 		if not message.tables.is_empty():
+			# Same session boundary as _handle_transaction_update: a callback here can
+			# wipe the mirror, and the tables left would then be applied into the next
+			# session's — every one of them a delete for a row it does not hold, which
+			# warns and re-creates membership for a query that no longer exists.
+			var gen: int = _local_db.session_generation()
 			for table_update: TableUpdateData in message.tables:
 				_local_db.apply_table_update(table_update, qid)
+				if _local_db.session_generation() != gen:
+					break # break, not return: the bookkeeping below still has to run
 		_local_db.forget_query(qid)
 		_unsubscribing_query_ids.erase(qid)
 		# Also handle a query unsubscribed before its SubscribeApplied arrived: its
@@ -2296,8 +2313,16 @@ func _decode_reducer_error(err_bytes: PackedByteArray) -> String:
 
 
 func _handle_transaction_update(update_sets: TransactionUpdateMessage) -> void:
+	# A row callback can end this session and start another (disconnect_db() then
+	# connect_db(), which wipes the mirror synchronously). The query sets after that
+	# one belong to the session the caller threw away: applied into the fresh mirror
+	# they are rows no unsubscribe or delete can ever remove. LocalDatabase abandons a
+	# wiped batch of its own; this is the loop one level above it.
+	var gen: int = _local_db.session_generation()
 	for dataset: DatabaseUpdateData in update_sets.query_sets:
 		_local_db.apply_database_update(dataset)
+		if _local_db.session_generation() != gen:
+			return
 		if not _received_initial_subscription:
 			_received_initial_subscription = true
 			self.database_initialized.emit()
