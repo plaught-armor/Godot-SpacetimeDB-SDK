@@ -96,6 +96,29 @@ var _pk_less_counts: Dictionary[StringName, Dictionary] = { }
 ## applied query can be pruned precisely (decrement those rows' refcounts, evict any that
 ## no other query holds) — the server sends no dropped rows on an error, unlike unsubscribe.
 var _query_rows: Dictionary[int, Dictionary] = { }
+## Bumped by every cache wipe — [method clear_local_db] and [method clear_all_tables]
+## both, since both detach the containers below. Every loop that dispatches
+## callbacks snapshots it first and abandons the rest of its work when it no longer
+## matches, because a wipe is reachable from INSIDE one of those callbacks: a listener
+## that calls [method SpacetimeDBClient.connect_db] wipes the mirror synchronously
+## before it opens the new socket.
+##
+## Without that, the frame below the wipe keeps applying a dead session's rows into the
+## containers it hoisted into locals before dispatching — and the wipe empties the INNER
+## containers of [member _tables] / [member _pk_less_tables] (so those locals stay live)
+## while clearing the OUTER maps of [member _ref_counts] / [member _pk_less_counts] (so
+## those locals detach). Measured: the rest of the batch landed in the mirror with no
+## refcount at all, which is the one state the refcount paths treat as impossible — a
+## later delete reads 0 and skips, so the row never leaves the cache and no
+## [signal row_deleted] ever fires, and on the PK-less side every re-delivery cached
+## another copy of it.
+var _generation: int = 0
+## Bumped by [method clear_local_db] ONLY, i.e. by the wipe that marks a session
+## boundary. [method clear_all_tables] detaches the same containers (so it bumps
+## [member _generation] and a batch under it is still abandoned) but says nothing about
+## the connection — a caller rebuilding its own view mid-session must not make the client
+## drop the rest of a live transaction, which is what reading the wrong counter did.
+var _session_generation: int = 0
 
 ## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -616,9 +639,16 @@ func prune_query(query_id: int) -> void:
 	if not _query_rows.has(query_id):
 		return
 	var tables: Dictionary = _query_rows[query_id]
+	var gen: int = _generation
 	# Direct key iteration (no .keys() alloc). apply_table_update below mutates the inner
 	# membership containers but never adds/removes a table key here, so this is safe.
 	for table_name_lower: StringName in tables:
+		if _generation != gen:
+			# A delete callback wiped the mirror (a listener that reconnects). Every row
+			# this prune had left to drop is gone with it, and _query_rows was cleared —
+			# re-entering apply_table_update here would rebuild membership for a query
+			# the wipe just forgot.
+			return
 		var membership: Dictionary = tables[table_name_lower]
 		var drop: TableUpdateData = TableUpdateData.new()
 		drop.table_name = table_name_lower
@@ -643,6 +673,17 @@ func prune_query(query_id: int) -> void:
 	_query_rows.erase(query_id)
 
 
+## The session-boundary wipe counter — see [member _session_generation]. A caller that
+## loops over several updates of its own (the client walks a transaction's query sets,
+## an UnsubscribeApplied's tables, a subscribe snapshot) reads this before the first one
+## and stops when it moves: the remaining updates belong to a session whose mirror has
+## already been thrown away, and applying them into the new one strands their rows there
+## for good. Deliberately NOT [member _generation] — a mid-session
+## [method clear_all_tables] must not truncate a live transaction.
+func session_generation() -> int:
+	return _session_generation
+
+
 ## Drops the per-query membership index for [param query_id] without touching the cache
 ## (the rows were already removed via the normal delete path, e.g. an unsubscribe whose
 ## dropped rows the server echoed). Prevents the index from growing unbounded.
@@ -654,16 +695,48 @@ func forget_query(query_id: int) -> void:
 func apply_database_subscription_applied(db_update: SubscribeAppliedMessage) -> void:
 	if not db_update:
 		return
+	# The SESSION counter, not _generation: every iteration re-hoists its own containers
+	# through apply_table_update, so a mid-session clear_all_tables() leaves the rest of
+	# this message perfectly applicable — truncating it would drop rows the server sent
+	# on a live connection. Only a session boundary makes the remainder dead traffic.
+	var session: int = _session_generation
 	for table_update: TableUpdateData in db_update.tables:
 		apply_table_update(table_update, db_update.query_set_id.id)
+		if _session_generation != session:
+			return # a listener ended the session; the remaining tables are its traffic
 
 
 ## Applies all table updates from a [DatabaseUpdateData] to the local store.
 func apply_database_update(db_update: DatabaseUpdateData) -> void:
 	if not db_update:
 		return
+	# The SESSION counter — see [method apply_database_subscription_applied].
+	var session: int = _session_generation
 	for table_update: TableUpdateData in db_update.tables:
 		apply_table_update(table_update, db_update.query_id.id)
+		if _session_generation != session:
+			return # a listener ended the session; the remaining tables are its traffic
+
+
+## Closes out one table's batch: the [signal row_transactions_completed] terminator plus
+## its listeners, emitted only when [param dispatched] says this batch actually changed
+## something.
+##
+## Called at the END of every path through [method apply_table_update], including the
+## ones a mid-dispatch cache wipe abandons — a batch that reported rows and no terminator
+## leaves a consumer that redraws on this signal (which is what it is for) holding a view
+## it was told to update and never told to finish. The wipe cannot be relied on to have
+## sent one instead: [method clear_all_tables] reports nothing at all, and the PK delete
+## pass erases each row BEFORE it dispatches, so the wipe can find the table empty and
+## report nothing for it. A repeated terminator only makes a consumer flush twice; a
+## missing one leaves the flush undone for the rest of the session.
+func _end_table_transaction(table_name_lower: StringName, tx_listeners: Array, dispatched: bool) -> void:
+	if not dispatched:
+		return
+	for listener: Callable in tx_listeners:
+		if listener.is_valid():
+			listener.call()
+	row_transactions_completed.emit(table_name_lower)
 
 
 ## Applies a single [TableUpdateData] — processes inserts then deletes, dispatches
@@ -703,6 +776,11 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 	var has_update_listeners: bool = not update_listeners.is_empty()
 	var has_before_delete_listeners: bool = not before_delete_listeners.is_empty()
 	var has_delete_listeners: bool = not delete_listeners.is_empty()
+	# Every container this function is about to touch is hoisted into a local, and every
+	# listener call below is game code that can wipe the mirror under it (see
+	# [member _generation]). The rows of a wiped session must not land afterwards, so the
+	# batch is abandoned at the first check that disagrees.
+	var gen: int = _generation
 
 	# Event tables carry ephemeral rows: fire on_insert, never store. count()/iter()
 	# stay empty and there is no update/delete/refcount tracking. The server only
@@ -717,11 +795,12 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 					if listener.is_valid():
 						listener.call(event_row)
 			row_inserted.emit(table_name_lower, event_row)
-		if fired_event:
-			for listener: Callable in tx_listeners:
-				if listener.is_valid():
-					listener.call()
-			row_transactions_completed.emit(table_name_lower)
+			if _generation != gen:
+				# Wiped mid-batch: the rest of these events belong to a dead session, but
+				# the ones already delivered still owe their terminator.
+				_end_table_transaction(table_name_lower, tx_listeners, fired_event)
+				return
+		_end_table_transaction(table_name_lower, tx_listeners, fired_event)
 		return
 
 	var table_dict: Dictionary = _tables[table_name_lower]
@@ -747,6 +826,12 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 		var pkless_qmem: Dictionary = _query_table_pkless_mem(query_id, table_name_lower) if track_pkless_query else { }
 
 		for inserted_row: _ModuleTableType in table_update.inserts:
+			if _generation != gen:
+				# Wiped by the previous row's callback. The rows already dispatched still
+				# owe a terminator: clear_all_tables() reports nothing at all, so there is
+				# no wipe-side transactions_completed to fall back on.
+				_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
+				return
 			var ins_hash: int = _row_hash(inserted_row, props)
 			var ins_entry: Array = _pk_less_find(counts, ins_hash, inserted_row, props)
 			if ins_entry.is_empty():
@@ -788,6 +873,9 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			# cache state each callback promises; only the cross-row interleaving differs.
 			var evicted: Dictionary[int, _ModuleTableType] = { }
 			for deleted_row: _ModuleTableType in table_update.deletes:
+				if _generation != gen:
+					_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
+					return # wiped by an earlier callback of this batch
 				var del_hash: int = _row_hash(deleted_row, props)
 				var del_entry: Array = _pk_less_find(counts, del_hash, deleted_row, props)
 				if del_entry.is_empty() or del_entry[1] <= 0:
@@ -811,6 +899,10 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 								listener.call(cached_row)
 					row_before_delete.emit(table_name_lower, cached_row)
 			if not evicted.is_empty():
+				if _generation != gen:
+					# Wiped by the last before_delete; rows_array is already empty.
+					_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
+					return
 				# Single pass compact — the stored row is the same instance appended on 0->1.
 				var write_idx: int = 0
 				for read_idx: int in rows_array.size():
@@ -824,6 +916,12 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				# them (dict iteration is insertion-order), so a consumer sees the same
 				# sequence it saw from on_before_delete.
 				for gone_id: int in evicted:
+					# No generation check here, unlike every other dispatch loop: the
+					# compaction above already took these rows out of rows_array, so a wipe
+					# fired from inside this loop snapshots an array that no longer holds
+					# them and cannot report them. This loop is their only record — bailing
+					# left a before_delete with no matching delete (measured: 3 reported,
+					# 1 delivered), which the class contract says cannot happen.
 					var gone: _ModuleTableType = evicted[gone_id]
 					if has_delete_listeners:
 						for listener: Callable in delete_listeners:
@@ -831,11 +929,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 								listener.call(gone)
 					row_deleted.emit(table_name_lower, gone)
 
-		if had_any_change:
-			for listener: Callable in tx_listeners:
-				if listener.is_valid():
-					listener.call()
-			row_transactions_completed.emit(table_name_lower)
+		_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
 		return
 
 	# PK table: refcounted single pass. One pk may appear several times in each list —
@@ -878,6 +972,9 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				unpaired_deletes += 1
 
 	for inserted_row: _ModuleTableType in table_update.inserts:
+		if _generation != gen:
+			_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
+			return # wiped by the previous row's callback
 		var pk_value: Variant = inserted_row.get(pk_field)
 		if pk_value == null:
 			push_error(
@@ -974,6 +1071,12 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 	# when every delete was consumed as an update above.
 	if not table_update.deletes.is_empty() and not (detect_updates and unpaired_deletes == 0):
 		for deleted_row2: _ModuleTableType in table_update.deletes:
+			if _generation != gen:
+				# The wipe's own snapshot cannot be relied on here: the erase below runs
+				# BEFORE the delete dispatch, so a table whose last row this batch removed
+				# is already empty when the wipe reads it.
+				_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
+				return # wiped by an earlier callback of this batch
 			var pk_value: Variant = deleted_row2.get(pk_field)
 			if pk_value == null:
 				push_warning(
@@ -1007,6 +1110,14 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 						if listener.is_valid():
 							listener.call(cached_row)
 				row_before_delete.emit(table_name_lower, cached_row)
+				if _generation != gen:
+					# Wiped from inside this row's before_delete. The row was still in
+					# table_dict when the wipe snapshotted it, so the wipe reported the
+					# delete itself — carrying on here reported it a SECOND time, after
+					# the wipe's own transactions_completed (measured: pk deleted twice).
+					# The erase below is a no-op on the emptied dict either way.
+					_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
+					return
 				table_dict.erase(pk_value)
 				if has_delete_listeners:
 					for listener: Callable in delete_listeners:
@@ -1014,11 +1125,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 							listener.call(cached_row)
 				row_deleted.emit(table_name_lower, cached_row)
 
-	if had_any_change:
-		for listener: Callable in tx_listeners:
-			if listener.is_valid():
-				listener.call()
-		row_transactions_completed.emit(table_name_lower)
+	_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
 
 
 ## Wipes every cached row from all tables, emitting a delete callback per row and a
@@ -1047,6 +1154,16 @@ func clear_local_db() -> void:
 	_ref_counts.clear()
 	_pk_less_counts.clear()
 	_query_rows.clear()
+	# Bumped with the containers, before the first callback goes out: an
+	# apply_table_update frame further up the stack (a listener that reconnects wipes
+	# from inside its own dispatch) has to see this on its very next check.
+	_generation += 1
+	_session_generation += 1 # this wipe IS the session boundary; clear_all_tables is not
+	# The loops below do NOT stop on a re-entrant wipe, unlike every dispatch loop in
+	# apply_table_update. A nested clear_local_db() finds the containers already emptied
+	# above, so it reports nothing and this snapshot is the only record of the rows that
+	# were dropped — bailing here would silently swallow every row after the one whose
+	# callback wiped again (measured: 1 of 3 reported).
 	for entry: Array in pk_rows:
 		_emit_clear_for_table(entry[0], entry[1])
 	for entry: Array in pk_less_rows:
@@ -1208,3 +1325,8 @@ func clear_all_tables() -> void:
 	_ref_counts.clear()
 	_pk_less_counts.clear()
 	_query_rows.clear()
+	# Same containers as clear_local_db, so the same hazard: this is public and its own
+	# docstring invites a consumer rebuilding its view to call it, which can happen from
+	# a row callback. Measured without this bump: the rest of the batch stayed cached
+	# with an empty _ref_counts, i.e. rows no later delete can evict. See [member _generation].
+	_generation += 1
