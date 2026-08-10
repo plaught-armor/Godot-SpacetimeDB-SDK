@@ -500,6 +500,30 @@ func initialize_and_connect() -> void:
 	add_child(_rest_api)
 
 	# 5. Initialize Connection Handler
+	# connect_db() supplies options; this method can be reached without them — the
+	# exported auto_connect flag calls it straight from _ready, and it is documented as
+	# callable directly. The connection dereferences the options it is handed, so a null
+	# left it half-built (no buffer sizes, no heartbeat, a null _options every later read
+	# faulted on). Defaulted here rather than there, so this client and its connection
+	# agree about which options are in force.
+	# The defaults are SEEDED FROM THE EXPORTS, not bare: on this path the inspector is
+	# the only place the caller could have configured anything, and a bare default object
+	# both ignores what they set and makes connection_options read back as a description
+	# of a client it disagrees with. compression in particular is write-only on the client
+	# (connect_db writes options INTO it and nothing reads it), so until now an
+	# auto_connect client always handshook with compression=None whatever the export said.
+	if connection_options == null:
+		var defaults: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
+		defaults.compression = compression
+		defaults.threading = use_threading
+		defaults.debug_mode = debug_mode
+		defaults.one_time_token = one_time_token
+		defaults.save_token = save_token
+		connection_options = defaults
+	# Paired with the assignment, exactly as in connect_db: _ready resolved the process
+	# mode against whatever connection_options was then (null, or an object assigned after
+	# _ready ran), so an opt-out that arrived later is only honoured if this re-resolves.
+	_apply_process_mode()
 	_connection = SpacetimeDBConnection.new(connection_options, database_name)
 	_connection.disconnected.connect(_on_connection_disconnected)
 	_connection.connection_error.connect(_on_connection_error)
