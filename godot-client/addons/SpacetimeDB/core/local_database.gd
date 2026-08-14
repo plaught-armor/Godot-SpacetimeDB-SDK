@@ -119,6 +119,10 @@ var _generation: int = 0
 ## the connection — a caller rebuilding its own view mid-session must not make the client
 ## drop the rest of a live transaction, which is what reading the wrong counter did.
 var _session_generation: int = 0
+## Cache-emptying [Callable]s registered by the generated index accessors through
+## [method register_index_invalidator]. Fired by [method clear_all_tables], the one wipe
+## that drops rows without reporting a delete for them.
+var _index_invalidators: Array[Callable] = []
 
 ## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -196,6 +200,39 @@ func _add_listener(by_table: Dictionary, key: StringName, callable: Callable) ->
 			listeners.remove_at(i)
 	if not listeners.has(callable):
 		listeners.append(callable)
+
+
+## Registers [param invalidator] to be called when a wipe empties this database without
+## reporting the rows it dropped.
+##
+## The generated index accessors keep their caches current through the ordinary
+## insert/update/delete listeners, which is enough for every wipe that reports
+## ([method clear_local_db]) and for nothing at all otherwise:
+## [method clear_all_tables] empties the storage in silence, and an index left holding
+## the previous contents answers [code]find()[/code] / [code]filter()[/code] with rows
+## the mirror no longer has. A game listener in that position is the documented cost of
+## that method — an index is not a listener but part of the mirror's own read path, so it
+## is invalidated here instead.
+##
+## Dead [Callable]s are pruned here, the same shape (and for the same reason) as
+## [method _add_listener], and again at the top of [method clear_all_tables] — one of the
+## two is the cold path whichever way an index is released. A [Callable] bound to a method
+## holds its target by [code]ObjectID[/code], not a reference, so registering here does not
+## keep an index alive.
+##
+## [param invalidator] is expected to empty a cache and nothing else — it must not mutate
+## this database. Wiping again is the dangerous shape: the list is a registry no wipe
+## empties, so a re-entrant [method clear_all_tables] would fire every entry again (that
+## descent is bounded there, but nothing needs it). Delivering rows is merely surprising:
+## an [method apply_table_update] from here lands in a database the caller believes it
+## just emptied, and the invalidators after this one in the same pass then clear the
+## caches those rows just populated.
+func register_index_invalidator(invalidator: Callable) -> void:
+	for i: int in range(_index_invalidators.size() - 1, -1, -1):
+		if not _index_invalidators[i].is_valid():
+			_index_invalidators.remove_at(i)
+	if not _index_invalidators.has(invalidator):
+		_index_invalidators.append(invalidator)
 
 
 ## Registers [param callable] to be called with the inserted row for [param table_name].
@@ -1317,11 +1354,24 @@ func count_where(table_name: StringName, predicate: Callable) -> int:
 ## signal, no transactions-completed. Row listeners are left believing they still hold
 ## rows that are gone, so reach for [method clear_local_db] unless the caller is itself
 ## rebuilding every consumer's view.
+##
+## The generated index caches are the exception, and are emptied here: they answer
+## [code]find()[/code] / [code]filter()[/code] / the range queries, so they are part of
+## this database's own read path rather than a consumer of it, and a caller cannot rebuild
+## them — nothing outside the SDK can reach them. Left standing they reported rows
+## [method get_all_rows] no longer yields, for the rest of the session.
 func clear_all_tables() -> void:
+	# Whether this call is the one that dropped the rows, read BEFORE the containers are
+	# emptied. It is what ends a re-entrant wipe — see the invalidator loop below.
+	var dropped_rows: bool = false
 	for table_name: StringName in _tables:
-		_tables[table_name].clear()
+		var inner: Dictionary = _tables[table_name]
+		dropped_rows = dropped_rows or not inner.is_empty()
+		inner.clear()
 	for table_name: StringName in _pk_less_tables:
-		_pk_less_tables[table_name].clear()
+		var rows: Array = _pk_less_tables[table_name]
+		dropped_rows = dropped_rows or not rows.is_empty()
+		rows.clear()
 	_ref_counts.clear()
 	_pk_less_counts.clear()
 	_query_rows.clear()
@@ -1330,3 +1380,26 @@ func clear_all_tables() -> void:
 	# a row callback. Measured without this bump: the rest of the batch stayed cached
 	# with an empty _ref_counts, i.e. rows no later delete can evict. See [member _generation].
 	_generation += 1
+	# Dead entries first, so the walk below cannot meet one: an index whose owner has been
+	# freed would otherwise sit in the list for the process, and calling an invalid Callable
+	# is a runtime error, which unwinds this whole function.
+	for i: int in range(_index_invalidators.size() - 1, -1, -1):
+		if not _index_invalidators[i].is_valid():
+			_index_invalidators.remove_at(i)
+	if not dropped_rows:
+		return
+	# Fired after the containers, so an invalidator that reads this database sees an emptied
+	# one — and from a COPY, like every other dispatch loop in this class, since an
+	# invalidator may register or release another index.
+	#
+	# The `dropped_rows` gate above is what makes a re-entrant wipe terminate, and it is
+	# load-bearing rather than an optimisation. clear_local_db()'s emit loops stop on their
+	# own because what they report comes from containers the outer call already emptied;
+	# this list is a registry no wipe empties, so an invalidator that calls back into
+	# clear_all_tables() re-fired every entry including itself, without bound (measured: 12
+	# calls for 3 invalidators with the recursion capped at three levels; uncapped it
+	# overflows the stack). An already-emptied database has nothing left to invalidate, so
+	# the nested call returns here and the descent ends one level down.
+	for invalidator: Callable in _index_invalidators.duplicate():
+		if invalidator.is_valid():
+			invalidator.call()

@@ -33,6 +33,20 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A silent cache wipe no longer leaves the generated index accessors answering with
+  rows that are gone.** `LocalDatabase.clear_all_tables()` empties every table without
+  reporting a delete — that is its documented contract, and a game's own row listeners
+  going stale is its documented cost. But the unique and btree index caches behind
+  `find_by_*` / `first_by_*` / `filter` / `filter_range` are kept current by those same
+  delete callbacks, and they are not consumers of the mirror: they are part of its read
+  path, and nothing outside the SDK can reach them to rebuild. Measured on a table wiped
+  with three rows cached: `count()` and `iter()` reported empty while
+  `first_by_entity_id()` still returned a row and `filter_range()` still returned all
+  three, for the rest of the session. Both index base classes now register a cache
+  invalidator that `clear_all_tables()` fires after it empties the storage;
+  `clear_local_db()` is unchanged, since the deletes it reports already do the work.
+  `tests/test_index_cache_after_wipe.gd`, 26 assertions.
+
 - **Subscriptions the server never answers no longer grow without bound, and no longer
   turn into an unbounded burst on the next reconnect.** Reducer and procedure calls were
   already capped; the subscription path never was. Measured against a loopback server that

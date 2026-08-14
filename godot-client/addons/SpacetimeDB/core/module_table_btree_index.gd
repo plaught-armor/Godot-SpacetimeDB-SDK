@@ -117,6 +117,17 @@ func _connect_cache_to_db(cache: Dictionary, db: LocalDatabase) -> void:
 	db.subscribe_to_inserts(_table_name, _on_insert)
 	db.subscribe_to_updates(_table_name, _on_update)
 	db.subscribe_to_deletes(_table_name, _on_delete)
+	db.register_index_invalidator(_clear_cache)
+
+
+## Drops every cached bucket and the sorted-key mirror with it. Registered with
+## [method LocalDatabase.register_index_invalidator] because the delete listener above is
+## not reached by [method LocalDatabase.clear_all_tables], which empties the mirror in
+## silence — these buckets would otherwise keep answering [code]filter()[/code] and every
+## range query with rows that are gone.
+func _clear_cache() -> void:
+	_cache_ref.clear()
+	_sorted_keys.clear()
 
 
 ## Insert listener — appends the row to its key's bucket, creating the bucket (and
