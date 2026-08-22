@@ -6,6 +6,11 @@
 #   cd godot-client && timeout 300 <godot> --headless --path . \
 #       --script tests/fuzz_wire_decode.gd
 #
+# The mutation stream is seeded, so a bare run reproduces the same cases every time —
+# right for confirming a fix, useless for finding anything new. Set STDB_FUZZ_SEED to an
+# integer to walk fresh ground; the seed actually used is printed, so a run that finds
+# something can be replayed exactly.
+#
 # Writes the case it is about to decode to user://fuzz_last_case.txt before decoding,
 # so a hard crash still names the input that caused it.
 extends SceneTree
@@ -49,10 +54,22 @@ var _decompressed: int = 0
 var _decompress_empty: int = 0
 
 
+# STDB_FUZZ_SEED overrides the built-in seed. `is_valid_int` first: `to_int` answers 0 for
+# anything unparseable, and silently fuzzing seed 0 after a typo would look like a run that
+# covered new ground when it covered one fixed stream.
+func _seed() -> int:
+	var raw: String = OS.get_environment("STDB_FUZZ_SEED")
+	if raw.is_valid_int():
+		return raw.to_int()
+	if not raw.is_empty():
+		printerr('STDB_FUZZ_SEED="%s" is not an integer; using the built-in seed' % raw)
+	return SEED
+
+
 func _initialize() -> void:
-	_rng.seed = SEED
+	_rng.seed = _seed()
 	var names: PackedStringArray = _fixture_names()
-	print("fuzzing %d fixtures" % names.size())
+	print("fuzzing %d fixtures, seed %d" % [names.size(), _rng.seed])
 
 	for name: String in names:
 		var frames: Array[PackedByteArray] = _frames("%s/%s" % [FIXTURE_DIR, name])
