@@ -25,6 +25,16 @@ var typespace: Array = []
 ## failed run and leave the existing bindings alone.
 var incomplete: bool = false
 
+## Schema sections the parser does not implement, in the order the server sent them —
+## empty against every server the SDK supports today. A section here is NOT a failed parse
+## (see [member incomplete], which stays false): everything the SDK does understand was
+## parsed and is generated normally, and only what that section declares is absent. It is
+## recorded rather than merely logged so a caller can tell "this module uses a feature this
+## SDK version does not" from a genuine codegen fault. [code]Submodules[/code]
+## (SpacetimeDB 2.8.1+) is the only one a released server can produce — see
+## [code]docs/submodules-readiness.md[/code].
+var skipped_sections: PackedStringArray = []
+
 
 func is_empty() -> bool:
 	return types.is_empty() and reducers.is_empty()
@@ -41,4 +51,5 @@ func to_dictionary() -> Dictionary:
 		"meta_type_map": meta_type_map,
 		"typespace": typespace,
 		"incomplete": incomplete,
+		"skipped_sections": skipped_sections,
 	}

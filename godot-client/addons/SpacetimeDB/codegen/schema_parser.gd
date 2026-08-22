@@ -83,6 +83,47 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 }
 
 
+## Every schema-v10 section this parser reads, across both of its passes. A section
+## outside this set is skipped — the two passes below are [code]if[/code]/[code]elif[/code]
+## chains with no final [code]else[/code], so an unrecognized tag simply matches nothing
+## and the parse carries on.
+## That is the intended handling of a section a newer server added: the SDK cannot invent
+## a meaning for it, and refusing the whole schema over one would strand a client on a
+## server it otherwise speaks to perfectly.
+##
+## What it must not be is silent. [code]Submodules[/code] (SpacetimeDB 2.8.1+, authored only by the
+## TypeScript server SDK today) is exactly that case, and a submodule's tables and
+## reducers falling out of the generated bindings with no message reads as a codegen bug
+## rather than an unimplemented feature. Anything not listed here gets named in the log —
+## see [code]docs/submodules-readiness.md[/code].
+##
+## [code]Array[String][/code] rather than the [code]PackedStringArray[/code] the element
+## type would otherwise ask for, and [code]static var[/code] rather than [code]const[/code].
+## One table shared by every parse in the process is exactly what wants locking, and
+## [method Array.make_read_only] is the only lock the engine offers — [code]Packed*Array[/code]
+## has no such method, and a [code]const[/code] [code]Packed*Array[/code] reads back empty
+## on the Godot versions this addon supports (engine issue #88753). The membership check
+## below runs once per section per parse, so the packed container's access win is worth
+## nothing here and the enforcement is worth having.
+static var HANDLED_SECTIONS: Array[String] = [
+	"ExplicitNames",
+	"LifeCycleReducers",
+	"Procedures",
+	"Reducers",
+	"Schedules",
+	"Tables",
+	"Typespace",
+	"Types",
+	"ViewPrimaryKeys",
+	"Views",
+]
+
+
+static func _static_init() -> void:
+	if not HANDLED_SECTIONS.is_read_only():
+		HANDLED_SECTIONS.make_read_only()
+
+
 static func _sort_by_ty(a: Dictionary, b: Dictionary) -> bool:
 	return a.get("ty", -1) < b.get("ty", -1)
 
@@ -179,6 +220,22 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 	if not schema.has("sections"):
 		SpacetimePlugin.print_err("Schema v10 required (missing 'sections'). Please update SpacetimeDB to 2.1.0+.")
 		return SpacetimeParsedSchema.new()
+
+	# Walked before either pass runs, so the report reaches the log even if a later section
+	# makes the parse bail. Each section dict carries exactly one tag key.
+	var skipped_sections: PackedStringArray = []
+	for section: Dictionary in schema["sections"]:
+		var tag: String = _first_key(section)
+		if not tag.is_empty() and not HANDLED_SECTIONS.has(tag):
+			skipped_sections.append(tag)
+			SpacetimePlugin.print_log(
+				(
+					"Schema section '%s' is not supported by this SDK version and was skipped. "
+					+ "Whatever it declares — tables, reducers — is absent from the generated "
+					+ "bindings. Everything else in the schema was generated normally."
+				)
+				% [tag]
+			)
 
 	var lifecycle_map: Dictionary = { } # function_name -> lifecycle spec key
 	var schedules_by_table: Dictionary = { } # table source_name -> schedule dict
@@ -279,6 +336,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 	schema_types_raw.sort_custom(_sort_by_ty)
 	var parsed_schema: SpacetimeParsedSchema = SpacetimeParsedSchema.new()
 	parsed_schema.module = module_class_prefix(module_name)
+	parsed_schema.skipped_sections = skipped_sections
 
 	var parsed_types_list: Array[Dictionary] = []
 	for type_info: Dictionary in schema_types_raw:
