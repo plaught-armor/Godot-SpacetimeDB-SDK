@@ -948,6 +948,35 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   handler plumbing). Live suites re-run against a 2.7.1 server with modules built
   against the `2.7.1` bindings: types 6/6, behavior 15/15, enum-with-payload 1/1,
   anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1.
+- Verified the SDK end-to-end against **SpacetimeDB 2.8.2**; the tested range is
+  now `2.2.0`–`2.8.2`. No code change was needed — the schema is still v10
+  (`?version=11` is rejected: "unknown variant `11`, expected `9` or `10`"),
+  the section set is unchanged, and `crates/client-api-messages` is byte-identical
+  all the way from `v2.7.0` to `v2.8.2`. The `client-api` route diff over `2.8.1`
+  adds egress-metrics middleware only, leaving every route the SDK calls where it
+  was, and the schema-definition crates (`crates/lib/src/db/raw_def`,
+  `crates/schema/src/def.rs`, `crates/sats`) are untouched. Every uncompressed wire
+  fixture recaptured from a 2.8.2 server has the same byte length as the one
+  captured from 2.7.0, differing only in identities, connection ids, request ids and
+  timestamps; the two compressed snapshots shift a few bytes in length because the
+  compressor tracks those same varying bytes. Bindings regenerated from a live 2.8.2
+  server are byte-identical to the committed ones. Offline suite 119/119 files; live
+  broadcast 4/4, index 27/27, abnormal-drop reconnect 9/9, wire-fixture decode
+  105/105 over the freshly captured bytes. Live suites re-run with modules built
+  against the `2.8.2` bindings: types 6/6, behavior 15/15, enum-with-payload 1/1,
+  anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1.
+- Captured the populated form of the schema's `default_values` table key for the
+  first time, using the Rust `#[default(value)]` support for `string` columns added
+  in 2.8.1: `"default_values": [{"col_id": 11, "value": "0900...73"}]`, the
+  default's BSATN hex-encoded and keyed by column index. The parser still drops
+  the key — a client sends every column, so a default never reaches the wire —
+  and codegen over such a table generates the column normally. See
+  `docs/design-decisions.md` for why it stays deferred.
+- Noted that namespaced submodules reached a tagged release in `2.8.1` (they are
+  absent from `2.8.0`). They remain unsupported here and, as of `2.8.2`, still
+  unauthored by any server language but TypeScript; a submodule's tables and
+  reducers are invisible to codegen rather than an error. See
+  [`docs/submodules-readiness.md`](docs/submodules-readiness.md).
 
 ## [2.6.0] - 2026-07-28
 

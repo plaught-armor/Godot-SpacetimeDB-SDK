@@ -209,6 +209,13 @@ the broadcast check — because each needs a situation the capture cannot stage.
 failed run of either deletes its fixture rather than leaving a plausible-looking
 one behind.
 
-Captured against SpacetimeDB **2.7.0**. Note the `spacetime` CLI reports its own
-version, which may lag the server binary it launches — check the server log line
+Captured against SpacetimeDB **2.7.0**, and re-captured against **2.8.2** to
+confirm they still describe the server: every uncompressed fixture came back the
+same byte length, differing only where a capture must differ — identities,
+connection ids, request ids and timestamps — so the committed 2.7.0 bytes were
+kept rather than churned. The two compressed snapshots do change length (gzip
+7713 → 7698 bytes, brotli 6866 → 6878), which is the compressor tracking those
+same varying bytes, not a framing change; both still decode to the same 600-row
+snapshot. Note the `spacetime` CLI reports its own version, which may lag the
+server binary it launches — check the server log line
 `spacetimedb-standalone version:` for the truth.

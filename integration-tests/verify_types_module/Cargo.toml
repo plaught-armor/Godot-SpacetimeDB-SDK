@@ -9,4 +9,4 @@ crate-type = ["cdylib"]
 [dependencies]
 # Point this at your local SpacetimeDB checkout's bindings crate (matching the
 # server version), or replace with `spacetimedb = "<version>"` from crates.io.
-spacetimedb = { version = "2.7.1", features = ["unstable"] }
+spacetimedb = { version = "2.8.2", features = ["unstable"] }

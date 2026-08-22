@@ -69,8 +69,8 @@ above (publish `blackholio`, then `--script verify_live_reconnect.gd`).
 
 ## Last verified
 
-Against SpacetimeDB **2.7.1** (CLI 2.7.1), schema v10, modules built against the
-crates.io `spacetimedb = "2.7.1"` bindings:
+Against SpacetimeDB **2.8.2** (CLI 2.8.2), schema v10, modules built against the
+crates.io `spacetimedb = "2.8.2"` bindings:
 
 - Types suite: 6/6 — `u128`/`i128`/`u256`/`i256` (byte-exact), `Uuid` (byte-exact, reuses the `u128` wire path), `ScheduleAt` (Interval + micros).
 - Behavior suite: 15/15 — cache trio (G1/G2/G3), TimeDuration, default_values, fallible-reducer error message.
@@ -85,13 +85,13 @@ The harness subscribes, calls `add_shape`, and confirms `shape` deserializes to 
 `Resource` (so the generated `@export var shape: VsumShape` field is legal and the
 type instantiates for the nested-resource → is-RustEnum read path).
 
-**Last verified (2.7.1):** `shape` → `value=0` (Circle), `data=7`. Write path
+**Last verified (2.8.2):** `shape` → `value=0` (Circle), `data=7`. Write path
 (enum reducer args / client inserts) covered by the `test_rust_enum_roundtrip` unit test.
 
 The same module's `res_row.r: Result<i32, String>` covers **anonymous inline
 Result<T, E> columns** (`verify_live_result.gd`). The parser synthesizes a named
 `VsumResultI32String` RustEnum type per distinct `Result<T, E>` (Options `{ok, err}`,
-`ENUM_OPTIONS [i32, string]`), so it rides the same enum path. **Last verified (2.7.1):**
+`ENUM_OPTIONS [i32, string]`), so it rides the same enum path. **Last verified (2.8.2):**
 `Ok(42)` → `value=0, data=42`; `Err("bad")` → `value=1, data="bad"`. Parser synthesis
 guarded by the `test_result_synthesis` unit test.
 
