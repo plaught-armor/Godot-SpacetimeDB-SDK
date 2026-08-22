@@ -33,6 +33,20 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   decode look broken.
 
 ### Fixed
+- **A schema section this SDK version cannot read is named instead of vanishing with
+  the tables it declares.** The parser walks the v10 section list through two
+  `if`/`elif` chains with no final `else`, so an unrecognised section tag matched
+  nothing and was skipped in complete silence. `Submodules` (SpacetimeDB 2.8.1+,
+  authored today only by the TypeScript server SDK) is exactly that case: a
+  submodule's tables and reducers fell out of the generated bindings while the
+  codegen run still reported success — indistinguishable, from the outside, from a
+  codegen bug. Carrying on is still what the SDK does, because it cannot invent a
+  meaning for a section a newer server added and refusing the whole schema would
+  strand a client on a server it otherwise speaks to perfectly. The skip is now
+  logged by name, and the tags are recorded on `SpacetimeParsedSchema.skipped_sections`
+  so a caller can tell an unimplemented feature from a genuine fault. It is
+  deliberately not an error: `incomplete` gates codegen's pruning pass, and a module
+  using such a section must not lose pruning permanently over it.
 - **A silent cache wipe no longer leaves the generated index accessors answering with
   rows that are gone.** `LocalDatabase.clear_all_tables()` empties every table without
   reporting a delete — that is its documented contract, and a game's own row listeners
