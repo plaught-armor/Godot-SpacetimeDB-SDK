@@ -46,7 +46,7 @@ var light_mode: bool = false
 ##
 ## Default [code]true[/code], which is what the server applies to a v3 connection that
 ## does not ask ([code]DEFAULT_CONFIRMED_READS[/code], unchanged across every supported server —
-## 2.2.0 through 2.7.1). The Rust and C# SDKs send the parameter only when the caller
+## 2.2.0 through 2.8.2). The Rust and C# SDKs send the parameter only when the caller
 ## sets it, so this default is also what they effectively connect with; this SDK always
 ## sends it, so a future change to the server's default cannot silently move the
 ## consistency guarantee under an existing game. Set [code]false[/code] to trade
