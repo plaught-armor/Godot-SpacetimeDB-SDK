@@ -1,11 +1,18 @@
 # Drives a real reconnect against a live server and checks the recovery.
 #
-# Reconnect is the last big path with no live coverage, and the one players hit
-# most: `_resubscribe_saved_queries` has only ever run against synthetic tests, and
-# it is the path where subscription handles go permanently ENDED. None of that is
+# Reconnect is the one big path players hit most, and `_resubscribe_saved_queries`
+# otherwise only ever runs against synthetic tests with a fake socket. None of it is
 # observable from replayed bytes — it is client state machine behaviour — so this
 # is a live harness rather than a suite test. Underscore-prefixed so run_tests.sh
 # skips it; the suite must stay runnable with no server.
+#
+# It carries the only end-to-end proof of the subscription-handle contract: a drop
+# SUSPENDS the caller's handle and the reconnect re-registers that same object under a
+# fresh query set id, rather than ending it and restoring the query under an internal
+# handle nothing outside the client can reach. The offline suite pins that against a
+# fake connection; only a real server can show that the pre-drop handle's unsubscribe
+# actually reaches it and stops the rows — which is the defect the whole contract
+# exists for, and the one thing a synthetic test cannot demonstrate.
 #
 #   spacetime start ... && cd blackholio-server && ./publish.sh
 #   cd godot-client && <godot> --headless --path . res://tests/_live_reconnect_check.tscn
@@ -39,6 +46,18 @@ const KILL_CUE: String = "[live-reconnect] KILL_THE_SERVER_NOW"
 ## closing the socket here, so the abnormal-closure branch runs.
 var _kill_mode: bool = not OS.get_environment("STDB_KILL_SERVER").is_empty()
 var _abnormal_close_seen: bool = false
+## The handle taken before the drop — the object the whole contract is about.
+var _sub: SpacetimeDBSubscription = null
+## Sampled inside `reconnecting`, which is the only moment the suspended state is
+## observable: by the time `reconnected` fires the handle has been re-registered.
+var _suspended_while_reconnecting: bool = false
+## The query set id the suspended handle carried, sampled at the same moment. A
+## suspended handle carries none — the ids are handed out from a counter the new session
+## resets, so the old value would name whatever query set lands there next.
+var _query_id_while_reconnecting: int = 0
+## Counts `applied` on the pre-drop handle. 1 before the drop, 2 after recovery — the
+## same handle being confirmed by the server a second time.
+var _applied_seen: int = 0
 var _fails: int = 0
 var _total: int = 0
 var _reconnecting_seen: int = 0
@@ -66,10 +85,20 @@ func _ready() -> void:
 
 func _on_reconnecting(_attempt: int, _max_attempts: int) -> void:
 	_reconnecting_seen += 1
+	# Sticky: a kill-mode run makes many attempts, and the handle is suspended for all
+	# of them. One sample that ever saw it is the evidence; a later attempt cannot
+	# un-see it.
+	if _sub != null and _sub.suspended:
+		_suspended_while_reconnecting = true
+		_query_id_while_reconnecting = _sub.query_id
 
 
 func _on_reconnected() -> void:
 	_reconnected_seen += 1
+
+
+func _on_applied() -> void:
+	_applied_seen += 1
 
 
 ## Code -1 is Godot's "the socket died without a close handshake" — what a killed
@@ -84,8 +113,11 @@ func _on_connection_error(code: int, _reason: String) -> void:
 
 
 func _run(_identity: PackedByteArray, _token: String) -> void:
-	var sub: SpacetimeDBSubscription = SpacetimeDB.Blackholio.subscribe(_queries)
-	_check("initial subscription applied", await sub.wait_for_applied(10.0) == OK, true)
+	_sub = SpacetimeDB.Blackholio.subscribe(_queries)
+	# Connected before the wait, so the count covers the first confirmation too — the
+	# assertion after recovery is that it fired AGAIN, which needs both.
+	_sub.applied.connect(_on_applied)
+	_check("initial subscription applied", await _sub.wait_for_applied(10.0) == OK, true)
 	_check("config row cached before the drop", SpacetimeDB.Blackholio.db.config.count(), 1)
 
 	# Capture what the server sends during the recovery, from the drop onward.
@@ -114,16 +146,24 @@ func _run(_identity: PackedByteArray, _token: String) -> void:
 		# The point of this mode: a killed server produces an abnormal closure, which
 		# is a different branch from the graceful close the default run exercises.
 		_check("the drop was reported as an abnormal closure", _abnormal_close_seen, true)
-	# Documented contract, not evidence of recovery: _prepare_for_reconnect ends
-	# every handle the moment the socket drops, so this passes long before any
-	# resubscribe is attempted. It is here because anyone holding a handle across a
-	# reconnect must see it go dead — the two checks below are what prove recovery.
-	_check("the pre-drop handle is ENDED (before any resubscribe)", sub.ended, true)
+	# The handle contract, against a real socket. Suspended for the whole outage and
+	# never ended: a drop is not the subscription being over.
+	_check("the handle was suspended while reconnecting", _suspended_while_reconnecting, true)
+	_check("and was never ended by the drop", _sub.ended, false)
+	_check("it is live again after recovery", _sub.active, true)
+	_check("and no longer suspended", _sub.suspended, false)
+	# The same OBJECT, re-registered — not a replacement the caller cannot reach. Pinned
+	# as "it gave the id up and got one back", NOT as "the number changed": the counter
+	# resets with the session, so a client holding one subscription is legitimately handed
+	# id 0 again, and asserting on the value would fail against correct behaviour.
+	_check("it carried no query set id while suspended", _query_id_while_reconnecting, -1)
+	_check("and carries a live one again", _sub.query_id >= 0, true)
 	_check(
-		"a live subscription replaced it",
-		SpacetimeDB.Blackholio.current_subscriptions.is_empty(),
-		false,
+		"and it is the handle the client holds for that id",
+		SpacetimeDB.Blackholio.current_subscriptions.get(_sub.query_id) == _sub,
+		true,
 	)
+	_check("the server confirmed it a second time", _applied_seen, 2)
 	# The real question: did the resubscribe actually refill the cache the reconnect
 	# cleared, or did it just reopen a socket? _prepare_for_reconnect calls
 	# clear_local_db(), and only a SubscribeApplied refills it.
@@ -142,6 +182,18 @@ func _run(_identity: PackedByteArray, _token: String) -> void:
 		call.outcome,
 		SpacetimeDBReducerCall.Outcome.OK,
 	)
+
+	# The defect this contract exists for, proved against the server rather than a fake
+	# socket: the handle taken BEFORE the drop can still stop the query. When the
+	# reconnect handed back an internal handle instead, this call had nothing to name —
+	# the query kept streaming for the rest of the session with nothing able to end it.
+	_check("the pre-drop handle can still unsubscribe", _sub.unsubscribe(), OK)
+	_check("the server confirmed the unsubscribe", await _sub.wait_for_end(10.0), OK)
+	_check("and the handle is ended now, for real", _sub.ended, true)
+	# UnsubscribeFlags::SendDroppedRows makes the server echo the rows being removed, so
+	# a confirmed unsubscribe empties the mirror for that query. The rows leaving are what
+	# prove the SERVER stopped, rather than the client merely forgetting.
+	_check("the rows it owned left the cache", SpacetimeDB.Blackholio.db.config.count(), 0)
 
 	_finish()
 
