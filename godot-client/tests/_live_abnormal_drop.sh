@@ -4,7 +4,11 @@
 # the branch a yanked network takes, and the only way to reach it is to really
 # take the server away.
 #
-#   GODOT=/path/to/godot tests/_live_abnormal_drop.sh
+#   GODOT=/path/to/godot tests/_live_abnormal_drop.sh > drop.log 2>&1
+#
+# Redirect it rather than piping it into `tail`/`head`: this script prints nothing
+# until the harness it drives finishes, and a buffering consumer shows an empty screen
+# for the whole run, which reads exactly like a hang on a run that is going fine.
 #
 # The server is restarted from its own /proc entry — same executable, same argv,
 # same working directory — and no --delete-data is involved, so the published
