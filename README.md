@@ -19,7 +19,7 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 -   [API Reference](docs/api.md)
 -   [SpacetimeAuth + GodotSteam: Steam sign-in](docs/spacetimeauth-godotsteam.md) — turn a Steam login into a SpacetimeDB connection
 -   [Design Decisions](docs/design-decisions.md) — what's built, what's blocked by the wire, what's deliberately out of scope (and why)
--   [Submodules / namespaces readiness](docs/submodules-readiness.md) — what upstream's unreleased namespace feature does to the wire, and what this SDK does with a namespaced module today
+-   [Submodules / namespaces](docs/submodules.md) — what a namespaced module looks like on the wire, and how its tables and reducers reach the generated bindings
 -   [Changelog](CHANGELOG.md)
 
 ## Features
@@ -47,6 +47,10 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 -   **Indexed lookups:** unique indexes expose a typed `find(value)` (single row); non-unique btree indexes expose a typed `filter(value)` (all matching rows), generated as named accessors on the table wrapper. A btree index over an **orderable** column (`int` / `float` / `String`) also gets `filter_range(from, to)` (inclusive `[from, to]`) plus the one-sided `filter_gte` / `filter_gt` / `filter_lte` / `filter_lt` — all backed by a sorted-key mirror, so they binary-search the window (O(log d + k)) instead of scanning. Non-orderable keys — `PackedByteArray`-backed columns (`Identity`, `u128`/`u256`) and `bool` — get exact-match `filter()` only, since they have no defined ordering.
 -   **Row callbacks:** `on_insert`, `on_update`, `on_delete`, and `on_before_delete` (fires while the row is still in the cache, before removal), plus the matching `row_inserted` / `row_updated` / `row_before_delete` / `row_deleted` signals on the client.
 -   **Typed table signals:** each table wrapper also exposes `inserted(row)` / `updated(old_row, new_row)` / `deleted(row)` signals typed to the concrete row class — a table-scoped, editor-discoverable parallel to the `on_*` callbacks.
+
+### Modules & Codegen
+
+-   **Namespaced submodules (SpacetimeDB 2.8.1+):** a module that registers other modules under namespaces generates bindings for all of them. A submodule's tables and functions sit under a namespace member mirroring the dotted name the server registers them under — `lib.lib_data` is `db.lib.lib_data`, `auth.baz.baz_insert` is `reducers.auth.baz.baz_insert(...)` — with each submodule's types scoped to its own typespace. Verified end-to-end against a live 2.8.2 server (see [`integration-tests/`](integration-tests/) and [Submodules](docs/submodules.md)).
 
 ### Connection & Reliability
 

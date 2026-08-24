@@ -106,17 +106,18 @@ user-visible effect, so they get explained rather than just done.
   The one place the variant is real wire data — a `#[scheduled]` table's
   `Interval` vs `Time` — *is* modeled, by `ScheduleAt`, because there the tag is
   data, not a label.
-- **Schema-v10 `default_values` and module namespaces are not surfaced (deferred).**
-  Neither has a functional consumer yet. `default_values` is verified harmless in
-  both its forms: empty (`auto_inc` tables deserialize fine) and populated — a
-  column carrying a default appears as
+- **Schema-v10 `default_values` is not surfaced (deferred).** It has no functional
+  consumer, and is verified harmless in both its forms: empty (`auto_inc` tables
+  deserialize fine) and populated — a column carrying a default appears as
   `{"col_id": <index>, "value": "<BSATN hex>"}`, and a table declaring one
   generates and decodes exactly like any other, because a client always sends
-  every column and so never relies on a server-side default. Namespaces are
-  unused, and shipped upstream in 2.8.1 — see
-  [`submodules-readiness.md`](submodules-readiness.md). Built when a module needs
-  them — not a permanent skip. Canonical/case naming via `ExplicitNames` and
+  every column and so never relies on a server-side default. Built when a module
+  needs it — not a permanent skip. Canonical/case naming via `ExplicitNames` and
   fallible-reducer return values + error messages *are* handled.
+- **Module namespaces (submodules) are supported** as of SpacetimeDB 2.8.1 — a
+  submodule's tables and reducers generate under a namespace member
+  (`db.lib.lib_data`) and are addressed by their dotted wire names. See
+  [`submodules.md`](submodules.md).
 
 ## Where this is enforced
 

@@ -1001,8 +1001,117 @@ func _generate_module_bindings(module_name: String) -> Array[String]:
 	return generated_files
 
 
+## True when two defs the module generates would take one identifier — which names both the
+## generated class and the file it is written to, so the second write silently replaces the
+## first.
+##
+## Namespaces are what make this reachable: a submodule's table carries its namespace to
+## stay unique (`lib.lib_data` -> `lib_lib_data`) and its types take it in PascalCase
+## (`lib`'s `Point` -> `LibPoint`), so a root def spelled exactly that way lands on top of
+## it. finalize_bindings' class and path gates catch the same pairs, but only once a file
+## is already on disk.
+##
+## The skips mirror the generating loops exactly — a def that is never written cannot
+## collide with one that is, and refusing a module over a name nothing emits would refuse
+## a module the server is happy to serve.
+func _has_duplicate_generated_identifiers(module_name: String, schema: SpacetimeParsedSchema) -> bool:
+	var duplicated: bool = false
+	var table_identifiers: Dictionary[String, String] = { }
+	for table_def: Dictionary in schema.tables:
+		var table_name: Variant = table_def.get("name", null)
+		if table_name == null:
+			continue
+		if _plugin_config.module_configs[module_name].hide_private_tables and not table_def.get("is_public", true):
+			continue
+		var identifier: String = String(table_name)
+		var wire_name: String = table_def.get("wire_name", identifier)
+		if table_identifiers.has(identifier):
+			SpacetimePlugin.print_err(
+				(
+					"Tables '%s' and '%s' both generate '%s'. Rename one of them in the "
+					+ "module; their bindings would be written to one file."
+				)
+				% [table_identifiers[identifier], wire_name, identifier]
+			)
+			duplicated = true
+			continue
+		table_identifiers[identifier] = wire_name
+
+	# Keyed by the FILE stem rather than the type name: two names that differ only in case
+	# or underscoring (`LibPoint` beside `lib`'s `Point`) are two class names but one path,
+	# and the write that loses is silent.
+	#
+	# Reported only when a submodule brought one of the two names in. A pair a single
+	# module declares on its own (`AABB` and `Aabb`) is the older hazard the class and path
+	# gates in finalize_bindings already own, and claiming it here would move where that is
+	# reported for modules that have nothing to do with namespaces.
+	var type_stems: Dictionary[String, Dictionary] = { }
+	for type_def: Dictionary in schema.types:
+		if type_def.has("gd_native"):
+			continue
+		if type_def.has("enum") and not type_def.get("is_sum_type"):
+			continue
+		var type_name: String = type_def.get("name", "")
+		if type_name.is_empty():
+			continue
+		var stem: String = type_name.to_snake_case()
+		if type_stems.has(stem):
+			var previous: Dictionary = type_stems[stem]
+			if _is_namespaced(previous) or _is_namespaced(type_def):
+				SpacetimePlugin.print_err(
+					(
+						"Types '%s' and '%s' both generate '%s.gd'. Rename one of them in "
+						+ "the module; their bindings would be written to one file."
+					)
+					% [_namespaced_type_label(previous), _namespaced_type_label(type_def), stem]
+				)
+				duplicated = true
+			continue
+		type_stems[stem] = type_def
+	return duplicated
+
+
+## True when [param type_def] was declared by a submodule rather than by the root module.
+static func _is_namespaced(type_def: Dictionary) -> bool:
+	return not PackedStringArray(type_def.get("namespace", [])).is_empty()
+
+
+## A type named the way the module author sees it: the declared name, and the namespace it
+## was declared in when that is not the root module.
+static func _namespaced_type_label(type_def: Dictionary) -> String:
+	var type_namespace: PackedStringArray = PackedStringArray(type_def.get("namespace", []))
+	var type_name: String = type_def.get("name", "")
+	if type_namespace.is_empty():
+		return type_name
+	return "%s.%s" % [".".join(type_namespace), type_def.get("source_name", type_name)]
+
+
 func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsedSchema) -> Array[String]:
 	var generated_files: Array[String] = []
+
+	# The four module-level files are built FIRST, before anything is written, because
+	# building them is what detects a name two defs would both claim. Reporting that after
+	# the per-type and per-table writes had already run would leave the module half
+	# rewritten — and `generation_incomplete` cannot undo a write, it only stops the
+	# pruning pass and the autoload rewrite that come after. Neither builder reads anything
+	# this function writes; both are pure functions of the parsed schema.
+	# Snapshot the plugin's error TALLY, not `generation_incomplete`: that flag is per RUN,
+	# so once an earlier module set it, a boolean "was it already set" reads false forever
+	# after and this module's own collisions stop stopping it. Counting errors is how
+	# SpacetimeSchemaParser.parse_schema answers the same question.
+	var errors_before: int = SpacetimePlugin.error_count
+	var db_content: String = _generate_db_gdscript(module_name, schema)
+	var reducers_content: String = _generate_reducers_gdscript(module_name, schema)
+	var procedures_content: String = _generate_procedures_gdscript(module_name, schema)
+	var types_content: String = _generate_types_gdscript(module_name, schema)
+	# Only THIS module's own names are grounds to stop — hence the snapshot: an earlier
+	# module's failure already stops the pruning pass and the autoload rewrite, and bailing
+	# on it here as well would leave a healthy module stale with nothing said about it.
+	var facades_flagged: bool = SpacetimePlugin.error_count > errors_before
+	if _has_duplicate_generated_identifiers(module_name, schema) or facades_flagged:
+		generation_incomplete = true
+		_stage_reached_return = true
+		return generated_files
 
 	for type_def in schema.types:
 		if type_def.has("gd_native"):
@@ -1155,7 +1264,6 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 	file_module.close()
 	generated_files.append(output_file_path_module)
 
-	var db_content: String = _generate_db_gdscript(module_name, schema)
 	var db_output_file_name: String = "module_%s_db.gd" % schema.module.to_snake_case()
 	var db_output_file_path: String = "%s/%s" % [_schema_path, db_output_file_name]
 	var db_file: FileAccess = FileAccess.open(db_output_file_path, FileAccess.WRITE)
@@ -1170,7 +1278,6 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 	db_file.close()
 	generated_files.append(db_output_file_path)
 
-	var reducers_content: String = _generate_reducers_gdscript(module_name, schema)
 	var output_file_name_reducers: String = "module_%s_reducers.gd" % schema.module.to_snake_case()
 	var output_file_path_reducers: String = "%s/%s" % [_schema_path, output_file_name_reducers]
 	var file_reducers: FileAccess = FileAccess.open(output_file_path_reducers, FileAccess.WRITE)
@@ -1185,7 +1292,6 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 	file_reducers.close()
 	generated_files.append(output_file_path_reducers)
 
-	var procedures_content: String = _generate_procedures_gdscript(module_name, schema)
 	var output_file_name_procedures: String = "module_%s_procedures.gd" % schema.module.to_snake_case()
 	var output_file_path_procedures: String = "%s/%s" % [_schema_path, output_file_name_procedures]
 	var file_procedures: FileAccess = FileAccess.open(output_file_path_procedures, FileAccess.WRITE)
@@ -1200,7 +1306,6 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 	file_procedures.close()
 	generated_files.append(output_file_path_procedures)
 
-	var types_content: String = _generate_types_gdscript(module_name, schema)
 	var output_file_name_types: String = "module_%s_types.gd" % schema.module.to_snake_case()
 	var output_file_path_types: String = "%s/%s" % [_schema_path, output_file_name_types]
 	var file_types: FileAccess = FileAccess.open(output_file_path_types, FileAccess.WRITE)
@@ -1221,6 +1326,10 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 
 func _generate_table_unique_index_gdscript(schema: SpacetimeParsedSchema, unique_index_def: Dictionary, table_def: Dictionary) -> String:
 	var table_name: String = table_def.get("name", "")
+	# The name the SERVER knows the table by — dotted for a submodule's table
+	# ("lib.lib_data"). Every runtime lookup keys on it; `table_name` above only spells
+	# the generated class.
+	var table_wire_name: String = table_def.get("wire_name", table_name)
 	# _safe_name at source: the class-name (to_pascal_case, unchanged by the suffix)
 	# and _field_name (row-property lookup) both derive from this and must match the
 	# sanitized names the table wrapper emits.
@@ -1237,7 +1346,7 @@ func _generate_table_unique_index_gdscript(schema: SpacetimeParsedSchema, unique
 			"class_name %s extends _ModuleTableUniqueIndex\n\n" % _class_name +
 			"var _cache: Dictionary[%s, %s] = {}\n\n" % [field_type, type_name] +
 			"func _init(p_local_db: LocalDatabase) -> void:\n" +
-			"\t_table_name = &\"%s\"\n" % table_name +
+			"\t_table_name = &\"%s\"\n" % table_wire_name +
 			"\t_field_name = &\"%s\"\n" % field_name +
 			"\t_connect_cache_to_db(_cache, p_local_db)\n\n" +
 			"func find(col_val: %s) -> %s:\n" % [field_type, type_name] +
@@ -1248,6 +1357,7 @@ func _generate_table_unique_index_gdscript(schema: SpacetimeParsedSchema, unique
 
 func _generate_table_btree_index_gdscript(schema: SpacetimeParsedSchema, btree_index_def: Dictionary, table_def: Dictionary) -> String:
 	var table_name: String = table_def.get("name", "")
+	var table_wire_name: String = table_def.get("wire_name", table_name)
 	# _safe_name at source (see the unique-index generator).
 	var field_name: String = _safe_field_name(btree_index_def.get("name", ""))
 	var original_field_type: String = btree_index_def.get("type", "Variant")
@@ -1263,7 +1373,7 @@ func _generate_table_btree_index_gdscript(schema: SpacetimeParsedSchema, btree_i
 				"class_name %s extends _ModuleTableBTreeIndex\n\n" % _class_name +
 				"var _cache: Dictionary[%s, Array] = {}\n\n" % field_type +
 				"func _init(p_local_db: LocalDatabase) -> void:\n" +
-				"\t_table_name = &\"%s\"\n" % table_name +
+				"\t_table_name = &\"%s\"\n" % table_wire_name +
 				"\t_field_name = &\"%s\"\n" % field_name +
 				"\t_connect_cache_to_db(_cache, p_local_db)\n\n" +
 				"func filter(col_val: %s) -> Array[%s]:\n" % [field_type, type_name] +
@@ -1297,6 +1407,7 @@ func _generate_table_gdscript(
 	schema: SpacetimeParsedSchema, table_def: Dictionary, emit_indexes: bool
 ) -> String:
 	var table_name: String = table_def.get("name", "")
+	var table_wire_name: String = table_def.get("wire_name", table_name)
 	var type_def: Dictionary = _get_type_def(schema, table_def.get("type_idx", -1)) if table_def.has("type_idx") else { }
 	var original_type_name: String = type_def.get("name", "Variant")
 	var type_name: String = schema.type_map.get(original_type_name, "Variant")
@@ -1353,7 +1464,7 @@ func _generate_table_gdscript(
 	out.append(
 		"\nfunc _init(p_local_db: LocalDatabase) -> void:\n" +
 		"\tsuper(p_local_db)\n" +
-		"\t_table_name = &\"%s\"\n" % table_name,
+		"\t_table_name = &\"%s\"\n" % table_wire_name,
 	)
 
 	for field_name in unique_index_fields:
@@ -1493,7 +1604,10 @@ func _primary_key_by_table(
 	for table_name: String in table_names:
 		pk_by_table[table_name] = ""
 	for table_def: Dictionary in schema.tables:
-		var table_name: String = table_def.get("name", "")
+		# Keyed by the WIRE name: `table_names` comes off the row type, which carries the
+		# names the server sends, and a submodule's table is `lib.lib_data` there while its
+		# generated identifier is `lib_lib_data`.
+		var table_name: String = table_def.get("wire_name", table_def.get("name", ""))
 		if pk_by_table.has(table_name):
 			pk_by_table[table_name] = String(table_def.get("primary_key_name", ""))
 	return pk_by_table
@@ -1750,39 +1864,169 @@ func _generate_module_client_gdscript(_module_name: String, schema: SpacetimePar
 	return "".join(out)
 
 
+## Reports [param member] already being claimed at this level, and records it otherwise.
+## Returns true when it collided — the caller marks the run incomplete, which is what stops
+## the pruning pass deleting the module's previous, working bindings over a file Godot
+## would refuse to parse.
+func _member_name_taken(taken: Dictionary[String, String], member: String, owner: String) -> bool:
+	if taken.has(member):
+		SpacetimePlugin.print_err(
+			(
+				"Generated member '%s' is claimed by both %s and %s. Rename one of them in "
+				+ "the module; the bindings cannot be generated as they are."
+			)
+			% [member, taken[member], owner]
+		)
+		return true
+	taken[member] = owner
+	return false
+
+
+## Groups defs — tables, reducers or procedures — by the namespace they were declared in,
+## into a tree of [code]{ "defs": Array, "children": Dictionary }[/code]. A def with an
+## empty namespace (every def of a module without submodules) lands in the root node's
+## `defs`, so the emitters below produce exactly what they produced before submodules
+## existed when nothing is namespaced.
+##
+## Insertion order follows the caller's list, which the parser has already sorted by name,
+## so the emitted members stay byte-stable across runs.
+static func _group_by_namespace(defs: Array) -> Dictionary:
+	var root: Dictionary = { "defs": [], "children": { } }
+	for def: Dictionary in defs:
+		var node: Dictionary = root
+		for segment: String in def.get("namespace", PackedStringArray()):
+			var children: Dictionary = node["children"]
+			if not children.has(segment):
+				children[segment] = { "defs": [], "children": { } }
+			node = children[segment]
+		node["defs"].append(def)
+	return root
+
+
+## The inner class a namespace's members live in. Nested namespaces nest their classes the
+## same way the server nests the modules.
+static func _namespace_class_name(segment: String) -> String:
+	return "%sNamespace" % segment.to_pascal_case()
+
+
+## Indents a generated block by one tab so it can be dropped into an inner class body.
+## Blank lines are left blank — a line of trailing whitespace is not what any of this
+## file's other emitters produce, and it would show up in every golden.
+static func _indent_block(text: String) -> String:
+	var lines: PackedStringArray = text.split("\n")
+	for i: int in lines.size():
+		if not lines[i].is_empty():
+			lines[i] = "\t" + lines[i]
+	return "\n".join(lines)
+
+
+## Reports two sibling namespaces whose inner classes would be spelled the same
+## (`my_auth` and `myAuth` both give `MyAuthNamespace`). Emitting both produces a file
+## Godot refuses to parse, and the pruning pass then deletes the module's previous, working
+## bindings — so this fails the run instead.
+func _namespace_class_names_collide(node: Dictionary, path: String) -> bool:
+	var taken: Dictionary[String, String] = { }
+	var collides: bool = false
+	var children: Dictionary = node["children"]
+	for segment: String in children:
+		var class_name_for_segment: String = _namespace_class_name(segment)
+		if taken.has(class_name_for_segment):
+			SpacetimePlugin.print_err(
+				(
+					"Namespaces '%s%s' and '%s%s' both generate the class '%s'. Rename one "
+					+ "of them in the module; the bindings cannot be generated as they are."
+				)
+				% [path, taken[class_name_for_segment], path, segment, class_name_for_segment]
+			)
+			collides = true
+			continue
+		taken[class_name_for_segment] = segment
+		if _namespace_class_names_collide(children[segment], "%s%s." % [path, segment]):
+			collides = true
+	return collides
+
+
 func _generate_db_gdscript(module_name: String, schema: SpacetimeParsedSchema) -> String:
-	var tables: Dictionary[String, String] = { }
+	var visible_tables: Array[Dictionary] = []
 	var table_names: Array[String] = []
-	for table_def in schema.tables:
-		var table_name = table_def.get("name", null)
+	for table_def: Dictionary in schema.tables:
+		var table_name: Variant = table_def.get("name", null)
 		if table_name == null:
 			continue
 		if _plugin_config.module_configs[module_name].hide_private_tables and not table_def.get("is_public", true):
 			continue
-		tables[table_name] = "%s%sTable" % [schema.module, table_name.to_pascal_case()]
-		table_names.append("&\"%s\"" % table_name)
+		visible_tables.append(table_def)
+		# The subscribe-all convenience turns each of these into `SELECT * FROM <name>`,
+		# so they are the names the SERVER answers to: dotted for a submodule's table.
+		table_names.append("&\"%s\"" % table_def.get("wire_name", table_name))
+
+	var tree: Dictionary = _group_by_namespace(visible_tables)
+	if _namespace_class_names_collide(tree, ""):
+		generation_incomplete = true
 
 	var out: PackedStringArray = [AUTOGENERATED_COMMENT]
 	out.append("class_name %sModuleDb extends RefCounted\n\n" % schema.module)
 	out.append("const table_names : Array[StringName] = [%s]\n\n" % ", ".join(table_names))
-	for table_name in tables:
+	out.append(_generate_db_namespace_body(schema, tree))
+
+	return "".join(out)
+
+
+## The members of one namespace level of the db facade: the inner classes its sub-namespaces
+## live in, then a member per table, then the `_init` that builds them. Emitted without
+## indentation and indented by the caller, so the root level and a nested one are the same
+## code.
+func _generate_db_namespace_body(schema: SpacetimeParsedSchema, node: Dictionary) -> String:
+	var out: PackedStringArray = []
+	var children: Dictionary = node["children"]
+	for segment: String in children:
+		out.append("class %s extends RefCounted:\n" % _namespace_class_name(segment))
+		out.append(_indent_block(_generate_db_namespace_body(schema, children[segment])))
+		out.append("\n")
+
+	var taken: Dictionary[String, String] = { }
+	for table_def: Dictionary in node["defs"]:
+		var table_name: String = table_def.get("name", "")
+		taken[_db_member_name(table_def)] = "table '%s'" % table_def.get("wire_name", table_name)
 		# _safe_name the member (a table named a keyword breaks `var <kw>:`); the
 		# preload path below keeps the raw snake_case that names the file on disk.
-		out.append("var %s: %s\n" % [_safe_ref_member_name(table_name.to_snake_case()), tables[table_name]])
+		out.append(
+			"var %s: %s%sTable\n"
+			% [_db_member_name(table_def), schema.module, table_name.to_pascal_case()],
+		)
+	for segment: String in children:
+		var segment_member: String = _safe_ref_member_name(segment.to_snake_case())
+		if _member_name_taken(taken, segment_member, "namespace '%s'" % segment):
+			generation_incomplete = true
+		out.append("var %s: %s\n" % [segment_member, _namespace_class_name(segment)])
 
 	out.append("\nfunc _init(p_local_db: LocalDatabase) -> void:\n")
-	for table_name in tables:
+	for table_def: Dictionary in node["defs"]:
+		var table_name: String = table_def.get("name", "")
 		out.append(
 			"\t%s = preload('%s/tables/%s_%s_table.gd').new(p_local_db)\n"
 			% [
-				_safe_ref_member_name(table_name.to_snake_case()),
+				_db_member_name(table_def),
 				_schema_path,
 				schema.module.to_snake_case(),
 				table_name.to_snake_case(),
 			],
 		)
+	for segment: String in children:
+		out.append(
+			"\t%s = %s.new(p_local_db)\n"
+			% [_safe_ref_member_name(segment.to_snake_case()), _namespace_class_name(segment)],
+		)
 
 	return "".join(out)
+
+
+## A table's member name on the db facade. A submodule's table is reached through its
+## namespace member (`db.lib.lib_data`), so the member drops the namespace prefix its
+## identifier carries for class and file names: inside `LibNamespace` it is `lib_data`.
+static func _db_member_name(table_def: Dictionary) -> String:
+	var local_name: String = table_def.get("local_name", table_def.get("name", ""))
+	return _safe_ref_member_name(local_name.to_snake_case())
 
 
 func _generate_types_gdscript(module_name: String, schema: SpacetimeParsedSchema) -> String:
@@ -1824,13 +2068,9 @@ func _generate_types_gdscript(module_name: String, schema: SpacetimeParsedSchema
 
 
 func _generate_reducers_gdscript(module_name: String, schema: SpacetimeParsedSchema) -> String:
-	var out: PackedStringArray = [
-		(AUTOGENERATED_COMMENT +
-				"class_name %sModuleReducers extends RefCounted\n\n" % schema.module +
-				"var _client: SpacetimeDBClient\n\n" +
-				"func _init(p_client: SpacetimeDBClient) -> void:\n" +
-				"\t_client = p_client\n"),
-	]
+	# Emitted per reducer, then placed by namespace: a submodule's reducers live on an
+	# inner class reached through a member of the same name (`reducers.lib.lib_insert`).
+	var emitted: Array[Dictionary] = []
 
 	for reducer in schema.reducers:
 		if reducer.get("is_scheduled", false) and _plugin_config.module_configs[module_name].hide_scheduled_reducers:
@@ -1884,28 +2124,78 @@ func _generate_reducers_gdscript(module_name: String, schema: SpacetimeParsedSch
 		if not ret_nested.is_empty():
 			ret_bsatn_type = _build_bsatn_type(ret_nested, ret_bsatn_type, false)
 
-		out.append("\n".join(description_comment) + "\n")
-		var reducer_name: String = reducer.get("name", "")
+		# The member name drops the namespace prefix the identifier carries (inside
+		# `LibNamespace` the function is `lib_insert`); the call string is the dotted name
+		# the server dispatches on.
+		var reducer_local_name: String = reducer.get("local_name", reducer.get("name", ""))
+		var reducer_wire_name: String = reducer.get("wire_name", reducer.get("name", ""))
 		# Sanitize the GDScript function name (a reducer named a keyword — or named
 		# after a native method, like `set` — breaks parse); the call_reducer() string
 		# keeps the raw wire name.
+		emitted.append({
+			"namespace": reducer.get("namespace", PackedStringArray()),
+			"member_name": _safe_call_name(reducer_local_name),
+			"wire_name": reducer_wire_name,
+			"text": (
+				"\n".join(description_comment) + "\n" +
+				"func %s(%s) -> SpacetimeDBReducerCall:\n" % [_safe_call_name(reducer_local_name), params_str] +
+				"\treturn _client.call_reducer('%s', [%s], [%s], &'%s')\n\n" %
+				[reducer_wire_name, param_names_str, param_bsatn_types_str, ret_bsatn_type]
+			),
+		})
+
+	var tree: Dictionary = _group_by_namespace(emitted)
+	if _namespace_class_names_collide(tree, ""):
+		generation_incomplete = true
+	return (
+		AUTOGENERATED_COMMENT
+		+ "class_name %sModuleReducers extends RefCounted\n\n" % schema.module
+		+ _generate_call_namespace_body(tree)
+	)
+
+
+## The members of one namespace level of the reducers or procedures facade: the inner
+## classes its sub-namespaces live in, the client every call goes through, and then the
+## call functions themselves. Emitted without indentation and indented by the caller, so a
+## nested namespace is generated by the same code as the root.
+func _generate_call_namespace_body(node: Dictionary) -> String:
+	var out: PackedStringArray = []
+	var children: Dictionary = node["children"]
+	for segment: String in children:
+		out.append("class %s extends RefCounted:\n" % _namespace_class_name(segment))
+		out.append(_indent_block(_generate_call_namespace_body(children[segment])))
+		out.append("\n")
+
+	# A namespace member and a call at the same level are both spelled from a name the
+	# module chose, so one can claim the other's. Reported here, where both spellings are
+	# in hand, rather than surfacing later as an opaque "declares X twice".
+	var taken: Dictionary[String, String] = { }
+	for def: Dictionary in node["defs"]:
+		taken[String(def["member_name"])] = "'%s'" % def["wire_name"]
+
+	out.append("var _client: SpacetimeDBClient\n")
+	for segment: String in children:
+		var segment_member: String = _safe_ref_member_name(segment.to_snake_case())
+		if _member_name_taken(taken, segment_member, "namespace '%s'" % segment):
+			generation_incomplete = true
+		out.append("var %s: %s\n" % [segment_member, _namespace_class_name(segment)])
+
+	out.append("\nfunc _init(p_client: SpacetimeDBClient) -> void:\n\t_client = p_client\n")
+	for segment: String in children:
 		out.append(
-			"func %s(%s) -> SpacetimeDBReducerCall:\n" % [_safe_call_name(reducer_name), params_str] +
-			"\treturn _client.call_reducer('%s', [%s], [%s], &'%s')\n\n" %
-			[reducer_name, param_names_str, param_bsatn_types_str, ret_bsatn_type],
+			"\t%s = %s.new(p_client)\n"
+			% [_safe_ref_member_name(segment.to_snake_case()), _namespace_class_name(segment)],
 		)
+
+	for def: Dictionary in node["defs"]:
+		out.append(def["text"])
 
 	return "".join(out)
 
 
 func _generate_procedures_gdscript(_module_name: String, schema: SpacetimeParsedSchema) -> String:
-	var out: PackedStringArray = [
-		(AUTOGENERATED_COMMENT +
-				"class_name %sModuleProcedures extends RefCounted\n\n" % schema.module +
-				"var _client: SpacetimeDBClient\n\n" +
-				"func _init(p_client: SpacetimeDBClient) -> void:\n" +
-				"\t_client = p_client\n"),
-	]
+	# Placed by namespace exactly like the reducers above.
+	var emitted: Array[Dictionary] = []
 
 	for proc in schema.procedures:
 		var params_str_parts: Array[String] = []
@@ -1964,18 +2254,31 @@ func _generate_procedures_gdscript(_module_name: String, schema: SpacetimeParsed
 		if not ret_nested.is_empty():
 			ret_bsatn_type = _build_bsatn_type(ret_nested, ret_bsatn_type, false)
 
-		out.append("\n".join(description_comment) + "\n")
-		var proc_name: String = proc.get("name", "")
+		var proc_local_name: String = proc.get("local_name", proc.get("name", ""))
+		var proc_wire_name: String = proc.get("wire_name", proc.get("name", ""))
 		# Sanitize the GDScript function name (a procedure named a keyword — or named
 		# after a native method, like `notification` — breaks parse); the
 		# call_procedure() string keeps the raw wire name.
-		out.append(
-			"func %s(%s) -> SpacetimeDBProcedureCall:\n" % [_safe_call_name(proc_name), params_str] +
-			"\treturn _client.call_procedure('%s', [%s], [%s], &'%s')\n\n" %
-			[proc_name, param_names_str, param_bsatn_types_str, ret_bsatn_type],
-		)
+		emitted.append({
+			"namespace": proc.get("namespace", PackedStringArray()),
+			"member_name": _safe_call_name(proc_local_name),
+			"wire_name": proc_wire_name,
+			"text": (
+				"\n".join(description_comment) + "\n" +
+				"func %s(%s) -> SpacetimeDBProcedureCall:\n" % [_safe_call_name(proc_local_name), params_str] +
+				"\treturn _client.call_procedure('%s', [%s], [%s], &'%s')\n\n" %
+				[proc_wire_name, param_names_str, param_bsatn_types_str, ret_bsatn_type]
+			),
+		})
 
-	return "".join(out)
+	var tree: Dictionary = _group_by_namespace(emitted)
+	if _namespace_class_names_collide(tree, ""):
+		generation_incomplete = true
+	return (
+		AUTOGENERATED_COMMENT
+		+ "class_name %sModuleProcedures extends RefCounted\n\n" % schema.module
+		+ _generate_call_namespace_body(tree)
+	)
 
 
 ## The autoload is the one generated file that names every module, and it is the file the

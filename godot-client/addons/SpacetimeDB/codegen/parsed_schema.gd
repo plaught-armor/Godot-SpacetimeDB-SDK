@@ -30,9 +30,8 @@ var incomplete: bool = false
 ## (see [member incomplete], which stays false): everything the SDK does understand was
 ## parsed and is generated normally, and only what that section declares is absent. It is
 ## recorded rather than merely logged so a caller can tell "this module uses a feature this
-## SDK version does not" from a genuine codegen fault. [code]Submodules[/code]
-## (SpacetimeDB 2.8.1+) is the only one a released server can produce — see
-## [code]docs/submodules-readiness.md[/code].
+## SDK version does not" from a genuine codegen fault. The walk that fills it descends into
+## submodules, so a section only a submodule declares is named here too.
 var skipped_sections: PackedStringArray = []
 
 

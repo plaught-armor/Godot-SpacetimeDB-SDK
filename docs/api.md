@@ -336,6 +336,13 @@ a failed handle if called before the client's database is initialized.
 
 Each table defined by your module has a property, whose name is the table name converted to `snake_case`. The table properties are [`ModuleTable`](#access-the-local-database) instances which have methods for accessing rows and registering `on_insert`, `on_update` and `on_delete` listeners.
 
+A table a **submodule** declares (SpacetimeDB 2.8.1+) sits under a property named after
+its namespace, mirroring the dotted name the server registers it under —
+`lib.lib_data` is `db.lib.lib_data`, and namespaces nest
+(`auth.baz.baz_items` is `db.auth.baz.baz_items`). Reducers and procedures are reached
+the same way (`reducers.lib.lib_insert(...)`). Subscription SQL takes the dotted wire
+name. See [Namespaced submodules](codegen.md#namespaced-submodules).
+
 #### Rows are the mirror's own instances — do not write to them
 
 Every row returned by `iter()`, `find_by_*()`, `first_by_*()`, the `LocalDatabase`

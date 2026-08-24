@@ -95,15 +95,44 @@ Result<T, E> columns** (`verify_live_result.gd`). The parser synthesizes a named
 `Ok(42)` → `value=0, data=42`; `Err("bad")` → `value=1, data="bad"`. Parser synthesis
 guarded by the `test_result_synthesis` unit test.
 
+## Submodules suite (`verify_submodule_module` + `verify_live_submodule.gd`)
+
+A **TypeScript** module (namespaced submodules can only be authored by the TypeScript
+server SDK) covering what implementing them has to get right:
+
+- `lib` and `auth` are first-level namespaces, and `auth` nests `baz`, so a table arrives
+  under a name carrying more than one dot (`auth.baz.baz_items`).
+- Each module declares its own product type at typespace index 0 with a different shape
+  (`RootPoint { x: u64 }` vs `LibPoint { a: string, b: string }`), so a parser that
+  resolved submodule type refs against the root typespace binds rows to the wrong type.
+- `lib.lib_secret` is private, for the generated-visibility filter.
+
+The harness subscribes by dotted name, calls a submodule and a nested-submodule reducer,
+and reads the rows back through the namespace facades (`db.lib.lib_data`,
+`db.auth.baz.baz_items`).
+
+```sh
+npm install --prefix integration-tests/verify_submodule_module
+spacetime publish -p integration-tests/verify_submodule_module \
+    -s http://127.0.0.1:3000 vsubmod --yes
+# Point addons/SpacetimeDB/plugin_config.tres at `vsubmod`, run codegen, then copy
+# verify_live_submodule.gd into godot-client/ and run it.
+<godot> --headless --path . --script verify_live_submodule.gd   # ALL PASS (8/8)
+```
+
+Its captured schema is `godot-client/tests/fixtures/vsubmod.json`, which drives the
+`vsubmod` golden set and `tests/test_submodule_schema.gd`. See
+[`../docs/submodules.md`](../docs/submodules.md).
+
 ## Schema probe (`schema_probe/`)
 
 A standalone Rust bin that prints the exact JSON a server would serve at
 `/v1/database/<db>/schema?version=10` for a module shape you cannot publish yet —
 it runs the same `RawModuleDefV10::from(module_def)` + `SerdeWrapper` path the
 HTTP route uses, over a module built with `RawModuleDefV10Builder`. Used to
-capture `godot-client/tests/fixtures/vsubmod.json` (a module mounting a `lib`
-submodule) while submodules were still unreleased upstream; see
-[`../docs/submodules-readiness.md`](../docs/submodules-readiness.md).
+capture `godot-client/tests/fixtures/vsubmod.json` while submodules were still
+unreleased upstream. That fixture is a live capture now (above), so reach for the probe
+only for a shape no released server can publish.
 
 ```sh
 # Needs a SpacetimeDB checkout as a sibling of this repo (the path deps in Cargo.toml).
