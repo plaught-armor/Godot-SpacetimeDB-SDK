@@ -228,6 +228,11 @@ func _test_an_end_handler_can_cancel_a_sibling_mid_loop() -> void:
 
 # Reconnect gave up. A handle left suspended here would read neither active nor ended for
 # the rest of the session, which is the one shape a caller cannot act on.
+#
+# What actually discriminates here is the COUNT, not the flag: this test never calls
+# _prepare_for_reconnect, so the handle is still in current_subscriptions as well as in
+# the cycle's saved set, and any implementation that ends everything it can reach would
+# set `ended`. One `end` for a handle reachable from both places is the assertion.
 func _test_exhausted_attempts_end_the_handle() -> void:
 	var client: SpacetimeDBClient = _client()
 	var sub: SpacetimeDBSubscription = _live_subscription(client, 7)
@@ -247,7 +252,12 @@ func _test_exhausted_attempts_end_the_handle() -> void:
 
 
 # disconnect_db() while a cycle is in flight. The handles it was carrying are no longer in
-# current/pending, so the terminal path has to reach them where the cycle left them.
+# current/pending once the prep has run, so the terminal path has to reach them where the
+# cycle left them.
+#
+# As above, the count is what discriminates: the prep has NOT run here, so this is the
+# backoff-window overlap — the same object reachable from both the saved set and
+# current_subscriptions — and ending it twice is the failure this pins.
 func _test_a_terminal_disconnect_ends_a_suspended_handle() -> void:
 	var client: SpacetimeDBClient = _client()
 	var sub: SpacetimeDBSubscription = _live_subscription(client, 7)
