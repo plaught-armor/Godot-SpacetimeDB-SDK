@@ -5,3 +5,8 @@ docs/handoff-context.md
 integration-tests/**/target/
 integration-tests/**/Cargo.lock
 integration-tests/schema_probe/schema.json
+
+# Node artifacts from the TypeScript integration-test module
+integration-tests/**/node_modules/
+integration-tests/**/dist/
+integration-tests/**/package-lock.json

@@ -5,12 +5,16 @@ class_name VsubmodRootThing extends _ModuleTableType
 
 const module_name : String = "Vsubmod"
 const table_names: Array[StringName] = [&'root_thing']
-const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"u64" }
+const PRIMARY_KEY: StringName = &"id"
+const BSATN_TYPES: Dictionary[StringName, StringName] = { &"id": &"u64", &"point": &"VsubmodRootPoint" }
 
 @export var id: int
+@export var point: VsubmodRootPoint
 
 ## 0. id: int[br]
-static func create(p_id: int) -> VsubmodRootThing:
+## 1. point: VsubmodRootPoint[br]
+static func create(p_id: int, p_point: VsubmodRootPoint) -> VsubmodRootThing:
 	var result: VsubmodRootThing = VsubmodRootThing.new()
 	result.id = p_id
+	result.point = p_point
 	return result

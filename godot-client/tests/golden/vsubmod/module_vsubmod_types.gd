@@ -2,3 +2,6 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name VsubmodTypes
 
+const RootThing = preload('user://golden_gen/vsubmod/types/vsubmod_root_thing.gd')
+const RootPoint = preload('user://golden_gen/vsubmod/types/vsubmod_root_point.gd')
+const RootInsert = preload('user://golden_gen/vsubmod/types/vsubmod_root_insert.gd')

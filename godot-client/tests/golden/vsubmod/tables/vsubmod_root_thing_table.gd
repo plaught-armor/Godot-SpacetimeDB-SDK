@@ -6,10 +6,12 @@ signal inserted(row: VsubmodRootThing)
 signal updated(old_row: VsubmodRootThing, new_row: VsubmodRootThing)
 signal deleted(row: VsubmodRootThing)
 
+var id: VsubmodRootThingIdUniqueIndex
 
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"root_thing"
+	id = VsubmodRootThingIdUniqueIndex.new(p_local_db)
 	on_insert(_emit_inserted)
 	on_update(_emit_updated)
 	on_delete(_emit_deleted)
@@ -39,10 +41,14 @@ func first_by(field: StringName, value: Variant) -> VsubmodRootThing:
 	return super(field, value) as VsubmodRootThing
 
 func find_by_id(value: int) -> Array[VsubmodRootThing]:
-	return find_by(&"id", value)
+	var row: VsubmodRootThing = id.find(value)
+	var result: Array[VsubmodRootThing] = []
+	if row != null:
+		result.append(row)
+	return result
 
 func first_by_id(value: int) -> VsubmodRootThing:
-	return first_by(&"id", value)
+	return id.find(value)
 
 func _emit_inserted(row: _ModuleTableType) -> void:
 	inserted.emit(row as VsubmodRootThing)

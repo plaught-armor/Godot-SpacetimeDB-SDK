@@ -1,0 +1,18 @@
+{
+  "name": "verify-submodule-module",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SpacetimeDB module with namespaced submodules, used to capture the Submodules schema section and verify the Godot SDK against it.",
+  "type": "module",
+  "scripts": {
+    "build": "spacetime build",
+    "publish": "spacetime publish"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "spacetimedb": "2.8.*"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
