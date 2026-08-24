@@ -315,7 +315,18 @@ const RESUBSCRIBE_TIMEOUT_SECONDS: float = 15.0
 ## module name, and two of those share one entry the way every client used to.
 const TOKEN_STORE_LEGACY_KEY: String = "*"
 
-var _saved_subscription_queries: Array[PackedStringArray] = []
+## The handles a reconnect is carrying across the drop — the caller's own
+## [SpacetimeDBSubscription] objects, not copies of their queries. Holding the handles is
+## what lets the re-subscribe re-register each one instead of making an internal
+## replacement the caller has no reference to, which is what left a query undroppable for
+## the rest of the session: the game could no longer reach the handle whose
+## [method SpacetimeDBSubscription.unsubscribe] would have stopped it.
+##
+## Entries are suspended (not ended) while they sit here, and an entry the caller
+## unsubscribes in the meantime ends itself — the re-subscribe pass skips it, which is how
+## that cancellation takes effect. Cleared when the cycle completes, is cancelled, or runs
+## out of attempts; the last two end every entry, since nothing will restore them.
+var _saved_subscriptions: Array[SpacetimeDBSubscription] = []
 ## Query ids whose Unsubscribe has gone out but whose UnsubscribeApplied has not come
 ## back. Membership, not a flag on the handle: the server owns when a subscription
 ## really ends, and until it answers the entry has to stay in current/pending (that is
@@ -588,6 +599,11 @@ func connect_db(
 	# re-arms database_initialized so the new session announces itself.
 	_session_intent += 1
 	var intent: int = _session_intent
+	# The reconnect cycle _cancel_reconnection just abandoned may have been carrying
+	# handles. They end here rather than there, because this call has now stated its
+	# intent, so the `end` signals are covered by the same countermand check the wipe
+	# below is — see _cancel_reconnection.
+	_end_saved_subscriptions()
 	# Unconditional: the connected case returned above, so by here there is no live
 	# session whose mirror this would be pulling out from under a running game.
 	# Queues first, then the rows — the same order (and the same reason) as
@@ -603,7 +619,10 @@ func connect_db(
 	# this call's host and options over the newer one's. Same countermand check
 	# _attempt_reconnect makes after its wipe.
 	if intent != _session_intent:
-		print_log("SpacetimeDBClient: connect_db superseded while the cache wipe was reported.")
+		print_log(
+			"SpacetimeDBClient: connect_db superseded while the wipe and subscription "
+			+ "ends were reported."
+		)
 		return
 	if not options:
 		options = SpacetimeDBConnectionOptions.new()
@@ -792,7 +811,26 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 # A parameter rather than a flag on the client on purpose: a flag would exempt whatever ran
 # while it was set (the loop can reach game code through `reconnected`), and a fault inside
 # the loop would leave it exempt for the rest of the session.
-func _subscribe_uncapped(queries: PackedStringArray) -> SpacetimeDBSubscription:
+#
+# `existing` is the suspended handle a reconnect is restoring. Passing it re-registers the
+# caller's own object under the new query set id instead of returning a fresh one, so the
+# handle the game has held since before the drop goes on working — including its
+# unsubscribe. Every return path hands `existing` back when it is given, failures included;
+# a caller that already holds the object would otherwise have to notice that the thing it
+# got back was a different one.
+func _subscribe_uncapped(
+		queries: PackedStringArray,
+		existing: SpacetimeDBSubscription = null,
+) -> SpacetimeDBSubscription:
+	# A handle that ended between being chosen for restore and reaching this call — the
+	# caller unsubscribed it from inside an `end` handler the same loop emitted. Refused
+	# before an id is taken or anything is sent, because mark_reattached() below correctly
+	# no-ops on an ended handle but nothing else here does: the send would still go out and
+	# still register it, leaving pending_subscriptions holding an ENDED handle under an id
+	# that handle does not carry, which nothing can ever settle or unsubscribe.
+	if existing != null and existing.ended:
+		return existing
+
 	# 1. Generate a request ID
 	var request_id: int = _next_request_id
 	_next_request_id += 1
@@ -812,14 +850,19 @@ func _subscribe_uncapped(queries: PackedStringArray) -> SpacetimeDBSubscription:
 			"SpacetimeDBClient: Failed to serialize Subscribe message: %s"
 			% _serializer.get_last_error()
 		)
+		if existing != null:
+			existing.error = ERR_PARSE_ERROR
+			existing.mark_ended()
+			return existing
 		return SpacetimeDBSubscription.fail(ERR_PARSE_ERROR)
 
-	# 4. Create subscription handle
-	var subscription: SpacetimeDBSubscription = SpacetimeDBSubscription.create(
-		self,
-		query_id,
-		queries,
-	)
+	# 4. Create subscription handle, or re-register the one a reconnect is restoring
+	var subscription: SpacetimeDBSubscription
+	if existing != null:
+		existing.mark_reattached(query_id)
+		subscription = existing
+	else:
+		subscription = SpacetimeDBSubscription.create(self, query_id, queries)
 
 	# 5. Send the binary message via WebSocket
 	if _connection and _connection.is_websocket_active():
@@ -2307,11 +2350,11 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		if _reconnect_state == _ReconnectState.RECONNECTING:
 			print_log(
 				"SpacetimeDBClient: Reconnected. Re-subscribing to %d query sets."
-				% _saved_subscription_queries.size()
+				% _saved_subscriptions.size()
 			)
 			_reconnect_state = _ReconnectState.IDLE
 			_reconnect_attempt = 0
-			if _saved_subscription_queries.is_empty():
+			if _saved_subscriptions.is_empty():
 				reconnected.emit()
 			else:
 				_resubscribe_saved_queries()
@@ -2449,18 +2492,26 @@ func _start_reconnection(immediate: bool = false) -> void:
 	# A query whose Unsubscribe was still in flight when the socket died is NOT saved:
 	# the caller already dropped it, and the server having never answered is not consent
 	# to bring it back. See _unsubscribing_query_ids.
-	if _saved_subscription_queries.is_empty():
+	if _saved_subscriptions.is_empty():
 		for sub_id: int in current_subscriptions:
 			var sub: SpacetimeDBSubscription = current_subscriptions[sub_id]
 			if not sub.queries.is_empty() and not _unsubscribing_query_ids.has(sub_id):
-				_saved_subscription_queries.append(sub.queries.duplicate())
+				_saved_subscriptions.append(sub)
 		for sub_id: int in pending_subscriptions:
 			var sub: SpacetimeDBSubscription = pending_subscriptions[sub_id]
 			if not sub.queries.is_empty() and not _unsubscribing_query_ids.has(sub_id):
-				_saved_subscription_queries.append(sub.queries.duplicate())
+				_saved_subscriptions.append(sub)
+	# Suspended here rather than in _prepare_for_reconnect, because here is where it
+	# became true: from the moment the socket died no rows arrive for these queries. The
+	# loop runs over the saved set unconditionally, so the re-drop case above — which
+	# keeps the interrupted cycle's set — re-suspends handles that cycle had already
+	# re-attached. mark_suspended() is a no-op on an ended handle and idempotent on a
+	# suspended one, so both other cases pass through it harmlessly.
+	for sub: SpacetimeDBSubscription in _saved_subscriptions:
+		sub.mark_suspended()
 	print_log(
 		"SpacetimeDBClient: Saved %d subscription query sets for re-subscription."
-		% _saved_subscription_queries.size()
+		% _saved_subscriptions.size()
 	)
 
 	_schedule_next_reconnect_attempt()
@@ -2473,7 +2524,10 @@ func _schedule_next_reconnect_attempt() -> void:
 		print_log("SpacetimeDBClient: All %d reconnect attempts exhausted." % max_attempts)
 		_reconnect_state = _ReconnectState.IDLE
 		_reconnect_attempt = 0
-		_saved_subscription_queries.clear()
+		# Nothing will restore these now, so they end rather than staying suspended —
+		# a handle that reads neither active nor ended for the rest of the session is
+		# the one shape a caller cannot act on.
+		_end_saved_subscriptions()
 		reconnect_failed.emit()
 		_emit_disconnected()
 		return
@@ -2644,7 +2698,7 @@ func _prepare_for_reconnect() -> void:
 	_one_off_query_cache.clear()
 	_fail_pending_calls_disconnected()
 
-	_end_all_subscriptions()
+	_detach_subscriptions_for_reconnect()
 
 	_received_initial_subscription = false
 	_next_query_id = 0
@@ -2665,28 +2719,72 @@ func _prepare_for_reconnect() -> void:
 		_local_db.clear_local_db()
 
 
-# Ends every subscription handle this session held and drops the bookkeeping that goes
-# with them. A handle is connection-scoped (see SpacetimeDBSubscription), so both session
-# boundaries — the reconnect prep and the terminal `disconnected` — pass through here.
+# Empties the subscription bookkeeping and hands back the handles that were in it, for
+# the two session boundaries below to finish with.
 #
-# The maps are emptied BEFORE the first `end` goes out, because emitting is game code: a
-# handler that calls disconnect_db() re-enters this function through _emit_disconnected,
-# and on the reconnect path (where `disconnected` has not fired, so its once-per-session
-# guard is not yet set) it would find both maps still populated and emit `end` a second
-# time on every handle the outer call had not reached. Clearing first makes the re-entrant
-# call a no-op, so each handle ends exactly once.
-func _end_all_subscriptions() -> void:
-	var ending: Array[SpacetimeDBSubscription] = []
-	ending.append_array(pending_subscriptions.values())
-	ending.append_array(current_subscriptions.values())
+# The maps are emptied BEFORE either caller emits anything, because emitting is game code:
+# a handler that calls disconnect_db() re-enters through _emit_disconnected, and on the
+# reconnect path (where `disconnected` has not fired, so its once-per-session guard is not
+# yet set) it would find both maps still populated and emit `end` a second time on every
+# handle the outer call had not reached. Clearing first makes the re-entrant call a no-op,
+# so each handle is finished with exactly once.
+func _take_live_subscriptions() -> Array[SpacetimeDBSubscription]:
+	var taken: Array[SpacetimeDBSubscription] = []
+	taken.append_array(pending_subscriptions.values())
+	taken.append_array(current_subscriptions.values())
 	pending_subscriptions.clear()
 	current_subscriptions.clear()
 	# Every id it could hold belonged to one of those two maps.
 	_unsubscribing_query_ids.clear()
 	# The backlog those refusals were about is gone with the map.
 	_subscribe_backlog_reported = false
+	return taken
+
+
+# Ends every subscription handle this session held, saved ones included. The terminal
+# boundary: nothing is coming back, so every handle the caller holds settles on `end`.
+func _end_all_subscriptions() -> void:
+	var ending: Array[SpacetimeDBSubscription] = _take_live_subscriptions()
+	# A cycle that was still saving handles for a reconnect that will now never happen.
+	# Ended first, so a listener reached by the loop below sees a settled client rather
+	# than one still carrying subscriptions it means to end. It also means the loop below
+	# finds those handles already ended, which is what keeps `end` to one per handle for
+	# the ones this call reaches twice.
+	_end_saved_subscriptions()
 	for sub: SpacetimeDBSubscription in ending:
-		sub.end.emit()
+		_end_subscription(sub)
+
+
+# The reconnect's half of the same boundary. A handle the cycle is carrying (already
+# suspended by _start_reconnection) is left alone — it is not over, it is between
+# connections. Everything else in the maps ends: a query whose Unsubscribe was in flight
+# when the socket died is deliberately not saved, and a handle that arrived after the
+# saved set was taken belongs to no cycle.
+func _detach_subscriptions_for_reconnect() -> void:
+	for sub: SpacetimeDBSubscription in _take_live_subscriptions():
+		if not sub.suspended:
+			_end_subscription(sub)
+
+
+# Ends the handles a reconnect cycle was carrying and drops the set. Skips one the caller
+# already unsubscribed while it was suspended: that handle ended then, and `end` fires once.
+func _end_saved_subscriptions() -> void:
+	var ending: Array[SpacetimeDBSubscription] = _saved_subscriptions.duplicate()
+	# Emptied before the first emit, for the re-entrancy reason in _take_live_subscriptions.
+	_saved_subscriptions.clear()
+	for sub: SpacetimeDBSubscription in ending:
+		_end_subscription(sub)
+
+
+# `end` is emitted at most once per handle, whichever boundary reaches it. Two shapes make
+# that worth stating rather than assuming: a cycle carries a handle while it is STILL in
+# current/pending — for the length of the backoff, so a terminal disconnect in that window
+# reaches the same object twice — and a handle can have ended itself already, which is what
+# an unsubscribe made while suspended does.
+func _end_subscription(sub: SpacetimeDBSubscription) -> void:
+	if sub.ended:
+		return
+	sub.end.emit()
 
 
 func _cancel_reconnection() -> void:
@@ -2698,7 +2796,11 @@ func _cancel_reconnection() -> void:
 	_reconnect_attempt = 0
 	_reconnect_immediate = false
 	_resubscribe_epoch += 1 # supersede any in-flight resubscribe settles
-	_saved_subscription_queries.clear()
+	# The saved handles are deliberately NOT ended here. Ending them emits `end`, which is
+	# game code, and this runs at the top of connect_db and disconnect_db before either has
+	# stated its session intent — a listener that countermanded the call could not be
+	# noticed yet. Both callers finish the set at a point that is already guarded:
+	# disconnect_db through _emit_disconnected, connect_db beside its own cache wipe.
 
 	# No time_left check: a zero-delay timer (a stall-induced fast reconnect, or one
 	# pulled forward by _on_app_resumed) has not fired yet either, and leaving it
@@ -2742,10 +2844,17 @@ func _suspend_reconnection() -> void:
 func _resubscribe_saved_queries() -> void:
 	_resubscribe_epoch += 1
 	var epoch: int = _resubscribe_epoch
-	# Snapshot so a re-entrant _start_reconnection rebuilding _saved_subscription_queries
+	# Snapshot so a re-entrant _start_reconnection rebuilding _saved_subscriptions
 	# (on a drop mid-resubscribe) can't disturb this loop (mutation-during-iteration).
-	var query_sets: Array[PackedStringArray] = _saved_subscription_queries.duplicate()
-	var total_sets: int = query_sets.size()
+	# Ended handles are dropped from the snapshot rather than skipped inside the loop:
+	# they are the ones the caller unsubscribed while suspended, and the cycle completes
+	# on a count of settles, so one that will never be sent has to be out of the total
+	# too or the cycle only ever finishes on its watchdog.
+	var restoring: Array[SpacetimeDBSubscription] = []
+	for saved: SpacetimeDBSubscription in _saved_subscriptions:
+		if not saved.ended:
+			restoring.append(saved)
+	var total_sets: int = restoring.size()
 	var applied_count: Array[int] = [0]
 
 	if total_sets == 0:
@@ -2756,13 +2865,30 @@ func _resubscribe_saved_queries() -> void:
 	# would otherwise write thousands of lines in a single frame.
 	var send_failures: int = 0
 	var first_failure: Error = OK
-	for queries: PackedStringArray in query_sets:
-		# Uncapped: see _subscribe_uncapped.
-		var sub: SpacetimeDBSubscription = _subscribe_uncapped(queries)
+	for sub: SpacetimeDBSubscription in restoring:
+		# Re-checked per item, not trusted from the snapshot: the failure branch below
+		# emits `end`, which is game code, and a handler is free to unsubscribe a sibling
+		# still waiting its turn in this very loop (or disconnect outright, which ends the
+		# lot). Counted as settled rather than skipped, or the cycle would only ever
+		# complete on its watchdog.
+		if sub.ended:
+			applied_count[0] += 1
+			if applied_count[0] >= total_sets:
+				_finish_resubscribe(epoch)
+			continue
+
+		# Uncapped, and re-registering the caller's own handle: see _subscribe_uncapped.
+		_subscribe_uncapped(sub.queries, sub)
 		if sub.error != OK:
 			send_failures += 1
 			if first_failure == OK:
 				first_failure = sub.error
+			# Signalled, unlike the same failure on a first subscribe, which is reported
+			# by the returned handle before any caller can have connected to it. This one
+			# the game has held since before the drop, so `end` is the only way it hears
+			# that a subscription it still believes in is over. mark_ended() inside the
+			# send path already moved the state; this is the notification.
+			sub.end.emit()
 			applied_count[0] += 1
 			if applied_count[0] >= total_sets:
 				_finish_resubscribe(epoch)
@@ -2844,7 +2970,9 @@ func _finish_resubscribe(epoch: int) -> void:
 	# _finish_resubscribe can't re-fire reconnected (both compare their captured
 	# epoch to _resubscribe_epoch and bail once it moves).
 	_resubscribe_epoch += 1
-	_saved_subscription_queries.clear()
+	# Cleared, not ended: every entry that made it through the pass is live again in
+	# current/pending, and the ones that did not were ended by the pass itself.
+	_saved_subscriptions.clear()
 	reconnected.emit()
 
 

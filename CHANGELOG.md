@@ -2,6 +2,56 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **A subscription handle now survives an auto-reconnect instead of being replaced by one
+  the caller cannot reach.** `_prepare_for_reconnect` ended every outstanding
+  `SpacetimeDBSubscription`, and the re-subscribe pass re-issued the saved queries under
+  fresh handles held only inside the client. The rows came back, so a drop looked
+  recovered — but the handle a game was holding read `ended` for the rest of the session,
+  and `unsubscribe()` on it was refused while the query it named kept streaming. The one
+  object that could have stopped that query was never handed out. The SDK already
+  recognised the hazard in one narrow case (a query whose `Unsubscribe` was in flight at
+  the drop is deliberately not restored, precisely so it cannot come back undroppable);
+  this closes the general case.
+
+  A drop now SUSPENDS the caller's handles rather than ending them, and the re-subscribe
+  re-registers those same objects under their new query set ids. New
+  `SpacetimeDBSubscription.suspended` names that state — `active` is false because no rows
+  are arriving, `ended` is false because the subscription is not over — and `applied` fires
+  again when the server confirms. `unsubscribe()` called while suspended is honoured
+  locally: the handle ends and the reconnect does not restore its query.
+
+  **Behaviour change for code that listens to `end`:** a transient drop no longer fires it.
+  `end` now means the subscription really ended — an unsubscribe, a `SubscriptionError`, a
+  terminal `disconnected` (`disconnect_db()`, an exhausted reconnect, or a new
+  `connect_db()` session), or a re-subscribe whose send failed, which reports through
+  `end` rather than only a return code because the caller has held that handle since
+  before the drop. Use the client's `reconnecting` signal to observe a drop. Code that took
+  a fresh handle in response to `reconnected` — what the old class doc advised — should now
+  keep the one it has: subscribing again duplicates the query set server-side.
+
+  `end` is emitted at most once per handle across all of those paths, which two overlapping
+  windows made worth enforcing rather than assuming: a cycle carries a handle while it is
+  still in `current_subscriptions`, for the length of the backoff, so a `disconnect_db()`
+  in that window reaches the same object twice; and a handle unsubscribed while suspended
+  has already ended itself.
+
+  Emitting `end` from inside the re-subscribe pass also means that pass runs game code
+  between its own items, and a handler is free to unsubscribe a sibling still waiting its
+  turn in the same synchronous loop. Re-registering a handle no-ops on an ended one's
+  state, but nothing else did: the Subscribe still went out and the handle was still
+  written into `pending_subscriptions`, under an id it did not carry — an entry nothing
+  could settle and nothing could unsubscribe, for a query the caller had just dropped, and
+  a cycle that then only completed on its 15-second watchdog. Both layers are now gated:
+  the loop re-checks each handle at its turn (counting a cancelled set as settled), and the
+  send path refuses an ended handle before an id is taken or anything is sent.
+
+  `tests/test_subscription_survives_reconnect.gd` (41 assertions) covers the restore, the
+  cancelled restore, the mid-loop cancellation, the failed re-send, and the
+  exhausted-attempts and terminal-disconnect paths.
+
 ## [2.7.0] - 2026-08-24
 
 > **Upgrading:** one signal changed shape. `SpacetimeDBRestAPI.reducer_call_completed`

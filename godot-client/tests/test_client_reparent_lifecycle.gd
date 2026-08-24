@@ -120,13 +120,19 @@ func _test_reconnect_cycle_resumes() -> void:
 	# The state a client is in while it waits out a backoff.
 	client._reconnect_state = client._ReconnectState.RECONNECTING
 	client._reconnect_attempt = 1
-	client._saved_subscription_queries.append(PackedStringArray(["SELECT * FROM entity"]))
+	var saved: SpacetimeDBSubscription = SpacetimeDBSubscription.create(
+		client,
+		0,
+		PackedStringArray(["SELECT * FROM entity"]),
+	)
+	saved.mark_suspended()
+	client._saved_subscriptions.append(saved)
 
 	root.remove_child(client)
 	_check_b("cycle marked suspended, not cancelled", client._reconnect_suspended, true)
 	_check_b(
 		"the saved subscription set survives the detach",
-		not client._saved_subscription_queries.is_empty(),
+		not client._saved_subscriptions.is_empty(),
 		true,
 	)
 	_check_b(

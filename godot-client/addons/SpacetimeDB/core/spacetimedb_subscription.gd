@@ -5,13 +5,16 @@
 ## [code]await[/code] [method wait_for_applied] to know when the initial
 ## row snapshot has been processed.
 ##
-## [b]A handle is scoped to one connection.[/b] When the client reconnects it ends
-## every outstanding handle and re-subscribes the saved queries under fresh ones,
-## so a handle held across a reconnect stays [constant State.ENDED] permanently even
-## though the underlying query is live again. The rows keep flowing — only this
-## object is stale. Code that needs a handle after a drop should take a fresh one
-## from a [method SpacetimeDBClient.subscribe] call made in response to
-## [signal SpacetimeDBClient.reconnected], not cache one from before the drop.
+## [b]A handle survives an auto-reconnect.[/b] A drop suspends it — [member active]
+## goes false and [member suspended] goes true — and the reconnect re-registers this
+## same object under a fresh query set id, so it returns to [constant State.ACTIVE]
+## and [signal applied] fires again once the server confirms. [signal end] means the
+## subscription really ended: [method unsubscribe], a [SubscriptionError], a terminal
+## [signal SpacetimeDBClient.disconnected], or a re-subscribe whose send failed. Use
+## [signal SpacetimeDBClient.reconnecting] to observe a drop, not this signal.
+##
+## Calling [method unsubscribe] while suspended is honoured: the query is dropped from
+## the set the reconnect would have restored, and the handle ends.
 class_name SpacetimeDBSubscription
 extends RefCounted
 
@@ -46,6 +49,17 @@ var active: bool:
 var ended: bool:
 	get:
 		return _state == State.ENDED
+## [code]true[/code] while the connection this handle was registered on has dropped and
+## the reconnect has not re-registered it yet. No rows are arriving and [member active]
+## is false, but the subscription is not over: [member ended] is false and the query
+## comes back with the connection.
+##
+## Derived rather than stored, and unambiguous: [member query_id] is negative only for a
+## handle no live query set id belongs to, and the other handle that carries one — the
+## pre-failed handle from [method fail] — is [constant State.ENDED].
+var suspended: bool:
+	get:
+		return _state == State.PENDING and query_id < 0
 var _client: SpacetimeDBClient
 var _state: State = State.PENDING
 
@@ -150,12 +164,57 @@ func wait_for_end(timeout_sec: float = DEFAULT_WAIT_SECONDS) -> Error:
 	return ERR_TIMEOUT
 
 
-## Sends an unsubscribe request to the server. Returns [constant ERR_DOES_NOT_EXIST] if already ended.
+## Sends an unsubscribe request to the server. Returns [constant ERR_DOES_NOT_EXIST] if
+## already ended, or if the client that issued this handle has been freed.[br]
+## While [member suspended] there is no socket to send on, so the request is honoured
+## locally instead: the handle ends and the reconnect will not restore its query.
 func unsubscribe() -> Error:
 	if _state == State.ENDED:
 		return ERR_DOES_NOT_EXIST
 
+	if suspended:
+		# Ending the handle IS the cancellation — the reconnect's re-subscribe pass skips
+		# an ended handle, so the query never goes back out. Doing it here rather than
+		# through the client keeps the intent on the object the caller holds, which is
+		# the only thing that survives the drop.
+		end.emit()
+		return OK
+
+	# The client is a Node the game owns; a handle can outlive it (H8). Touching a freed
+	# one faults and unwinds this function to Error 0 — OK — which would read as an
+	# unsubscribe that went out.
+	if not is_instance_valid(_client):
+		return ERR_DOES_NOT_EXIST
+
 	return _client.unsubscribe(query_id)
+
+
+## Detaches the handle from the connection it was registered on, without ending it —
+## the reconnect path's half of the handle's lifecycle. No signal: nothing about the
+## subscription is over, so an [signal end] here would tell every listener the opposite
+## of what happened. No-op once [constant State.ENDED].[br]
+## [b]Internal — called by [SpacetimeDBClient].[/b]
+func mark_suspended() -> void:
+	if _state == State.ENDED:
+		return
+	_state = State.PENDING
+	# Dropped rather than kept: ids are handed out from a counter the new session resets,
+	# so the old one names a query set that will belong to something else. It is also what
+	# `suspended` reads.
+	query_id = -1
+
+
+## Re-registers the handle on a fresh connection under [param p_query_id], leaving it
+## [constant State.PENDING] until the server confirms — at which point [signal applied]
+## fires again, exactly as it did on the first subscribe. No-op once
+## [constant State.ENDED], which is how a handle the caller unsubscribed while suspended
+## stays cancelled.[br]
+## [b]Internal — called by [SpacetimeDBClient].[/b]
+func mark_reattached(p_query_id: int) -> void:
+	if _state == State.ENDED:
+		return
+	_state = State.PENDING
+	query_id = p_query_id
 
 
 ## Marks a still-PENDING subscription ended without emitting [signal end] — for

@@ -131,7 +131,7 @@ func _scenario_reparent_mid_backoff() -> void:
 	await _pump(10)
 	_check_b(
 		"the saved subscription set survives the detach",
-		not client._saved_subscription_queries.is_empty(),
+		not client._saved_subscriptions.is_empty(),
 		true,
 	)
 

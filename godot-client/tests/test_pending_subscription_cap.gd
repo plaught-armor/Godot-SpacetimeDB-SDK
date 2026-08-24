@@ -143,7 +143,9 @@ func _test_the_resubscribe_loop_is_exempt() -> void:
 	_fill_pending(client, cap)
 	var sets: int = 20
 	for i: int in sets:
-		client._saved_subscription_queries.append(_q(i))
+		var saved: SpacetimeDBSubscription = SpacetimeDBSubscription.create(client, i, _q(i))
+		saved.mark_suspended()
+		client._saved_subscriptions.append(saved)
 	var query_ids_before: int = client._next_query_id
 	client._resubscribe_saved_queries()
 	# Every saved set got a query id; none was refused. The sends themselves fail (there is

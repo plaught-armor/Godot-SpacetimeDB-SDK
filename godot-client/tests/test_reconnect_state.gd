@@ -59,18 +59,24 @@ func _test_finish_resubscribe_epoch_guard() -> int:
 	_reconnected_count = 0
 	client.reconnected.connect(_on_reconnected)
 
-	client._saved_subscription_queries = [PackedStringArray(["SELECT * FROM x"])]
+	var saved: SpacetimeDBSubscription = SpacetimeDBSubscription.create(
+		client,
+		0,
+		PackedStringArray(["SELECT * FROM x"]),
+	)
+	saved.mark_suspended()
+	client._saved_subscriptions = [saved]
 	client._resubscribe_epoch = 5
 
 	# Stale epoch: a superseded cycle's settle must do nothing.
 	client._finish_resubscribe(3)
 	f += _check_i("stale epoch → no reconnected", _reconnected_count, 0)
-	f += _check_i("stale epoch → saved kept", client._saved_subscription_queries.size(), 1)
+	f += _check_i("stale epoch → saved kept", client._saved_subscriptions.size(), 1)
 
 	# Current epoch: completes the cycle — clears saved, emits reconnected.
 	client._finish_resubscribe(5)
 	f += _check_i("current epoch → reconnected once", _reconnected_count, 1)
-	f += _check_i("current epoch → saved cleared", client._saved_subscription_queries.size(), 0)
+	f += _check_i("current epoch → saved cleared", client._saved_subscriptions.size(), 0)
 
 	# _finish_resubscribe bumps the epoch, so a repeat (a late settle or the watchdog
 	# timer that both call it) must NOT re-fire reconnected.

@@ -283,7 +283,7 @@ func _churn_reconnect_amplification() -> void:
 				if _contains(packet, "SELECT".to_utf8_buffer()):
 					resubscribes += 1
 	print("   subscribe messages sent on the new socket: %d" % resubscribes)
-	print("   saved query sets: %d" % client._saved_subscription_queries.size())
+	print("   saved query sets: %d" % client._saved_subscriptions.size())
 	await _teardown(client)
 
 

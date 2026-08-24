@@ -74,6 +74,16 @@ no data to carry beyond what the reducer handle already gives you.
 - **Per-request latency stats** — `client.get_stats()` returns a `SpacetimeDBStats`
   with round-trip latency bucketed by category (reducer / procedure / one-off /
   subscribe). Closes the last diagnostics gap vs the C# SDK's `Stats` object.
+- **Subscription handles survive an auto-reconnect** — a drop suspends a
+  `SpacetimeDBSubscription` and the reconnect re-registers that same object under a
+  fresh query set id, rather than ending it and restoring the query under an internal
+  handle the caller cannot reach. The alternative — keeping handles connection-scoped
+  and adding a by-query lookup so a caller could re-acquire after `reconnected` — was
+  rejected: it leaves every subscribing site carrying reconnect wiring for something
+  auto-reconnect exists to hide, and it does nothing for a game that simply held the
+  handle it was given. The cost is that `end` no longer fires on a transient drop, which
+  is the honest reading anyway: the query is not over, and `reconnecting` is the signal
+  that says a connection was lost.
 
 ## Deliberately out of scope
 

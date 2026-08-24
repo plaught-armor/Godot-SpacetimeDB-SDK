@@ -3,7 +3,7 @@
 # The client only forgets a subscription when the server's UnsubscribeApplied lands, so a
 # drop between the Unsubscribe going out and that reply arriving leaves the query in
 # current_subscriptions / pending_subscriptions — which is what _start_reconnection
-# rebuilds _saved_subscription_queries from. It used to bring such a query back on the
+# rebuilds _saved_subscriptions from. It used to bring such a query back on the
 # new socket, and the caller could not drop it a second time: the resubscribe makes a
 # fresh internal handle nothing outside the client has a reference to. The last case here
 # is the same failure across a session boundary — subscriptions outlived their session,
@@ -107,7 +107,11 @@ func _scenario_unsubscribe_applied_then_drop() -> void:
 	await _pump(20)
 	_check_i("A resubscribed", _inbox_count_containing(QUERY_A), 1)
 	_check_i("B NOT resubscribed", _inbox_count_containing(QUERY_B), 0)
-	_check_b("A's handle is the one that lived", sub_a.ended, true) # ended by the drop
+	# The caller's own handle, carried across the drop and re-registered — not ended and
+	# replaced by an internal one it has no reference to, which is what left the query it
+	# names undroppable for the rest of the session.
+	_check_b("A's handle survived the drop", sub_a.ended, false)
+	_check_b("and is registered again, not suspended", sub_a.suspended, false)
 	await _teardown(client)
 
 
@@ -197,6 +201,10 @@ func _scenario_previous_session_subscription() -> void:
 
 # Ending the handles is game code, and a handler is allowed to call disconnect_db() from
 # inside it — which re-enters the same teardown. Each handle must still end exactly once.
+#
+# A drop no longer ends anything (it suspends), so the ends come from the terminal
+# disconnect that follows one — which reaches the handles where the abandoned cycle left
+# them, outside current/pending. Same hazard, one path further along.
 func _scenario_end_handler_disconnects() -> void:
 	print("\n== a sub.end handler that calls disconnect_db() ==")
 	var client: SpacetimeDBClient = await _connected_client()
@@ -224,11 +232,21 @@ func _scenario_end_handler_disconnects() -> void:
 			ends[1] += 1,
 	)
 
-	# Drop the socket: the reconnect path tears the handles down while `disconnected`
-	# has not fired, so its once-per-session guard is not what stops the re-entry.
+	# The cycle must still be in flight when the disconnect lands — an exhausted one ends
+	# the handles itself, which is a different path (and would make the counts below race
+	# the backoff).
+	client.connection_options.max_reconnect_attempts = 0
+
 	_stream.disconnect_from_host()
 	_peer = null
 	await _pump(60)
+	_check_i("the drop itself ends nothing", ends[0] + ends[1], 0)
+	_check_b("both handles are suspended", sub_a.suspended and sub_b.suspended, true)
+
+	# Terminal: the cycle is abandoned, so every handle it was carrying ends here. A's
+	# handler re-enters this same teardown from inside it.
+	client.disconnect_db()
+	await _pump(10)
 
 	_check_i("A's end fired once", ends[0], 1)
 	_check_i("B's end fired once", ends[1], 1)

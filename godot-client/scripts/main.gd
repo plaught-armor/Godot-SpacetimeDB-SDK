@@ -51,6 +51,9 @@ var _starfield: Node2D = null
 var _status_label: Label = null
 var _food_field: MultiMeshInstance2D = null
 var _label_layer: CanvasLayer = null # screen-space layer for crisp circle name labels
+## The one subscription this client holds. Kept across a reconnect: the SDK suspends it
+## on a drop and re-registers it, so it is still the handle that can unsubscribe.
+var _subscription: SpacetimeDBSubscription = null
 
 @onready var entity_container: Node2D = $EntityContainer
 @onready var camera: Camera2D = $Camera2D
@@ -131,10 +134,17 @@ func _on_connection_error(code: int, reason: String) -> void:
 
 
 func _subscribe_all() -> void:
-	var sub := SpacetimeDB.Blackholio.subscribe(QUERIES)
-	if sub.error:
-		printerr("Subscription failed")
+	# `connected` fires on a reconnect too, and the SDK restores the subscription it is
+	# already holding — this handle is suspended by the drop and re-registered, with
+	# `applied` firing again. Subscribing a second time would duplicate the query set on
+	# the server, so only subscribe when there is no live handle.
+	if _subscription != null and not _subscription.ended:
 		return
+	var sub: SpacetimeDBSubscription = SpacetimeDB.Blackholio.subscribe(QUERIES)
+	if sub.error != OK:
+		printerr("Subscription failed: %s" % error_string(sub.error))
+		return
+	_subscription = sub
 	sub.applied.connect(_on_subscription_applied)
 
 

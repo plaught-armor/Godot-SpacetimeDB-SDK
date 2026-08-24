@@ -957,6 +957,8 @@ class SpacetimeDBConnectionOptions:
 
 A handle to a subscription to the SpacetimeDB database. The handle does not contain or provide access to the subscribed data, all subscribed rows are available via the module's [`LocalDatabase`](#localdatabase-class). See [Access the local database](#access-the-local-database).
 
+**A handle survives an auto-reconnect.** A drop suspends it — `active` goes false and `suspended` goes true — and the reconnect re-registers the same handle under a fresh query set id, so `active` returns to true and `applied` fires again once the server confirms. Hold the handle across the drop; do not take a fresh one in response to `reconnected`, which would subscribe the same query a second time. `end` means the subscription really is over: an unsubscribe, a server-side subscription error, a terminal `disconnected`, or a re-subscribe whose send failed. Use the client's `reconnecting` signal to observe a drop.
+
 #### `query_id` property
 
 ```gdscript
@@ -1009,7 +1011,16 @@ class SpacetimeDBSubscription:
     var ended: bool
 ```
 
-Indicates if this subscription has been terminated due to an unsubscribe confirmation, a server error, or a disconnect.
+Indicates if this subscription has been terminated due to an unsubscribe confirmation, a server error, or a terminal disconnect. A transient drop that auto-reconnect recovers leaves this false — see `suspended`.
+
+#### `suspended` property
+
+```gdscript
+class SpacetimeDBSubscription:
+    var suspended: bool
+```
+
+Indicates whether the connection this handle was registered on has dropped and the reconnect has not re-registered it yet. No rows are arriving and `active` is false, but the subscription is not over — `ended` is false and the query comes back with the connection. False for a handle that has never been dropped.
 
 #### `unsubscribe()` method
 
@@ -1018,9 +1029,11 @@ class SpacetimeDBSubscription:
     func unsubscribe() -> Error
 ```
 
-Sends an unsubscribe request to the server. The `end` signal fires when the server confirms the unsubscribe via `UnsubscribeAppliedMessage`, or when the session ends first — a disconnect (including `disconnect_db()`) ends every outstanding handle, and a query whose unsubscribe was still in flight is not brought back by the reconnect.
+Sends an unsubscribe request to the server. The `end` signal fires when the server confirms the unsubscribe via `UnsubscribeAppliedMessage`, or when the session ends first — a terminal disconnect (including `disconnect_db()`) ends every outstanding handle, and a query whose unsubscribe was still in flight is not brought back by the reconnect.
 
-Returns `ERR_DOES_NOT_EXIST` if the subscription has already ended.
+While `suspended` there is no socket to send on, so the request is honoured locally instead: the handle ends immediately and the reconnect will not restore its query.
+
+Returns `ERR_DOES_NOT_EXIST` if the subscription has already ended, or if the client that issued the handle has been freed.
 
 #### `wait_for_applied()` method
 
@@ -1073,10 +1086,13 @@ class SpacetimeDBSubscription:
     signal end
 ```
 
-Emitted when the subscription ends. This happens when:
-- The server confirms an unsubscribe (`UnsubscribeAppliedMessage`).
+Emitted when the subscription ends, once per handle. This happens when:
+- The server confirms an unsubscribe (`UnsubscribeAppliedMessage`), or `unsubscribe()` is called while the handle is `suspended`.
 - The server reports a subscription error (`SubscriptionErrorMessage`) — check `error_message` for details.
-- The client disconnects or reconnects — all existing subscription handles are ended.
+- The client disconnects terminally — `disconnect_db()`, a `disconnected` from an exhausted reconnect, or starting a new session with `connect_db()`.
+- A re-subscribe after a drop could not be sent; `error` carries the send error.
+
+A transient drop that auto-reconnect recovers does **not** end a handle — it suspends it. Connect to the client's `reconnecting` signal for that.
 
 ## `SpacetimeDBReducerCall` class
 

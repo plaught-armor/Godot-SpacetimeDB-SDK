@@ -16,7 +16,7 @@ All of your generated modules can be accessed via the `SpacetimeDB` singleton. T
 ```gdscript
 # In your main scene script or another Autoload
 
-func _ready():
+func _ready() -> void:
     # Connect to signals BEFORE connecting to the DB
     SpacetimeDB.MyModule.connected.connect(_on_spacetimedb_connected)
     SpacetimeDB.MyModule.disconnected.connect(_on_spacetimedb_disconnected)
@@ -46,18 +46,18 @@ func _ready():
         options
     )
 
-func _on_spacetimedb_connected(identity: PackedByteArray, token: String):
+func _on_spacetimedb_connected(identity: PackedByteArray, token: String) -> void:
     print("Game: Connected to SpacetimeDB!")
     # Good place to subscribe to initial data
     var queries: PackedStringArray = ["SELECT * FROM PlayerData", "SELECT * FROM GameState"]
     var subscription: SpacetimeDBSubscription = SpacetimeDB.MyModule.subscribe(queries)
-    if subscription.error:
+    if subscription.error != OK:
         printerr("Subscription failed!")
         return
 
     subscription.applied.connect(_on_subscription_applied)
 
-func _on_subscription_applied():
+func _on_subscription_applied() -> void:
     print("Game: Initial subscription applied.")
     # Safe to query the local DB for initially subscribed data
     var initial_players: Array[PlayerData] = SpacetimeDB.MyModule.db.player_data.iter()
@@ -66,10 +66,10 @@ func _on_subscription_applied():
     var current_player: PlayerData = SpacetimeDB.MyModule.db.player_data.identity.find(identity)
     # ... setup initial game state ...
 
-func _on_spacetimedb_disconnected():
+func _on_spacetimedb_disconnected() -> void:
     print("Game: Disconnected.")
 
-func _on_spacetimedb_connection_error(code: int, reason: String):
+func _on_spacetimedb_connection_error(code: int, reason: String) -> void:
     printerr("Game: Connection Error (Code: %d): %s" % [code, reason])
 
 # listening for the game closing/crashing to disconnect cleanly from the server.
@@ -77,6 +77,63 @@ func _notification(what: int) -> void:
     if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_CRASH:
         SpacetimeDB.MyModule.disconnect_db()
 ```
+
+## Surviving a Disconnect
+
+Set `options.auto_reconnect = true` and the SDK rides out a dropped socket for you: it retries with exponential backoff, restores every subscription the caller still holds, and reports each stage.
+
+```gdscript
+func _ready() -> void:
+    SpacetimeDB.MyModule.reconnecting.connect(_on_reconnecting)
+    SpacetimeDB.MyModule.reconnected.connect(_on_reconnected)
+    SpacetimeDB.MyModule.reconnect_failed.connect(_on_reconnect_failed)
+
+    var options: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
+    options.auto_reconnect = true
+    # The pacing knobs, shown at their defaults.
+    options.max_reconnect_attempts = 10      # 0 = keep trying forever
+    options.reconnect_initial_delay = 1.0    # seconds before the first retry
+    options.reconnect_max_delay = 30.0       # ceiling the backoff climbs to
+    options.reconnect_backoff_multiplier = 2.0
+    options.reconnect_jitter_fraction = 0.5  # 0.0-1.0, spreads a reconnect storm
+    # A backgrounded app's frame loop stalls the backoff timer, so regaining focus
+    # fires a waiting attempt immediately. On by default.
+    options.reconnect_on_app_resume = true
+
+func _on_reconnecting(attempt: int, max_attempts: int) -> void:
+    print("Reconnecting (%d/%d)..." % [attempt, max_attempts])
+
+func _on_reconnected() -> void:
+    print("Back online; subscriptions restored.")
+
+func _on_reconnect_failed() -> void:
+    printerr("Gave up reconnecting.")
+```
+
+**Keep your subscription handles across the drop.** A `SpacetimeDBSubscription` is *suspended* by a disconnect, not ended — the reconnect re-registers that same handle under a fresh query set id, so `applied` fires again and `unsubscribe()` keeps working:
+
+```gdscript
+var subscription: SpacetimeDBSubscription
+
+func _on_spacetimedb_connected(identity: PackedByteArray, token: String) -> void:
+    subscription = SpacetimeDB.MyModule.subscribe(["SELECT * FROM PlayerData"])
+    subscription.end.connect(_on_subscription_ended)
+
+func _leave_the_area() -> void:
+    # Works whether the socket is up or the handle is mid-reconnect: offline the
+    # request is honoured locally, and the reconnect will not bring the query back.
+    subscription.unsubscribe()
+
+func _on_subscription_ended() -> void:
+    # Not a drop — that suspends. This is the query really being over.
+    print("Subscription ended: %s" % subscription.error_message)
+```
+
+`suspended`, `active` and `ended` are mutually exclusive — at most one is true at a time (all three are false for a subscribe the server has not confirmed yet). `subscription.suspended` is true only while a reconnect is in flight and this handle has not been re-registered.
+
+Do **not** call `subscribe()` again in response to `reconnected` — the SDK has already restored the query, and subscribing a second time duplicates the query set on the server. `end` fires only when a subscription really is over: an unsubscribe, a server-side subscription error, a terminal `disconnect_db()` or exhausted reconnect, or a re-subscribe whose send failed.
+
+The mirror is wiped and re-filled across a reconnect, so every row is reported deleted and then inserted again. Row listeners see that as ordinary traffic; code that caches a row object should re-read it rather than hold it.
 
 ## Listen for Data Changes
 
@@ -92,7 +149,7 @@ There are three ways to listen for data changes:
 # Script needing player updates
 @export var player_receiver: RowReceiver # Assign in editor
 
-func _ready():
+func _ready() -> void:
     if player_receiver:
         player_receiver.insert.connect(_on_player_receiver_insert)
         player_receiver.update.connect(_on_player_receiver_update)
@@ -100,18 +157,18 @@ func _ready():
     else:
         printerr("Player receiver not set!")
 
-func _on_player_receiver_insert(player: PlayerData):
+func _on_player_receiver_insert(player: PlayerData) -> void:
     # Player inserted
     print("Receiver Insert: Player %s ; Health: %d" % [player.name, player.health])
     # ... spawn player visual ...
 
-func _on_player_receiver_update(previous_row: PlayerData, player: PlayerData):
+func _on_player_receiver_update(previous_row: PlayerData, player: PlayerData) -> void:
     # Player updated
     print("Receiver Update: Player %s ; Health: %d" % [player.name, player.health])
     print("Receiver Previous Value: Player %s ; Health: %d" % [previous_row.name, previous_row.health])
     # ... update player visual ...
 
-func _on_player_receiver_delete(player: PlayerData):
+func _on_player_receiver_delete(player: PlayerData) -> void:
     # Player deleted
     print("Receiver Delete: Player %s" % player.name)
     # ... despawn player visual ...
@@ -129,18 +186,18 @@ SpacetimeDB.MyModule.db.player_data.on_insert(_on_player_receiver_insert)
 SpacetimeDB.MyModule.db.player_data.on_update(_on_player_receiver_update)
 SpacetimeDB.MyModule.db.player_data.on_delete(_on_player_receiver_delete)
 
-func _on_player_receiver_insert(player: PlayerData):
+func _on_player_receiver_insert(player: PlayerData) -> void:
     # Player inserted
     print("Receiver Insert: Player %s ; Health: %d" % [player.name, player.health])
     # ... spawn player visual ...
 
-func _on_player_receiver_update(previous_row: PlayerData, player: PlayerData):
+func _on_player_receiver_update(previous_row: PlayerData, player: PlayerData) -> void:
     # Player updated
     print("Receiver Update: Player %s ; Health: %d" % [player.name, player.health])
     print("Receiver Previous Value: Player %s ; Health: %d" % [previous_row.name, previous_row.health])
     # ... update player visual ...
 
-func _on_player_receiver_delete(player: PlayerData):
+func _on_player_receiver_delete(player: PlayerData) -> void:
     # Player deleted
     print("Receiver Delete: Player %s" % player.name)
     # ... despawn player visual ...
@@ -156,7 +213,7 @@ SpacetimeDB.MyModule.row_inserted.connect(_on_global_row_inserted)
 SpacetimeDB.MyModule.row_updated.connect(_on_global_row_updated)
 SpacetimeDB.MyModule.row_deleted.connect(_on_global_row_deleted)
 
-func _on_global_row_inserted(table_name: StringName, row: Resource):
+func _on_global_row_inserted(table_name: StringName, row: Resource) -> void:
     if row is PlayerData: # Check the type of the inserted row
         print("Global Insert: New PlayerData row!")
         _spawn_player(row) # Your function
@@ -164,12 +221,12 @@ func _on_global_row_inserted(table_name: StringName, row: Resource):
         print("Global Insert: GameState updated!")
         # ... update game state UI ...
 
-func _on_global_row_updated(table_name: StringName, old_row: Resource, new_row: Resource):
+func _on_global_row_updated(table_name: StringName, old_row: Resource, new_row: Resource) -> void:
     if new_row is PlayerData:
         print("Global Update: PlayerData updated!")
         _update_player(new_row) # Your function
 
-func _on_global_row_deleted(table_name: StringName, row: Resource):
+func _on_global_row_deleted(table_name: StringName, row: Resource) -> void:
     if row is PlayerData:
         print("Global Delete: PlayerData deleted!")
         _despawn_player(row)
@@ -180,7 +237,7 @@ func _on_global_row_deleted(table_name: StringName, row: Resource):
 Use the generated module bindings to trigger server-side logic.
 
 ```gdscript
-func move_player(direction: Vector2):
+func move_player(direction: Vector2) -> void:
     if not SpacetimeDB.MyModule.is_connected_db(): return
 
     # Fire and forget
@@ -195,6 +252,15 @@ func move_player(direction: Vector2):
         printerr("Reducer failed: ", call.error_message)
     elif call.outcome == SpacetimeDBReducerCall.Outcome.TIMEOUT:
         printerr("Reducer timed out")
+
+    # Reducers that return a value decode it through the handle. `null` alone is
+    # ambiguous — a unit reducer, no declared return type, and bytes that failed to
+    # parse all produce it — so ask which one it was.
+    var returned: Variant = call.decode()
+    if call.has_decode_error():
+        printerr("Return value did not parse: ", call.decode_error_message)
+    elif call.has_return_value():
+        print("Reducer returned: ", returned)
 ```
 
 ## Query Local Database
@@ -227,6 +293,7 @@ This guide covers the core path. The SDK also provides:
 -   **Auto-reconnect signals** — when `options.auto_reconnect = true`, listen to `reconnecting(attempt, max_attempts)`, `reconnected`, and `reconnect_failed`.
 -   **Typed per-table signals** — each generated table exposes `inserted` / `updated` / `deleted` signals as a typed alternative to the global `row_inserted` / `row_updated` / `row_deleted`.
 -   **Typed finders & indexes** — generated `find_by_<field>(value)` helpers, plus btree index `filter()` / `filter_range()` / `filter_gte()` / `filter_lte()` for range scans.
+-   **Namespaced submodules** — a module that registers submodules exposes each namespace as an inner facade: `SpacetimeDB.MyModule.db.lib.lib_data`, `SpacetimeDB.MyModule.reducers.lib.lib_insert(...)`. See [Submodules](submodules.md).
 -   **Compression** — `CompressionPreference.BROTLI` is supported alongside `NONE` and `GZIP`.
 
 ---
