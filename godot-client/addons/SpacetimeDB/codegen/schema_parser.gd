@@ -91,11 +91,10 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 ## a meaning for it, and refusing the whole schema over one would strand a client on a
 ## server it otherwise speaks to perfectly.
 ##
-## What it must not be is silent. [code]Submodules[/code] (SpacetimeDB 2.8.1+, authored only by the
-## TypeScript server SDK today) is exactly that case, and a submodule's tables and
-## reducers falling out of the generated bindings with no message reads as a codegen bug
-## rather than an unimplemented feature. Anything not listed here gets named in the log —
-## see [code]docs/submodules-readiness.md[/code].
+## What it must not be is silent: a section's tables and reducers falling out of the
+## generated bindings with no message reads as a codegen bug rather than an unimplemented
+## feature. Anything not listed here gets named in the log, and the walk that reports it
+## descends into submodules, so a section only a submodule carries is named too.
 ##
 ## [code]Array[String][/code] rather than the [code]PackedStringArray[/code] the element
 ## type would otherwise ask for, and [code]static var[/code] rather than [code]const[/code].
@@ -111,6 +110,7 @@ static var HANDLED_SECTIONS: Array[String] = [
 	"Procedures",
 	"Reducers",
 	"Schedules",
+	"Submodules",
 	"Tables",
 	"Typespace",
 	"Types",
@@ -196,6 +196,194 @@ static func module_class_prefix(module_key: String) -> String:
 	return module_key.to_pascal_case()
 
 
+## One entry per module in a v10 schema: the root first, then every submodule beneath it,
+## depth-first in the order the server sent them. A submodule (SpacetimeDB 2.8.1+) is not a
+## flattened list of extra tables — it carries a WHOLE nested module def, with its own
+## [code]Typespace[/code], [code]Types[/code], [code]Tables[/code], [code]Reducers[/code]
+## and [code]ExplicitNames[/code] — so every per-module lookup below has to be built per
+## module rather than once for the schema.
+##
+## [code]type_offset[/code] is where a module's types land once every module's typespace is
+## concatenated into the single list the rest of the parser indexes. Each nested typespace
+## numbers its own types from zero, so the offset is what keeps a submodule's
+## [code]Ref(0)[/code] pointing at the submodule's type instead of the root's — bind those
+## to the wrong type and rows decode as whatever sits at the same index up top, silently.
+## See [code]docs/submodules.md[/code].
+static func _flatten_modules(root: Dictionary) -> Array[Dictionary]:
+	var modules: Array[Dictionary] = []
+	_collect_module(root, PackedStringArray(), modules, { })
+	var offset: int = 0
+	for module: Dictionary in modules:
+		module["type_offset"] = offset
+		offset += int(module["type_count"])
+	return modules
+
+
+## How deep submodules may nest. The schema is an HTTP response from something that may be
+## a newer server, a proxy, or a truncated stream, and a walk over it with no ceiling ends
+## a malformed one by exhausting the GDScript call stack rather than by reporting it — the
+## same reason [constant _PARSE_FIELD_TYPE_MAX_DEPTH] exists for the type walk. Real
+## namespaces nest a handful of levels at most.
+const MAX_SUBMODULE_DEPTH: int = 16
+
+
+## [param seen_namespaces] is shared across the whole walk, keyed by the joined namespace
+## path. The server registers submodules BY namespace, so a healthy one never sends two
+## under one path; two that did arrive would take each other's generated identifiers and —
+## worse — register one wire name for two different row types, which routes a table update
+## into the wrong row script.
+static func _collect_module(
+	module: Dictionary,
+	module_namespace: PackedStringArray,
+	out: Array[Dictionary],
+	seen_namespaces: Dictionary,
+	depth: int = 0,
+) -> void:
+	var sections: Array = module.get("sections", [])
+	# Summed, not overwritten: the content pass APPENDS every Typespace section it finds,
+	# so an offset taken from only the last of two would under-count and shift every later
+	# module's type refs.
+	var type_count: int = 0
+	for section: Dictionary in sections:
+		if section.has("Typespace"):
+			type_count += section["Typespace"].get("types", []).size()
+	out.append({ "namespace": module_namespace, "sections": sections, "type_count": type_count, "type_offset": 0 })
+
+	if depth >= MAX_SUBMODULE_DEPTH:
+		SpacetimePlugin.print_err(
+			"Invalid schema: submodules nested deeper than %d levels at '%s'. Anything below that is skipped."
+			% [MAX_SUBMODULE_DEPTH, _namespace_label(module_namespace)]
+		)
+		return
+
+	for section: Dictionary in sections:
+		if not section.has("Submodules"):
+			continue
+		for submodule: Dictionary in section["Submodules"]:
+			var ns: String = submodule.get("namespace", "")
+			if ns.is_empty():
+				SpacetimePlugin.print_err(
+					"Invalid schema: a submodule of '%s' has no namespace; its tables and "
+					% _namespace_label(module_namespace)
+					+ "reducers cannot be addressed and are skipped."
+				)
+				continue
+			var child: PackedStringArray = module_namespace.duplicate()
+			child.append(ns)
+			var path: String = ".".join(child)
+			if seen_namespaces.has(path):
+				SpacetimePlugin.print_err(
+					"Invalid schema: two submodules are registered under '%s'. Only the first "
+					% path
+					+ "is generated; the second's tables and reducers are skipped."
+				)
+				continue
+			seen_namespaces[path] = true
+			# A submodule entry carries a whole module def. Without one there is nothing to
+			# read, and saying so is what keeps the skip from reading later as a codegen
+			# fault: every table it would have declared is simply absent.
+			var nested: Variant = submodule.get("module", null)
+			if not (nested is Dictionary):
+				SpacetimePlugin.print_err(
+					"Invalid schema: the submodule registered under '%s' carries no module "
+					% path
+					+ "definition. Its tables and reducers are skipped."
+				)
+				continue
+			_collect_module(nested, child, out, seen_namespaces, depth + 1)
+
+
+## A namespace path for a message — the root module reads as "the root module" rather than
+## as an empty string.
+static func _namespace_label(module_namespace: PackedStringArray) -> String:
+	return "the root module" if module_namespace.is_empty() else ".".join(module_namespace)
+
+
+## Returns [param value] with every [code]Ref[/code] in it moved up by [param offset].
+## Walks the whole algebraic type — a Ref hides inside Product elements, Sum variants,
+## Array element types and Option payloads, at any depth.
+##
+## Copies rather than mutates: the schema dictionary is the caller's, and a parse that
+## rewrote it in place would leave the second parse of the same schema (the plugin parses
+## once per configured module) reading indices already shifted once.
+static func _offset_type_refs(value: Variant, offset: int, depth: int = 0) -> Variant:
+	# Same ceiling, and for the same reason, as _parse_field_type's: this walks an
+	# algebraic type of arbitrary nesting that arrived over HTTP.
+	#
+	# What makes the bail safe is THIS report, not anything downstream. A Ref left
+	# unrewritten is a small index read against the concatenated list, so it lands in
+	# bounds on another module's type and binds silently — the bounds check in
+	# _parse_field_type does not catch it. The error below is what marks the parse
+	# incomplete, which is what makes codegen discard the whole module. Never weaken it on
+	# the assumption that a later check covers this.
+	if depth > _PARSE_FIELD_TYPE_MAX_DEPTH:
+		SpacetimePlugin.print_err(
+			"_offset_type_refs recursion exceeded %d levels; aborting" % _PARSE_FIELD_TYPE_MAX_DEPTH
+		)
+		return value
+	if value is Array:
+		var out_array: Array = []
+		for element: Variant in value:
+			out_array.append(_offset_type_refs(element, offset, depth + 1))
+		return out_array
+	if value is Dictionary:
+		var out_dict: Dictionary = { }
+		for key: Variant in value:
+			var entry: Variant = value[key]
+			if key == "Ref" and (entry is int or entry is float):
+				out_dict[key] = int(entry) + offset
+			else:
+				out_dict[key] = _offset_type_refs(entry, offset, depth + 1)
+		return out_dict
+	return value
+
+
+## The dotted prefix the server registers a submodule's tables and reducers under —
+## [code]"lib."[/code], [code]"auth.baz."[/code], empty for the root module. Namespaces
+## nest, so a name can carry more than one dot, and the SQL parser rejoins every leading
+## part into one catalog name rather than treating them as qualification. The segments are
+## spelled exactly as the module declared them; this is a wire name, not an identifier.
+static func _namespace_wire_prefix(module_namespace: PackedStringArray) -> String:
+	if module_namespace.is_empty():
+		return ""
+	return ".".join(module_namespace) + "."
+
+
+## The prefix that makes a submodule's name a legal, unique GDScript identifier —
+## [code]"lib_"[/code], [code]"auth_baz_"[/code], empty for the root module. A dot cannot
+## appear in an identifier, so the generated class, file and member names carry the
+## namespace this way while the wire name keeps its dots.
+static func _namespace_identifier_prefix(module_namespace: PackedStringArray) -> String:
+	if module_namespace.is_empty():
+		return ""
+	var parts: PackedStringArray = []
+	for segment: String in module_namespace:
+		parts.append(segment.to_snake_case())
+	return "_".join(parts) + "_"
+
+
+## The prefix for a submodule TYPE's name — [code]"Lib"[/code], [code]"AuthBaz"[/code].
+## Type names are already PascalCase and become a [code]class_name[/code] verbatim, so the
+## namespace joins them in the same case rather than through an underscore.
+static func _namespace_type_prefix(module_namespace: PackedStringArray) -> String:
+	var prefix: String = ""
+	for segment: String in module_namespace:
+		prefix += segment.to_pascal_case()
+	return prefix
+
+
+## A submodule's type name with its namespace joined on, so two modules that each declare a
+## `Point` become two distinct GDScript classes rather than one that silently wins.
+##
+## A name the SDK maps to an engine type is left alone: those are matched BY NAME
+## ([code]Vector3[/code], [code]Color[/code], the [code]__identity__[/code] family), so a
+## namespaced spelling would drop a submodule's `Vector3` column back to a generated struct.
+static func _qualified_type_name(type_prefix: String, type_name: String) -> String:
+	if type_prefix.is_empty() or _is_gd_native(type_name) or DEFAULT_TYPE_MAP.has(type_name):
+		return type_name
+	return type_prefix + type_name
+
+
 static func parse_schema(schema: Dictionary, module_name: String, project_enums: Dictionary = { }) -> SpacetimeParsedSchema:
 	_synth_result_types.clear()
 	# Every "reported it and carried on" path in this parser — a table whose row type did
@@ -221,118 +409,196 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		SpacetimePlugin.print_err("Schema v10 required (missing 'sections'). Please update SpacetimeDB to 2.1.0+.")
 		return SpacetimeParsedSchema.new()
 
-	# Walked before either pass runs, so the report reaches the log even if a later section
-	# makes the parse bail. Each section dict carries exactly one tag key.
+	# Walked before any module is parsed, so the report reaches the log even if a later
+	# section makes the parse bail. Each section dict carries exactly one tag key. The walk
+	# descends into submodules: a section only a submodule carries would otherwise be the one
+	# case that stays silent.
+	var modules: Array[Dictionary] = _flatten_modules(schema)
 	var skipped_sections: PackedStringArray = []
-	for section: Dictionary in schema["sections"]:
-		var tag: String = _first_key(section)
-		if not tag.is_empty() and not HANDLED_SECTIONS.has(tag):
-			skipped_sections.append(tag)
-			SpacetimePlugin.print_log(
-				(
-					"Schema section '%s' is not supported by this SDK version and was skipped. "
-					+ "Whatever it declares — tables, reducers — is absent from the generated "
-					+ "bindings. Everything else in the schema was generated normally."
+	for module: Dictionary in modules:
+		var module_namespace: String = ".".join(module["namespace"])
+		for section: Dictionary in module["sections"]:
+			var tag: String = _first_key(section)
+			if not tag.is_empty() and not HANDLED_SECTIONS.has(tag):
+				skipped_sections.append(tag)
+				SpacetimePlugin.print_log(
+					(
+						"Schema section '%s'%s is not supported by this SDK version and was skipped. "
+						+ "Whatever it declares — tables, reducers — is absent from the generated "
+						+ "bindings. Everything else in the schema was generated normally."
+					)
+					% [
+						tag,
+						"" if module_namespace.is_empty() else " in submodule '%s'" % module_namespace,
+					]
 				)
-				% [tag]
-			)
 
-	var lifecycle_map: Dictionary = { } # function_name -> lifecycle spec key
-	var schedules_by_table: Dictionary = { } # table source_name -> schedule dict
-	var canonical_names: Dictionary = { } # source_name -> canonical_name
-	var view_pk_by_view: Dictionary = { } # view source_name -> primary key column name
+	for module: Dictionary in modules:
+		var module_namespace: PackedStringArray = module["namespace"]
+		var type_offset: int = int(module["type_offset"])
+		# Three spellings of the same namespace, because three different things are named from
+		# it. The wire prefix keeps the dots the server registers the def under
+		# ("lib.lib_data"); the identifier prefix is what a class, file or member name can
+		# actually be spelled with ("lib_lib_data"); the type prefix joins a PascalCase type
+		# name ("LibLibPoint"). All three are empty for the root module, so a schema without
+		# submodules parses to exactly what it did before they existed.
+		var wire_prefix: String = _namespace_wire_prefix(module_namespace)
+		var identifier_prefix: String = _namespace_identifier_prefix(module_namespace)
+		var type_prefix: String = _namespace_type_prefix(module_namespace)
 
-	# First pass: extract lifecycle, schedules, and explicit names
-	for section: Dictionary in schema["sections"]:
-		if section.has("LifeCycleReducers"):
-			for lc: Dictionary in section["LifeCycleReducers"]:
-				var fn_name: String = lc.get("function_name", "")
-				var spec: Dictionary = lc.get("lifecycle_spec", { })
-				if not fn_name.is_empty() and not spec.is_empty():
-					lifecycle_map[fn_name] = _first_key(spec)
-		elif section.has("Schedules"):
-			for sched: Dictionary in section["Schedules"]:
-				var tbl: String = sched.get("table_name", "")
-				if not tbl.is_empty():
-					schedules_by_table[tbl] = {
-						"reducer_name": sched.get("function_name", ""),
-						"schedule_at_col": sched.get("schedule_at_col", 0),
+		# Every Ref in this module's sections moved into the shared typespace at once, not
+		# just the ones in its Typespace. A Ref reaches a reducer's params, a procedure's or
+		# a view's return type as well, and all of them index the module's OWN typespace —
+		# rewriting only the type definitions would leave a submodule reducer's `Ref(0)`
+		# parameter resolving to the root's first type.
+		var sections: Array = module["sections"]
+		if type_offset > 0:
+			sections = _offset_type_refs(sections, type_offset)
+
+		# Per module, not per schema: each nested module def carries its own ExplicitNames,
+		# LifeCycleReducers, Schedules and ViewPrimaryKeys, and a source name is unique only
+		# within the module that declared it.
+		var lifecycle_map: Dictionary = { } # function_name -> lifecycle spec key
+		var schedules_by_table: Dictionary = { } # table source_name -> schedule dict
+		var canonical_names: Dictionary = { } # source_name -> canonical_name
+		var view_pk_by_view: Dictionary = { } # view source_name -> primary key column name
+
+		# First pass: extract lifecycle, schedules, and explicit names
+		for section: Dictionary in sections:
+			if section.has("LifeCycleReducers"):
+				for lc: Dictionary in section["LifeCycleReducers"]:
+					var fn_name: String = lc.get("function_name", "")
+					var spec: Dictionary = lc.get("lifecycle_spec", { })
+					if not fn_name.is_empty() and not spec.is_empty():
+						lifecycle_map[fn_name] = _first_key(spec)
+			elif section.has("Schedules"):
+				for sched: Dictionary in section["Schedules"]:
+					var tbl: String = sched.get("table_name", "")
+					if not tbl.is_empty():
+						schedules_by_table[tbl] = {
+							"reducer_name": sched.get("function_name", ""),
+							"schedule_at_col": sched.get("schedule_at_col", 0),
+						}
+			elif section.has("ExplicitNames"):
+				for entry: Dictionary in section["ExplicitNames"].get("entries", []):
+					var mapping: Dictionary = entry.get("Table", entry.get("Function", entry.get("Index", { })))
+					if not mapping.is_empty():
+						canonical_names[mapping.get("source_name", "")] = mapping.get("canonical_name", "")
+			elif section.has("ViewPrimaryKeys"):
+				# Schema V10 (SpacetimeDB 2.2.0+): primary keys for procedural views.
+				# Single-column only for now; columns is a Vec to allow future composites.
+				for vpk: Dictionary in section["ViewPrimaryKeys"]:
+					var view_src: String = vpk.get("view_source_name", "")
+					var pk_cols: Array = vpk.get("columns", [])
+					if not view_src.is_empty() and not pk_cols.is_empty():
+						view_pk_by_view[view_src] = String(pk_cols[0])
+
+		# Second pass: extract content sections
+		for section: Dictionary in sections:
+			if section.has("Typespace"):
+				# Appended, never assigned: every module's types share the one list the rest
+				# of the parser indexes, in the same depth-first order the offsets above were
+				# handed out.
+				typespace.append_array(section["Typespace"].get("types", []))
+			elif section.has("Types"):
+				for td: Dictionary in section["Types"]:
+					var src: String = td.get("source_name", { }).get("source_name", "")
+					var ty_raw: Variant = td.get("ty", -1)
+					var ty_idx: int = int(ty_raw) if (ty_raw is int or ty_raw is float) else -1
+					if ty_idx >= 0:
+						ty_idx += type_offset
+					# source_name rides along for the project-enum match further down, which
+					# compares against the name the module declared, not the namespaced one.
+					schema_types_raw.append({
+						"name": { "name": _qualified_type_name(type_prefix, src) },
+						"source_name": src,
+						"namespace": module_namespace,
+						"ty": ty_idx,
+					})
+			elif section.has("Tables"):
+				for td: Dictionary in section["Tables"]:
+					var src: String = td.get("source_name", "")
+					# canonical_name is the name the server registers the table/reducer under and
+					# uses on the wire (TableUpdate identifiers, reducer-call lookup). source_name is
+					# only the original Rust spelling. Verified live: reducers resolve ONLY by
+					# canonical (e.g. insert_one_u_128, not insert_one_u128).
+					var canonical: String = canonical_names.get(src, src)
+					var indexes: Array = []
+					for idx: Dictionary in td.get("indexes", []):
+						indexes.append({ "name": idx.get("source_name", { "some": null }), "accessor_name": idx.get("accessor_name", { "some": null }), "algorithm": idx.get("algorithm", { }) })
+					var constraints: Array = []
+					for con: Dictionary in td.get("constraints", []):
+						constraints.append({ "name": con.get("source_name", { "some": null }), "data": con.get("data", { }) })
+					var ref_raw: Variant = td.get("product_type_ref", -1)
+					var ref_idx: int = int(ref_raw) if (ref_raw is int or ref_raw is float) else -1
+					if ref_idx >= 0:
+						ref_idx += type_offset
+					var tbl: Dictionary = {
+						"name": identifier_prefix + canonical,
+						"wire_name": wire_prefix + canonical,
+						"namespace": module_namespace,
+						"local_name": canonical,
+						"product_type_ref": ref_idx,
+						"primary_key": td.get("primary_key", []),
+						"indexes": indexes,
+						"constraints": constraints,
+						"sequences": td.get("sequences", []),
+						"table_type": td.get("table_type", { "User": [] }),
+						"table_access": td.get("table_access", { "Public": [] }),
+						"is_event": td.get("is_event", false),
 					}
-		elif section.has("ExplicitNames"):
-			for entry: Dictionary in section["ExplicitNames"].get("entries", []):
-				var mapping: Dictionary = entry.get("Table", entry.get("Function", entry.get("Index", { })))
-				if not mapping.is_empty():
-					canonical_names[mapping.get("source_name", "")] = mapping.get("canonical_name", "")
-		elif section.has("ViewPrimaryKeys"):
-			# Schema V10 (SpacetimeDB 2.2.0+): primary keys for procedural views.
-			# Single-column only for now; columns is a Vec to allow future composites.
-			for vpk: Dictionary in section["ViewPrimaryKeys"]:
-				var view_src: String = vpk.get("view_source_name", "")
-				var pk_cols: Array = vpk.get("columns", [])
-				if not view_src.is_empty() and not pk_cols.is_empty():
-					view_pk_by_view[view_src] = String(pk_cols[0])
-
-	# Second pass: extract content sections
-	for section: Dictionary in schema["sections"]:
-		if section.has("Typespace"):
-			typespace = section["Typespace"].get("types", [])
-		elif section.has("Types"):
-			for td: Dictionary in section["Types"]:
-				var src: String = td.get("source_name", { }).get("source_name", "")
-				schema_types_raw.append({ "name": { "name": src }, "ty": td.get("ty", -1) })
-		elif section.has("Tables"):
-			for td: Dictionary in section["Tables"]:
-				var src: String = td.get("source_name", "")
-				# canonical_name is the name the server registers the table/reducer under and
-				# uses on the wire (TableUpdate identifiers, reducer-call lookup). source_name is
-				# only the original Rust spelling. Verified live: reducers resolve ONLY by
-				# canonical (e.g. insert_one_u_128, not insert_one_u128).
-				var name: String = canonical_names.get(src, src)
-				var indexes: Array = []
-				for idx: Dictionary in td.get("indexes", []):
-					indexes.append({ "name": idx.get("source_name", { "some": null }), "accessor_name": idx.get("accessor_name", { "some": null }), "algorithm": idx.get("algorithm", { }) })
-				var constraints: Array = []
-				for con: Dictionary in td.get("constraints", []):
-					constraints.append({ "name": con.get("source_name", { "some": null }), "data": con.get("data", { }) })
-				var tbl: Dictionary = {
-					"name": name,
-					"product_type_ref": td.get("product_type_ref", -1),
-					"primary_key": td.get("primary_key", []),
-					"indexes": indexes,
-					"constraints": constraints,
-					"sequences": td.get("sequences", []),
-					"table_type": td.get("table_type", { "User": [] }),
-					"table_access": td.get("table_access", { "Public": [] }),
-					"is_event": td.get("is_event", false),
-				}
-				if schedules_by_table.has(src):
-					tbl["schedule"] = { "some": schedules_by_table[src] }
-				elif schedules_by_table.has(name):
-					tbl["schedule"] = { "some": schedules_by_table[name] }
-				schema_tables.append(tbl)
-		elif section.has("Reducers"):
-			for rd: Dictionary in section["Reducers"]:
-				var src: String = rd.get("source_name", "")
-				var name: String = canonical_names.get(src, src)
-				var r: Dictionary = { "name": name, "params": rd.get("params", { }), "ok_return_type": rd.get("ok_return_type", { }) }
-				if lifecycle_map.has(src) or lifecycle_map.has(name):
-					r["lifecycle"] = { "some": lifecycle_map.get(src, lifecycle_map.get(name, "")) }
-				else:
-					r["lifecycle"] = { "some": null }
-				schema_reducers.append(r)
-		elif section.has("Procedures"):
-			for pd: Dictionary in section["Procedures"]:
-				var src: String = pd.get("source_name", "")
-				var name: String = canonical_names.get(src, src)
-				misc_exports.append({ "Procedure": { "name": name, "params": pd.get("params", { }), "return_type": pd.get("return_type", { }) } })
-		elif section.has("Views"):
-			for vd: Dictionary in section["Views"]:
-				var src: String = vd.get("source_name", "")
-				var name: String = canonical_names.get(src, src)
-				# ViewPrimaryKeys keys by view source name, so look up by src (not canonical name).
-				var view_pk_name: String = view_pk_by_view.get(src, "")
-				misc_exports.append({ "View": { "name": name, "return_type": vd.get("return_type", { }), "primary_key_name": view_pk_name } })
-
+					if schedules_by_table.has(src):
+						tbl["schedule"] = { "some": schedules_by_table[src] }
+					elif schedules_by_table.has(canonical):
+						tbl["schedule"] = { "some": schedules_by_table[canonical] }
+					schema_tables.append(tbl)
+			elif section.has("Reducers"):
+				for rd: Dictionary in section["Reducers"]:
+					var src: String = rd.get("source_name", "")
+					var canonical: String = canonical_names.get(src, src)
+					var r: Dictionary = {
+						"name": identifier_prefix + canonical,
+						"wire_name": wire_prefix + canonical,
+						"namespace": module_namespace,
+						"local_name": canonical,
+						"params": rd.get("params", { }),
+						"ok_return_type": rd.get("ok_return_type", { }),
+					}
+					if lifecycle_map.has(src) or lifecycle_map.has(canonical):
+						r["lifecycle"] = { "some": lifecycle_map.get(src, lifecycle_map.get(canonical, "")) }
+					else:
+						r["lifecycle"] = { "some": null }
+					schema_reducers.append(r)
+			elif section.has("Procedures"):
+				for pd: Dictionary in section["Procedures"]:
+					var src: String = pd.get("source_name", "")
+					var canonical: String = canonical_names.get(src, src)
+					misc_exports.append({
+						"Procedure": {
+							"name": identifier_prefix + canonical,
+							"wire_name": wire_prefix + canonical,
+							"namespace": module_namespace,
+							"local_name": canonical,
+							"params": pd.get("params", { }),
+							"return_type": pd.get("return_type", { }),
+						},
+					})
+			elif section.has("Views"):
+				for vd: Dictionary in section["Views"]:
+					var src: String = vd.get("source_name", "")
+					var canonical: String = canonical_names.get(src, src)
+					# ViewPrimaryKeys keys by view source name, so look up by src (not canonical name).
+					var view_pk_name: String = view_pk_by_view.get(src, "")
+					misc_exports.append({
+						"View": {
+							"name": identifier_prefix + canonical,
+							"wire_name": wire_prefix + canonical,
+							"namespace": module_namespace,
+							"local_name": canonical,
+							"return_type": vd.get("return_type", { }),
+							"primary_key_name": view_pk_name,
+						},
+					})
 	schema_types_raw.sort_custom(_sort_by_ty)
 	var parsed_schema: SpacetimeParsedSchema = SpacetimeParsedSchema.new()
 	parsed_schema.module = module_class_prefix(module_name)
@@ -344,7 +610,14 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		if not type_name:
 			SpacetimePlugin.print_err("Invalid schema: Type name not found for type: %s" % type_info)
 			return parsed_schema
-		var type_data: Dictionary = { "name": type_name }
+		# The namespace rides along so codegen can tell a name a submodule brought into the
+		# module from one the module always had — the two collide differently, and only the
+		# first is this feature's to refuse.
+		var type_data: Dictionary = {
+			"name": type_name,
+			"namespace": type_info.get("namespace", PackedStringArray()),
+			"source_name": type_info.get("source_name", type_name),
+		}
 		if _is_gd_native(type_name):
 			_set_gd_native(type_name, type_data)
 
@@ -412,7 +685,10 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 
 			if not type_data.get("is_sum_type"):
 				meta_type_map[type_name] = "u8"
-				var pascal_name: String = type_name if project_enums.has(type_name) else type_name.to_pascal_case()
+				# Matched against the name the module declared: a submodule's enum carries a
+				# namespace prefix in `type_name` that a project enum has no way to spell.
+				var declared_name: String = type_info.get("source_name", type_name)
+				var pascal_name: String = declared_name if project_enums.has(declared_name) else declared_name.to_pascal_case()
 				if project_enums.has(pascal_name):
 					var project_enum: Dictionary = project_enums[pascal_name]
 					var schema_variants: Array[String] = []
@@ -503,16 +779,26 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			SpacetimePlugin.print_err("Table '%s' refers to an invalid or non-struct type (index %s in original schema, name %s)." % [table_name_str, str(ref_idx), original_type_name_for_table if original_type_name_for_table else "N/A"])
 			continue
 
+		# `name` is the identifier every generated class, file and member is spelled from;
+		# `wire_name` is what the server registers the table under and the only spelling it
+		# answers to (subscription SQL, TableUpdate identifiers). They differ only for a
+		# submodule's table, where the wire name carries dots an identifier cannot.
+		var table_wire_name: String = table_info.get("wire_name", table_name_str)
 		var table_data: Dictionary = {
 			"name": table_name_str,
+			"wire_name": table_wire_name,
+			"namespace": table_info.get("namespace", PackedStringArray()),
+			"local_name": table_info.get("local_name", table_name_str),
 			"type_idx": target_type_idx,
 			"is_event": table_info.get("is_event", false),
 		}
 
 		if not target_type_def.has("table_names"):
 			target_type_def.table_names = []
-		target_type_def.table_names.append(table_name_str)
-		target_type_def.table_name = table_name_str
+		# The row type's `table_names` const is read at runtime to map an incoming
+		# TableUpdate to its row script, so these are wire names.
+		target_type_def.table_names.append(table_wire_name)
+		target_type_def.table_name = table_wire_name
 
 		var pk_col_idx: int = -1
 		var primary_key_indices: Array = table_info.get("primary_key", [])
@@ -595,7 +881,12 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		if r_name.is_empty():
 			SpacetimePlugin.print_err("Reducer found with no name: %s" % [reducer_info])
 			continue
-		var reducer_data: Dictionary = { "name": r_name }
+		var reducer_data: Dictionary = {
+			"name": r_name,
+			"wire_name": reducer_info.get("wire_name", r_name),
+			"namespace": reducer_info.get("namespace", PackedStringArray()),
+			"local_name": reducer_info.get("local_name", r_name),
+		}
 
 		var reducer_raw_params: Array = reducer_info.get("params", { }).get("elements", [])
 		var reducer_params: Array[Dictionary] = []
@@ -636,7 +927,12 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				SpacetimePlugin.print_err("Procedure found with no name: %s" % [proc])
 				continue
 			SpacetimePlugin.print_log("Parsing procedure: %s" % proc_name)
-			var proc_data: Dictionary = { "name": proc_name }
+			var proc_data: Dictionary = {
+				"name": proc_name,
+				"wire_name": proc.get("wire_name", proc_name),
+				"namespace": proc.get("namespace", PackedStringArray()),
+				"local_name": proc.get("local_name", proc_name),
+			}
 
 			# Parse params (same as reducer params)
 			var raw_params: Array = proc.get("params", { }).get("elements", [])
@@ -776,14 +1072,17 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			view_pk_name = inherited_pk_name
 			view_pk_idx = inherited_pk_idx
 
+		# Like a table: the row type's `table_names` is read at runtime against what the
+		# server sends, so it takes the view's wire name, dots and all.
+		var view_wire_name: String = view.get("wire_name", name)
 		if return_type.get("table_names", []).is_empty():
 			return_type = {
 				"name": return_type["name"],
 				"struct": return_type["struct"],
 				&"table_names": [
-					"%s" % name,
+					view_wire_name,
 				],
-				&"table_name": "%s" % name,
+				&"table_name": view_wire_name,
 				&"primary_key": view_pk_idx,
 				&"primary_key_name": view_pk_name,
 				&"is_public": [
@@ -792,7 +1091,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			}
 		else:
 			var type_table_list = return_type["table_names"]
-			type_table_list.append(name)
+			type_table_list.append(view_wire_name)
 			return_type["table_names"] = type_table_list
 			var is_public_list = return_type["is_public"]
 			is_public_list.append(true)
@@ -817,6 +1116,9 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		# to an event table.
 		parsed_tables_list.append({
 			"name": name,
+			"wire_name": view_wire_name,
+			"namespace": view.get("namespace", PackedStringArray()),
+			"local_name": view.get("local_name", name),
 			"type_idx": type_index,
 			"primary_key": view_pk_idx,
 			"primary_key_name": view_pk_name,

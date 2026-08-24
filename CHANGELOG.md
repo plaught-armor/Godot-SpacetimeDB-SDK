@@ -5,6 +5,47 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 ## [Unreleased]
 
 ### Added
+- **Namespaced submodules are supported.** A module that registers other modules
+  under namespaces (SpacetimeDB 2.8.1+, authored today only by the TypeScript
+  server SDK) had every submodule's tables, reducers, procedures and views fall
+  out of the generated bindings: the `Submodules` schema section was not read, so
+  a client connected and worked, minus everything a submodule declared.
+
+  The parser now walks the module tree. Each submodule carries a whole nested
+  module def — its own `Typespace`, `Types`, `Tables`, `Reducers` and
+  `ExplicitNames` — and numbers its types from zero, so every `Ref` in a
+  submodule's sections is rewritten into the shared typespace it lands in. Without
+  that, a submodule's `Ref(0)` resolves to the ROOT module's first type and rows
+  decode as whatever sits at the same index up top; the fixture is shaped so this
+  is silent rather than loud (`RootPoint { x: u64 }` against
+  `LibPoint { a: string, b: string }`), and
+  `tests/test_submodule_schema.gd` asserts on the resolved type for that reason.
+
+  The server registers a submodule's defs under a dotted name (`lib.lib_data`,
+  and namespaces nest: `auth.baz.baz_items`), which no GDScript identifier can
+  spell, so each def now carries both: the dotted wire name every subscription,
+  reducer call and runtime lookup uses, and a namespaced identifier for its class,
+  file and member names. Each namespace becomes an inner class on the db, reducers
+  and procedures facades, so a submodule's table is `db.lib.lib_data` and its
+  reducer `reducers.lib.lib_insert(...)`, typed and autocompleting like any other
+  generated member. Private tables follow the module's existing filter, and a name
+  that only collides because of the flattening — two sibling namespaces spelling
+  one class name, a root table named like a namespace, a root table spelled like a
+  submodule table's identifier — fails the run and names the pair, instead of
+  emitting a file Godot cannot parse or one that silently overwrites another.
+
+  A malformed `Submodules` section is reported rather than skipped in silence: a
+  submodule with no namespace or no module definition, two registered under one
+  namespace, and nesting past a depth ceiling all name themselves in the log and
+  mark the parse incomplete, which is what stops codegen pruning the bindings for
+  whatever went missing.
+
+  Verified end-to-end against a live 2.8.2 server with a TypeScript module built
+  for it (`integration-tests/verify_submodule_module` +
+  `verify_live_submodule.gd`): dotted subscription SQL, a submodule and a
+  nested-submodule reducer call, and rows read back through the namespace facades.
+  See [`docs/submodules.md`](docs/submodules.md).
+
 - **Regaining focus fires a stalled reconnect immediately.** A backgrounded app's
   frame loop is throttled (a web export in a background tab) or stopped outright
   (a suspended mobile app), which stalls the `SceneTreeTimer` the reconnect
@@ -990,7 +1031,7 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   absent from `2.8.0`). They remain unsupported here and, as of `2.8.2`, still
   unauthored by any server language but TypeScript; a submodule's tables and
   reducers are invisible to codegen rather than an error. See
-  [`docs/submodules-readiness.md`](docs/submodules-readiness.md).
+  [`docs/submodules.md`](docs/submodules.md).
 
 ## [2.6.0] - 2026-07-28
 

@@ -2,10 +2,13 @@
 #
 # The parser walks the v10 section list twice, and each pass is an if/elif chain with no
 # final else. An unrecognised tag therefore matched nothing and the parse carried on with
-# no trace: `Submodules` (SpacetimeDB 2.8.1+, authored today only by the TypeScript server
-# SDK) made a module's submodule tables and reducers vanish from the generated bindings
-# while the run still reported success — which reads as a codegen bug rather than an
-# unimplemented feature.
+# no trace. `Submodules` was the case that surfaced it — a module's submodule tables and
+# reducers vanished from the generated bindings while the run still reported success, which
+# reads as a codegen bug rather than an unimplemented feature. That section is implemented
+# now, so the cases below use the ones that are still unread: `HttpHandlers` and
+# `HttpRoutes` (both real `RawModuleDefV10Section` variants, neither with a client
+# consumer). A submodule's OWN section list is walked too, so a section only a submodule
+# carries is reported the same way rather than being the one that stays silent.
 #
 # Carrying on is still the right call: the SDK cannot invent a meaning for a section a
 # newer server added, and refusing the whole schema would strand a client on a server it
@@ -29,6 +32,7 @@ func _initialize() -> void:
 	fails += _test_unknown_section_is_recorded()
 	fails += _test_unknown_section_does_not_fail_the_parse()
 	fails += _test_every_unknown_section_is_recorded_in_order()
+	fails += _test_unknown_section_inside_a_submodule_is_recorded()
 	fails += _test_handled_sections_is_locked()
 	fails += _test_handled_sections_covers_what_the_parser_reads()
 
@@ -77,15 +81,16 @@ func _known_sections() -> Array:
 	]
 
 
-# Shaped like the real thing: RawSubmoduleV10 carries a name and its own section list.
-func _submodules_section() -> Dictionary:
+# A section this SDK does not read. Real variant, no client consumer.
+func _unknown_section() -> Dictionary:
+	return { "HttpHandlers": [{ "source_name": "handle_thing" }] }
+
+
+# Shaped like the real thing: RawSubmoduleV10 carries the namespace it is registered under
+# and a whole nested module def. This one's sections include one the SDK does not read.
+func _submodule_with_unknown_section() -> Dictionary:
 	return {
-		"Submodules": [
-			{
-				"name": "lib",
-				"sections": [{ "Tables": [{ "source_name": "lib_row", "product_type_ref": 0 }] }],
-			},
-		],
+		"Submodules": [{ "namespace": "lib", "module": { "sections": [{ "HttpRoutes": [] }] } }],
 	}
 
 
@@ -105,11 +110,11 @@ func _test_known_schema_reports_no_skips() -> int:
 func _test_unknown_section_is_recorded() -> int:
 	var f: int = 0
 	var sections: Array = _known_sections()
-	sections.append(_submodules_section())
+	sections.append(_unknown_section())
 	var schema: SpacetimeParsedSchema = _parse(sections)
 
 	f += _check("one section skipped", schema.skipped_sections.size(), 1)
-	f += _check_s("the skipped section is named", _at(schema.skipped_sections, 0), "Submodules")
+	f += _check_s("the skipped section is named", _at(schema.skipped_sections, 0), "HttpHandlers")
 	# The point of carrying on: everything the SDK does understand is still generated.
 	f += _check("the table still parsed", schema.tables.size(), 1)
 	f += _check("the reducer still parsed", schema.reducers.size(), 1)
@@ -119,7 +124,7 @@ func _test_unknown_section_is_recorded() -> int:
 func _test_unknown_section_does_not_fail_the_parse() -> int:
 	var f: int = 0
 	var sections: Array = _known_sections()
-	sections.append(_submodules_section())
+	sections.append(_unknown_section())
 	var schema: SpacetimeParsedSchema = _parse(sections)
 
 	# `incomplete` gates codegen's pruning pass, so an unimplemented section must NOT set
@@ -132,12 +137,31 @@ func _test_every_unknown_section_is_recorded_in_order() -> int:
 	var f: int = 0
 	var sections: Array = _known_sections()
 	sections.append({ "HttpHandlers": [] })
-	sections.append(_submodules_section())
+	sections.append({ "HttpRoutes": [] })
 	var schema: SpacetimeParsedSchema = _parse(sections)
 
 	f += _check("both sections skipped", schema.skipped_sections.size(), 2)
 	f += _check_s("first in wire order", _at(schema.skipped_sections, 0), "HttpHandlers")
-	f += _check_s("second in wire order", _at(schema.skipped_sections, 1), "Submodules")
+	f += _check_s("second in wire order", _at(schema.skipped_sections, 1), "HttpRoutes")
+	return f
+
+
+# A submodule carries its own section list, and a section only IT carries used to be the
+# one skip nothing could report — the submodule itself was skipped before its sections were
+# ever looked at.
+func _test_unknown_section_inside_a_submodule_is_recorded() -> int:
+	var f: int = 0
+	var sections: Array = _known_sections()
+	sections.append(_submodule_with_unknown_section())
+	var schema: SpacetimeParsedSchema = _parse(sections)
+
+	f += _check("the submodule's own unread section is skipped", schema.skipped_sections.size(), 1)
+	f += _check_s(
+		"the submodule's unread section is named",
+		_at(schema.skipped_sections, 0),
+		"HttpRoutes",
+	)
+	f += _check("Submodules itself is not reported", schema.skipped_sections.has("Submodules"), false)
 	return f
 
 

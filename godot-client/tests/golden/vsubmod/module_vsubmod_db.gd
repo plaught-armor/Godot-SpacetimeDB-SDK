@@ -2,9 +2,35 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name VsubmodModuleDb extends RefCounted
 
-const table_names : Array[StringName] = [&"root_thing"]
+const table_names : Array[StringName] = [&"auth.auth_session", &"auth.baz.baz_items", &"lib.lib_data", &"lib.lib_secret", &"root_thing"]
+
+class AuthNamespace extends RefCounted:
+	class BazNamespace extends RefCounted:
+		var baz_items: VsubmodAuthBazBazItemsTable
+
+		func _init(p_local_db: LocalDatabase) -> void:
+			baz_items = preload('user://golden_gen/vsubmod/tables/vsubmod_auth_baz_baz_items_table.gd').new(p_local_db)
+
+	var auth_session: VsubmodAuthAuthSessionTable
+	var baz: BazNamespace
+
+	func _init(p_local_db: LocalDatabase) -> void:
+		auth_session = preload('user://golden_gen/vsubmod/tables/vsubmod_auth_auth_session_table.gd').new(p_local_db)
+		baz = BazNamespace.new(p_local_db)
+
+class LibNamespace extends RefCounted:
+	var lib_data: VsubmodLibLibDataTable
+	var lib_secret: VsubmodLibLibSecretTable
+
+	func _init(p_local_db: LocalDatabase) -> void:
+		lib_data = preload('user://golden_gen/vsubmod/tables/vsubmod_lib_lib_data_table.gd').new(p_local_db)
+		lib_secret = preload('user://golden_gen/vsubmod/tables/vsubmod_lib_lib_secret_table.gd').new(p_local_db)
 
 var root_thing: VsubmodRootThingTable
+var auth: AuthNamespace
+var lib: LibNamespace
 
 func _init(p_local_db: LocalDatabase) -> void:
 	root_thing = preload('user://golden_gen/vsubmod/tables/vsubmod_root_thing_table.gd').new(p_local_db)
+	auth = AuthNamespace.new(p_local_db)
+	lib = LibNamespace.new(p_local_db)

@@ -2,10 +2,46 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name VsubmodModuleReducers extends RefCounted
 
+class AuthNamespace extends RefCounted:
+	class BazNamespace extends RefCounted:
+		var _client: SpacetimeDBClient
+
+		func _init(p_client: SpacetimeDBClient) -> void:
+			_client = p_client
+		## 0. n: int [br]
+		func baz_insert(n: int) -> SpacetimeDBReducerCall:
+			return _client.call_reducer('auth.baz.baz_insert', [n], [&'u64'], &'')
+
+
+	var _client: SpacetimeDBClient
+	var baz: BazNamespace
+
+	func _init(p_client: SpacetimeDBClient) -> void:
+		_client = p_client
+		baz = BazNamespace.new(p_client)
+	## 0. n: int [br]
+	func auth_insert(n: int) -> SpacetimeDBReducerCall:
+		return _client.call_reducer('auth.auth_insert', [n], [&'u64'], &'')
+
+
+class LibNamespace extends RefCounted:
+	var _client: SpacetimeDBClient
+
+	func _init(p_client: SpacetimeDBClient) -> void:
+		_client = p_client
+	## 0. n: int [br]
+	func lib_insert(n: int) -> SpacetimeDBReducerCall:
+		return _client.call_reducer('lib.lib_insert', [n], [&'u64'], &'')
+
+
 var _client: SpacetimeDBClient
+var auth: AuthNamespace
+var lib: LibNamespace
 
 func _init(p_client: SpacetimeDBClient) -> void:
 	_client = p_client
+	auth = AuthNamespace.new(p_client)
+	lib = LibNamespace.new(p_client)
 ## 0. n: int [br]
 func root_insert(n: int) -> SpacetimeDBReducerCall:
 	return _client.call_reducer('root_insert', [n], [&'u64'], &'')
