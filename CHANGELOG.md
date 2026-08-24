@@ -2,7 +2,13 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
-## [Unreleased]
+## [2.7.0] - 2026-08-24
+
+> **Upgrading:** one signal changed shape. `SpacetimeDBRestAPI.reducer_call_completed`
+> now carries a `Variant` rather than a `Dictionary` — a handler declared
+> `func _on(result: Dictionary)` must widen its parameter to `Variant`. Connecting is
+> unaffected. Nothing else in this release changes a signature; see
+> "A successful REST reducer call is no longer reported as a failure" below for why.
 
 ### Added
 - **Namespaced submodules are supported.** A module that registers other modules
