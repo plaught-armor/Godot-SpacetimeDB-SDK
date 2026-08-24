@@ -35,9 +35,12 @@ in-file and recorded in [`NOTICE`](NOTICE) per Apache-2.0 section 4(b):
 Blackholio's upstream `master` targets SpacetimeDB `master` and uses newer macro
 syntax (`name =` table attribute, bare `ctx.sender`). Force-porting it to a
 released CLI compiles but **breaks gameplay** — `enter_game` rolls back, no
-circles spawn. Pinning to the released `2.5.0` crate here avoids the macro
-churn and matches the CLI this SDK is tested with (2.2.0–2.7.0), keeping the
-generated client bindings aligned.
+circles spawn. Pinning to the released `2.5.0` crate here avoids that macro
+churn, and the module it produces runs unchanged across the whole range this SDK
+is tested against (2.2.0–2.8.2) — verified end to end against a 2.8.2 server, so
+the pin is a floor the module is built at, not a ceiling it is limited to. Bump it
+only for a feature the game actually needs; a newer pin re-opens the macro churn
+above for no gain.
 
 ## Publish & run
 
