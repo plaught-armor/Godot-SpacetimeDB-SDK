@@ -16,7 +16,7 @@ crate-type = ["cdylib"]
 # Pin a released crate version rather than git master, which tracks SpacetimeDB main
 # and can break against a released server. This is the version the module is BUILT
 # against, not the server it runs on: the wasm it produces is verified end to end
-# against servers through 2.8.2. See README.md for why it is not bumped to match.
+# against servers through 2.8.3. See README.md for why it is not bumped to match.
 spacetimedb = "2.5.0"
 log = "0.4"
 rand = "0.8.5"

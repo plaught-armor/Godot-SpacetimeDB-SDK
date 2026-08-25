@@ -121,7 +121,7 @@ const MIN_BUFFER_SIZE: int = 4096
 ## reads back as 0 (the silent drop), so "give it plenty" is the dangerous input here.
 ## [br]
 ## The ceiling is the server's own message limit (`WebSocketConfig::max_message_size` in
-## `crates/client-api`), which no legal SpacetimeDB message exceeds as of 2.8.2 — check
+## `crates/client-api`), which no legal SpacetimeDB message exceeds as of 2.8.3 — check
 ## that before raising this, since a server that lifted its limit would make the SDK the
 ## one refusing the message. A value over the ceiling is CLAMPED rather than defaulted —
 ## a caller asking for more wants as much as possible, and answering that with the 2 MiB

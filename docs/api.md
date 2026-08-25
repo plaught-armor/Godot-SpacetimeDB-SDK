@@ -711,7 +711,7 @@ When `true`, the server waits for each transaction to be durably committed befor
 sending its update (read-after-commit). Higher latency, stronger durability.
 
 The default is `true` because that is what the server applies to a v3 connection
-that does not ask, on every supported server version (2.2.0 through 2.8.2). The
+that does not ask, on every supported server version (2.2.0 through 2.8.3). The
 Rust and C# SDKs send the parameter only when the caller sets it, so this is the
 guarantee they connect with too. This SDK always sends the value, so a change to
 the server's default cannot move an existing game's consistency guarantee.

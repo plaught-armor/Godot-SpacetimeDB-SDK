@@ -51,6 +51,40 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   `tests/test_subscription_survives_reconnect.gd` (41 assertions) covers the restore, the
   cancelled restore, the mid-loop cancellation, the failed re-send, and the
   exhausted-attempts and terminal-disconnect paths.
+- Verified the SDK end-to-end against **SpacetimeDB 2.8.3**; the tested range is
+  now `2.2.0`–`2.8.3`. No code change was needed. The schema is still v10
+  (`?version=11` is rejected: "unknown variant `11`, expected `9` or `10`") and the
+  section set is unchanged. `2.8.3` is almost entirely an unused-dependency sweep —
+  104 files changed, and outside `Cargo.toml`/`Cargo.lock` the only engine source it
+  touches is `crates/core/src/host/scheduler.rs`, which is server-side: an interval
+  schedule now reschedules from the tick it was intended to run at rather than from
+  `Timestamp::now`, so delays stop accumulating, and ticks missed while the module was
+  busy are skipped rather than replayed. Nothing the client sees changes —
+  `crates/client-api-messages` is byte-identical from `v2.7.0` through `v2.8.3`, the
+  schema-definition crates (`crates/lib/src/db/raw_def`, `crates/schema/src/def.rs`,
+  `crates/sats`) are untouched, and `crates/client-api` loses only unused dependencies,
+  no route. Bindings regenerated from a live 2.8.3 server are byte-identical to the
+  committed ones. Every uncompressed wire fixture recaptured from a 2.8.3 server has
+  the same byte length as the 2.7.0 capture, differing only in identities, connection
+  ids, request ids and timestamps; the compressed snapshots shift a few bytes (gzip
+  7713 → 7733, brotli 6866 → 6873) because the compressor tracks those same varying
+  bytes, and both still decode to the same 600-row snapshot. Offline suite 123/123
+  files; live broadcast 4/4, index 27/27, abnormal-drop reconnect 19/19, Blackholio
+  example smoke 8/8, wire-fixture decode 105/105 over the freshly captured bytes. Live
+  suites re-run with Rust modules built against the `2.8.3` bindings and the TypeScript
+  module against npm `spacetimedb@2.8.3`: types 6/6, behavior 15/15, enum-with-payload
+  1/1, anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1, submodules
+  8/8.
+- Recorded why a schema recapture is never byte-identical to the committed fixture even
+  on an unchanged server: `ModuleDef.types` is a `HashMap` upstream, so every `Types`
+  section carries Rust's per-process hash seed — measured stable across three republishes
+  within one server process and different on each of three restarts. The parser already
+  sorts `Types` by `ty` and the table/reducer/procedure lists by name against exactly
+  this, and regenerating `vsubmod` under two different orders gives byte-identical `.gd`
+  output (only the gitignored `codegen_debug` dump moves), so bindings and goldens are
+  unaffected. The 2.8.3 recapture of `godot-client/tests/fixtures/vsubmod.json` equals the
+  committed 2.8.2 capture under an order-insensitive comparison, so the committed bytes
+  were kept. See [`docs/submodules.md`](docs/submodules.md).
 
 ## [2.7.0] - 2026-08-24
 

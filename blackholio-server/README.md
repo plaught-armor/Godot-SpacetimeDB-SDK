@@ -37,7 +37,7 @@ syntax (`name =` table attribute, bare `ctx.sender`). Force-porting it to a
 released CLI compiles but **breaks gameplay** — `enter_game` rolls back, no
 circles spawn. Pinning to the released `2.5.0` crate here avoids that macro
 churn, and the module it produces runs unchanged across the whole range this SDK
-is tested against (2.2.0–2.8.2) — verified end to end against a 2.8.2 server, so
+is tested against (2.2.0–2.8.3) — verified end to end against a 2.8.3 server, so
 the pin is a floor the module is built at, not a ceiling it is limited to. Bump it
 only for a feature the game actually needs; a newer pin re-opens the macro churn
 above for no gain.
