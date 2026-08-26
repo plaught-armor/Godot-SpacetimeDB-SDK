@@ -27,6 +27,9 @@ jobs:
             exit 1
           fi
 
+      - name: Verify package contents
+        run: .github/check-package-contents.sh
+
       - name: Package addon
         run: |
           cd godot-client

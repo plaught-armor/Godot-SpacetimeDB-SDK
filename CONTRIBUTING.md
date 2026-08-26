@@ -52,6 +52,25 @@ git config core.hooksPath .githooks
 To push without running the suite (for a docs-only change, say), use
 `git push --no-verify`.
 
+## What ships in a release
+
+A release packages `godot-client/addons/` as it stands in a fresh checkout, so anything
+tracked under that path reaches users' projects. Development files belong outside it —
+`godot-client/tests/` for tests, benches, fuzzers and codegen goldens. This is not a
+style preference: v2.0.0 through v2.2.0 shipped the whole suite inside the addon, 100
+scripts in three releases, because nothing checked.
+
+`.github/check-package-contents.sh` is that check. It runs in CI on every pull request
+and again before a tag is packaged, and you can run it yourself from the repo root:
+
+```sh
+.github/check-package-contents.sh
+```
+
+It refuses a development file or directory in the package, a second addon beside
+`SpacetimeDB`, a file kind an addon is not made of, a missing `plugin.cfg` or `LICENSE`,
+and a script without its `.uid` sidecar.
+
 ## Codegen golden tests
 
 `test_codegen_golden.gd` locks the exact GDScript text that codegen emits. It

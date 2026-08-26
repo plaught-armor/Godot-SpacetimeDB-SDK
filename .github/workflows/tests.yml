@@ -23,6 +23,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Cheap and Godot-free, so it fails a PR before the toolchain download. Guards
+      # what `release.yml` will package — see the script's header.
+      - name: Verify release package contents
+        run: .github/check-package-contents.sh
+
       - name: Cache Godot binary
         id: godot-cache
         uses: actions/cache@v4
