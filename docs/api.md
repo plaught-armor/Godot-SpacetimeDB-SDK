@@ -1674,15 +1674,19 @@ pub enum BowOptions {
 
 This will codegen the following for `CharacterClass`: ![image](https://github.com/user-attachments/assets/cdd5cddd-8a15-4da2-a0bb-ef0a1e446883)
 
-There are static functions to create specific enum variants in godot as well as getters to return the variant as the specific type. The following is how to create and match through and enum:
+There are static functions to create specific enum variants in Godot, as well as getters
+that return the variant as its specific type. The variant tags live on the generated
+class's inner `Options` enum, and `MyModuleTypes` is the module's generated type registry
+(a global `class_name`, not a member of the module client). The following is how to create
+an enum value and match on it:
 
 ```gdscript
-var cc: MyModuleCharacterClass = SpacetimeDB.MyModule.Types.CharacterClass.create_warrior([1, 2, 3, 4, 5])
+var cc: MyModuleCharacterClass = MyModuleTypes.CharacterClass.create_warrior([1, 2, 3, 4, 5])
 match cc.value:
-	cc.Warrior:
-		var warrior: Array[int] = cc.get_warrior()
-		var first: int = warrior[0]
-		print_debug("Warrior:", first)
+    cc.Options.Warrior:
+        var warrior: Array[int] = cc.get_warrior()
+        var first: int = warrior[0]
+        print_debug("Warrior:", first)
 ```
 
 With this you will have full support for code completion due to strong types being returned. ![image](https://github.com/user-attachments/assets/ddfeab8b-1423-41b0-84ca-52af19c96015)
