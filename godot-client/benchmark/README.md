@@ -37,8 +37,9 @@ A/B a deserializer change: run on two branches, compare `PARSE-ONLY`.
 reproducible offline. To re-capture (needs a server with Blackholio + bot load):
 
 ```sh
-spacetime start &
-spacetime publish -p <repo>/SpacetimeDB/demo/Blackholio/server-rust -s http://127.0.0.1:3000 blackholio --yes
+spacetime start --data-dir ~/.local/share/spacetime-blackholio &
+# The vendored, version-pinned module — upstream master's macro syntax breaks gameplay.
+(cd ../blackholio-server && ./publish.sh)   # run from godot-client/, like the commands below
 # bot load in one process:
 <godot> --headless --path . --script res://benchmark/bench_load.gd -- 50 &
 # capture (compression NONE so the fixture replays without a decompress step):

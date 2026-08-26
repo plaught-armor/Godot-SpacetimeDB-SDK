@@ -62,16 +62,42 @@ class_name SpacetimeAuthResult extends RefCounted:
     func is_successful() -> bool
 ```
 
-Exported knobs (all optional, sensible defaults):
+### Exported knobs
 
-| export | default | purpose |
-|---|---|---|
-| `token_url` | `https://auth.spacetimedb.com/oidc/token` | override for a self-hosted SpacetimeAuth |
-| `request_timeout_seconds` | `15.0` | bounds a network hang (DNS/TLS stall); must be between **`0.05` and `120.0` seconds** — `exchange()` refuses `0` (which `HTTPRequest` reads as "no timeout"), a negative value, `NAN` and any sub-frame value, and clamps `INF` or anything over `120.0` down to `120.0`, since a huge finite timeout wedges the same way an infinite one does |
-| `max_attempts` | `4` | transient failures (transport error / 5xx) retry with exponential backoff; a 2xx/4xx is authoritative and never retried. Clamped to `10` — each attempt costs a request timeout plus a backoff delay and the exchange cannot be cancelled |
-| `base_retry_delay_seconds` / `max_retry_delay_seconds` | `0.5` / `4.0` | backoff bounds, resolved once per exchange: under `0.05` s (including `0`, negatives, `NAN`) falls back to the default, over `60.0` s (including `INF`) is clamped |
-| `redact_fields` | `["id_token","access_token","refresh_token","token","code","ticket","client_secret"]` | field **values** scrubbed from any error body echoed to the log |
-| `debug_mode` | `false` | set `true` to log the request/response summary |
+All optional; the defaults are sane for the hosted endpoint.
+
+| export | default |
+|---|---|
+| `token_url` | `https://auth.spacetimedb.com/oidc/token` |
+| `request_timeout_seconds` | `15.0` |
+| `max_attempts` | `4` |
+| `base_retry_delay_seconds` | `0.5` |
+| `max_retry_delay_seconds` | `4.0` |
+| `redact_fields` | see below |
+| `debug_mode` | `false` |
+
+**`token_url`** — override for a self-hosted SpacetimeAuth.
+
+**`request_timeout_seconds`** — bounds a network hang (DNS/TLS stall). Must land
+between `0.05` and `120.0` seconds. `exchange()` refuses `0` (which `HTTPRequest`
+reads as "no timeout"), negative values, `NAN`, and any sub-frame value; `INF` or
+anything above `120.0` is clamped to `120.0`, since a huge finite timeout wedges
+the same way an infinite one does.
+
+**`max_attempts`** — transient failures (transport error, 5xx) retry with
+exponential backoff; a 2xx or 4xx is authoritative and never retried. Clamped to
+`10`, because each attempt costs a request timeout plus a backoff delay and the
+exchange cannot be cancelled.
+
+**`base_retry_delay_seconds` / `max_retry_delay_seconds`** — backoff bounds,
+resolved once per exchange. Under `0.05` s (including `0`, negatives, `NAN`)
+falls back to the default; over `60.0` s (including `INF`) is clamped.
+
+**`redact_fields`** — field *values* scrubbed from any error body echoed to the
+log. Defaults to `["id_token", "access_token", "refresh_token", "token", "code",
+"ticket", "client_secret"]`.
+
+**`debug_mode`** — set `true` to log the request/response summary.
 
 **The node owns its own `HTTPRequest`** — you just add it to the tree and
 `await`. It must be inside the scene tree before you call `exchange()`.
@@ -337,15 +363,27 @@ kept out of logs.
 
 ## Troubleshooting
 
-| symptom | cause / fix |
-|---|---|
-| `client_id empty` | `client_id` arg was blank — load it from settings before calling. |
-| `SpacetimeAuth node must be inside the scene tree` | call `add_child(auth)` **before** `exchange()`. |
-| `transport error: CANT_RESOLVE / CANT_CONNECT` | no network / DNS to `auth.spacetimedb.com`; the node already retried `max_attempts`. |
-| `HTTP 400/401` with `allowed_app_ids` / grant errors | Steam app not registered with SpacetimeAuth for the grant, or wrong `steam_app_id` / `client_id`. Body is logged (credentials redacted). |
-| `response missing id_token` | endpoint returned 200 but no `id_token` — check the grant config server-side. |
-| ticket never arrives | `getAuthTicketForWebApi` identity must be exactly `"spacetimeauth"`; ensure Steam is running and `loggedOn()`. |
-| token in logs | append your credential field (e.g. `"steam_ticket"`) to `auth.redact_fields`. |
+**`client_id empty`** — the `client_id` argument was blank; load it from
+settings before calling.
+
+**`SpacetimeAuth node must be inside the scene tree`** — call `add_child(auth)`
+*before* `exchange()`.
+
+**`transport error: CANT_RESOLVE / CANT_CONNECT`** — no network or DNS to
+`auth.spacetimedb.com`. The node already retried `max_attempts` times.
+
+**`HTTP 400/401` with `allowed_app_ids` or grant errors** — the Steam app is not
+registered with SpacetimeAuth for this grant, or `steam_app_id` / `client_id` is
+wrong. The response body is logged with credentials redacted.
+
+**`response missing id_token`** — the endpoint returned 200 without an
+`id_token`; check the grant configuration server-side.
+
+**The ticket never arrives** — the `getAuthTicketForWebApi` identity must be
+exactly `"spacetimeauth"`, and Steam must be running with `loggedOn()` true.
+
+**A credential shows up in the logs** — append its field name (e.g.
+`"steam_ticket"`) to `auth.redact_fields`.
 
 ---
 

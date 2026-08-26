@@ -13,7 +13,7 @@ the generated module autoload).
 
 You need a local SpacetimeDB running the Blackholio module named `blackholio`.
 
-1. **Install the SpacetimeDB CLI** (this example was verified with **2.7.0**):
+1. **Install the SpacetimeDB CLI** (this example was last verified against a **2.8.3** server):
    <https://spacetimedb.com/install>
 
 2. **Start a local server** (keep it running):
@@ -46,7 +46,7 @@ You need a local SpacetimeDB running the Blackholio module named `blackholio`.
 
 ## Run the client
 
-Open `godot-client/` in Godot 4.7 and press **F5**. Enter a name to spawn.
+Open `godot-client/` in Godot 4.6+ and press **F5**. Enter a name to spawn.
 Controls: mouse to move, **Space** to split, **S** to suicide, **Q** to lock aim.
 
 ## Authenticating with SpacetimeAuth (optional)

@@ -90,15 +90,54 @@ no data to carry beyond what the reducer handle already gives you.
 Considered during the parity audit, decided against. Revisit only when a concrete
 need shows up — listed with the trigger that would justify reopening.
 
-| Skipped | Why | Reopen when |
-|---|---|---|
-| **Sliding-window / percentile latency** (C# keeps a rolling time window) | All-time min/max/avg + last answers "is this slow." Windowed percentiles need a per-category ring buffer — real complexity for a diagnostic-only payoff. | Profiling needs p95/p99, not just min/max. |
-| **Exclusive / unbounded `filter_range` flags** (a `Range` POD with included/excluded/unbounded bounds, like the TS SDK) | The inclusive `filter_range` plus four one-sided bounds express every real query shape with zero per-call allocation. A bounds object adds an API surface and an alloc nobody asked for. | A query genuinely needs a half-open compound bound the four accessors can't compose. |
-| **Per-reducer-name latency breakdown** | Category-level stats answer "reducers slow vs procedures slow." Per-name needs a name→tracker map that grows unboundedly with the reducer set. | One specific reducer needs isolating — then key a map inside the reducer category. |
-| **Stats enable/disable toggle** | Cost is ~2 dict ops + one `Time.get_ticks_usec` per request — trivial against the network round-trip. A flag adds config surface to save nothing measurable. Always-on, like the C# SDK. | A measured hot path shows the tracking itself on a profile. |
-| **`EventContext` callback argument** (Rust/C#/TS pass a context to row callbacks) | The only data it would carry that the SDK doesn't already expose is caller identity — which isn't on the v2/v3 wire (see above). The remaining value (db / reducers access inside a callback) is already reachable via the module client and the `SpacetimeDB` autoload, and adding the arg is a breaking change to every callback signature. | A v4 protocol re-adds caller identity to `TransactionUpdate`. |
-| **Fluent connection builder** (`DbConnection.builder().withUri()...`) | `SpacetimeDBConnectionOptions` (a `Resource`) covers the same surface and is the idiomatic Godot shape — editor-inspectable, savable. A fluent builder would be a parallel API for cosmetics. | — (idiomatic choice, unlikely to reopen). |
-| **Typed column query DSL** (`tables.user.where(r => r.online.eq(true))`) | `SpacetimeDBQuery` (`.table().where().to_sql()`) already builds validated SQL. A typed-column DSL fights GDScript's lack of generics for a marginal ergonomic gain. | GDScript gains the type machinery to make it compile-checked, or query typos become a real reported pain. |
+**Sliding-window / percentile latency** (C# keeps a rolling time window). All-time
+min/max/avg plus last answers "is this slow." Windowed percentiles need a per-category
+ring buffer — real complexity for a diagnostic-only payoff.
+
+*Reopen when* profiling needs p95/p99, not just min/max.
+
+**Exclusive / unbounded `filter_range` flags** (a `Range` POD with included, excluded and
+unbounded bounds, like the TS SDK). The inclusive `filter_range` plus four one-sided
+bounds express every real query shape with zero per-call allocation. A bounds object adds
+an API surface and an allocation nobody asked for.
+
+*Reopen when* a query genuinely needs a half-open compound bound the four accessors
+cannot compose.
+
+**Per-reducer-name latency breakdown.** Category-level stats answer "reducers slow vs
+procedures slow." Per-name needs a name-to-tracker map that grows unboundedly with the
+reducer set.
+
+*Reopen when* one specific reducer needs isolating — then key a map inside the reducer
+category.
+
+**Stats enable/disable toggle.** Cost is roughly two dictionary operations plus one
+`Time.get_ticks_usec` per request — trivial against the network round-trip. A flag adds
+config surface to save nothing measurable. Always-on, like the C# SDK.
+
+*Reopen when* a measured hot path shows the tracking itself on a profile.
+
+**`EventContext` callback argument** (Rust, C# and TS pass a context to row callbacks).
+The only data it would carry that the SDK does not already expose is caller identity,
+which is not on the v2/v3 wire (see above). The remaining value — db and reducer access
+inside a callback — is already reachable via the module client and the `SpacetimeDB`
+autoload, and adding the argument is a breaking change to every callback signature.
+
+*Reopen when* a v4 protocol re-adds caller identity to `TransactionUpdate`.
+
+**Fluent connection builder** (`DbConnection.builder().withUri()...`).
+`SpacetimeDBConnectionOptions` (a `Resource`) covers the same surface and is the
+idiomatic Godot shape — editor-inspectable and savable. A fluent builder would be a
+parallel API for cosmetics.
+
+*Not expected to reopen* — an idiomatic choice.
+
+**Typed column query DSL** (`tables.user.where(r => r.online.eq(true))`).
+`SpacetimeDBQuery` (`.table().where().to_sql()`) already builds validated SQL. A
+typed-column DSL fights GDScript's lack of generics for a marginal ergonomic gain.
+
+*Reopen when* GDScript gains the type machinery to make it compile-checked, or query
+typos become a real reported pain.
 
 ## Data-shape choices
 

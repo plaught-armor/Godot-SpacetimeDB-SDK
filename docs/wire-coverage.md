@@ -82,8 +82,8 @@ looks for the row.
 
 Recovery is the one path a fixture cannot prove. What matters is not the bytes
 but what the client does with them: clear the cache, re-subscribe under fresh
-query ids, end the handles the caller was holding, and start accepting reducer
-calls again. So it is covered by a live harness instead — the socket is dropped
+query ids, carry the caller's handles across the outage, and start accepting
+reducer calls again. So it is covered by a live harness instead — the socket is dropped
 underneath a connected client and the recovery is asserted end to end:
 
 ```sh
@@ -91,8 +91,8 @@ cd godot-client && <godot> --headless --path . res://tests/_live_reconnect_check
 echo $?   # number of failed checks
 ```
 
-It passes today: the cache refills, the pre-drop handle reports `ended`, and a
-reducer call succeeds afterwards. It also writes `wire_resubscribe.bin`, so the
+It passes today: the cache refills, the pre-drop handle is suspended for the
+outage and re-applied rather than ended, and a reducer call succeeds afterwards. It also writes `wire_resubscribe.bin`, so the
 offline suite keeps a replayable copy of the snapshot the server sends a
 re-subscribing client — with any frame carrying a token dropped rather than
 captured and scrubbed.

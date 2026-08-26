@@ -27,7 +27,7 @@ Connects to a SpacetimeDB database.
 | database_name | The name or identity of the remote database. |
 | options | Client connection options, see the [`SpacetimeDBConnectionOptions`](#spacetimedbconnectionoptions-resource) documentation. |
 
-Failures are reported through [`connection_error`](#connection_error-signal), never
+Failures are reported through [`connection_error`](#spacetimedbclient-signals), never
 before this method returns — including the ones decided without touching the network,
 such as a token it refuses. Wiring the handlers first is still the documented order, but
 a game that connects and then wires them on the following lines does not lose the
@@ -118,7 +118,7 @@ already pending are also what a reconnect would re-send. A failed handle carries
 
 See the [SpacetimeDB SQL Reference](https://spacetimedb.com/docs/sql#subscriptions) for information on the queries SpacetimeDB supports.
 
-#### `unsubscribe()` method
+#### `SpacetimeDBClient.unsubscribe()` method
 
 ```gdscript
 class SpacetimeDBClient:
@@ -169,7 +169,7 @@ class SpacetimeDBClient:
 | reducer_name   | The name of the reducer to call.                                 |
 | args           | The arguments to pass to the reducer.                            |
 | types          | The BSATN types of the arguments to pass to the reducer.         |
-| ret_bsatn_type | Optional BSATN type for decoding the reducer's ok return value via [`decode()`](#decode-method). Empty for reducers that return nothing. |
+| ret_bsatn_type | Optional BSATN type for decoding the reducer's ok return value via [`decode()`](#spacetimedbreducercalldecode-method). Empty for reducers that return nothing. |
 
 Call a reducer with `call_reducer(reducer_name, args, types)` a [`SpacetimeDBReducerCall`](#spacetimedbreducercall-class) instance is returned which contains the request id or an error.
 
@@ -246,7 +246,7 @@ class SpacetimeDBClient:
 
 Waits for the procedure call response and returns the raw BSATN-encoded return bytes, or returns an empty `PackedByteArray` if there is an error or it times out.
 
-### Signals
+### `SpacetimeDBClient` signals
 
 | Signal | Description |
 | --- | --- |
@@ -282,8 +282,10 @@ Spawn per `on_insert` and free per `on_delete` and this takes care of itself. Ke
 spawn by primary key: a row that survives the reconnect arrives as an insert again, not an
 update.
 
-The wipe is the last step of the reconnect preparation, so a subscription handle's `end`
-signal fires *before* it — a handler there still sees the pre-drop rows, and the
+The wipe is the last step of the reconnect preparation. Handles the reconnect carries
+are already suspended by the time it runs, so no `end` fires for them; a handle the
+reconnect is *not* carrying — one whose unsubscribe was in flight when the socket died —
+is ended just before the wipe, so an `end` handler still sees the pre-drop rows and the
 `row_deleted` run for those same rows follows immediately after.
 
 ## Generated `ModuleClient` class
@@ -465,7 +467,7 @@ fires. Use it to read pre-delete state that `on_delete` could no longer see.
 
 Call `remove_on_before_delete` to un-register a previously registered listener.
 
-#### Query helpers
+#### `ModuleClient` query helpers
 
 ```gdscript
 class ModuleTable:
@@ -589,7 +591,7 @@ var query: String = SpacetimeDBQuery.table("players").where("online", true).to_s
 # => "SELECT * FROM players WHERE online = true"
 ```
 
-#### Static constructors
+### Static constructors
 
 ```gdscript
 class SpacetimeDBQuery:
@@ -597,7 +599,7 @@ class SpacetimeDBQuery:
     static func from(t: _ModuleTable) -> SpacetimeDBQuery
 ```
 
-#### WHERE conditions
+### WHERE conditions
 
 All conditions are AND'd together. Field names are validated to prevent SQL injection (alphanumeric and underscores only).
 
@@ -624,14 +626,14 @@ Neither emits `IN (...)`: SpacetimeDB's SQL has no `IN` operator. Its expression
 emitted `IN` came back as an unsupported expression and failed the whole query set. The
 practical ceiling on list length is the server's expression-recursion guard (1600).
 
-#### Output
+### Output
 
 ```gdscript
 class SpacetimeDBQuery:
     func to_sql() -> String
 ```
 
-#### Helpers
+### Helpers
 
 ```gdscript
 # Format a PackedByteArray identity for use in queries
@@ -644,7 +646,7 @@ SpacetimeDBQuery.identity(bytes: PackedByteArray) -> String
 
 Holds and listens to the websocket connection to the SpacetimeDB server.
 
-#### Signals
+### `SpacetimeDBConnection` signals
 
 | Signal | Description |
 | --- | --- |
@@ -655,7 +657,7 @@ Holds and listens to the websocket connection to the SpacetimeDB server.
 
 The connection also emits `message_received`, `total_messages`, and `total_bytes` — internal transport/monitor plumbing; prefer the `SpacetimeDBClient` signals for application code.
 
-#### `CompressionPreference` enum
+### `CompressionPreference` enum
 
 ```gdscript
 class SpacetimeDBConnection:
@@ -674,7 +676,7 @@ The compression preference for the connection.
 
 **Inherits:** Resource
 
-#### `compression` property
+### `compression` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -683,7 +685,7 @@ class SpacetimeDBConnectionOptions:
 
 The [`CompressionPreference`](#compressionpreference-enum) for the connection.
 
-#### `light_mode` property
+### `light_mode` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -700,7 +702,7 @@ is nothing but its query-set row deltas, so every update a v3 client receives is
 light. The parameter is still sent, so a later protocol that gives it meaning finds
 games that already set it; it does not change bandwidth today.
 
-#### `confirmed_reads` property
+### `confirmed_reads` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -720,7 +722,7 @@ Set `false` to trade durability for latency: updates then arrive as soon as the
 transaction commits in memory, so a crash before that write reaches disk can
 retract rows the client already displayed.
 
-#### `threading` property
+### `threading` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -729,7 +731,7 @@ class SpacetimeDBConnectionOptions:
 
 Whether to use threading for processing database update messages.
 
-#### `one_time_token` property
+### `one_time_token` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -738,7 +740,7 @@ class SpacetimeDBConnectionOptions:
 
 When `true` (the default), the connection requests a fresh anonymous-style token each time instead of reusing a persisted one. Set to `false` (paired with `save_token`) to resume the same identity across runs.
 
-#### `save_token` property
+### `save_token` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -774,7 +776,7 @@ its own `token_save_path`, or supply the token yourself.
 
 Give a client its own `token_save_path` to keep it out of the shared file entirely.
 
-#### `token` property
+### `token` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -792,7 +794,7 @@ applies to every token source — this property, one reloaded from `token_save_p
 the REST identity endpoint, a `SpacetimeAuth` `id_token`, and the one in the server's
 IdentityToken message. Normal tokens (JWTs, opaque base64url strings) are unaffected.
 
-#### `debug_mode` property
+### `debug_mode` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -801,16 +803,16 @@ class SpacetimeDBConnectionOptions:
 
 Enables verbose logging.
 
-#### `heartbeat_interval_seconds` property
+### `heartbeat_interval_seconds` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
     var heartbeat_interval_seconds: float = 15.0
 ```
 
-Interval at which the client sends WebSocket pings to keep the socket alive and surface a dead/half-open connection. A main-thread stall longer than this makes Godot's `WebSocketPeer` miss a pong and close the socket — detected and surfaced as [`connection_stalled`](#signals-1). Set to `0.0` to disable keepalive.
+Interval at which the client sends WebSocket pings to keep the socket alive and surface a dead/half-open connection. A main-thread stall longer than this makes Godot's `WebSocketPeer` miss a pong and close the socket — detected and surfaced as [`connection_stalled`](#spacetimedbconnection-signals). Set to `0.0` to disable keepalive.
 
-#### `connect_timeout_seconds` property
+### `connect_timeout_seconds` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -834,7 +836,7 @@ harden the connect budget.
 
 Set to `0.0` to disable the timeout and wait indefinitely.
 
-#### `inbound_buffer_size` property
+### `inbound_buffer_size` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -852,7 +854,7 @@ that the resubscribe after an auto-reconnect will meet the same message. The
 reconnect still runs: one oversized transaction update is survivable, and only your
 game knows whether its subscription reproduces the payload.
 
-#### `outbound_buffer_size` property
+### `outbound_buffer_size` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -883,7 +885,7 @@ while earlier ones sit unsent because the remote is not reading — measured, a 
 stopped reading took 7 × 512 KiB before the 8th was refused. That failure is transient, and
 is reported with a different error saying so.
 
-#### `set_all_buffer_size()` method
+### `set_all_buffer_size()` method
 
 Sets the inbound and outbound buffer sizes:
 
@@ -896,7 +898,7 @@ class SpacetimeDBConnectionOptions:
 | ---- | ------------------------------------------------------- |
 | size | The size of the inbound and outbound buffers, in bytes. |
 
-#### `monitor_mode` property
+### `monitor_mode` property
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -905,7 +907,7 @@ class SpacetimeDBConnectionOptions:
 
 When enabled, registers custom Godot Performance monitors for tracking network statistics (packets/bytes sent and received per second and total).
 
-#### Frame-budget and drain options
+### Frame-budget and drain options
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -919,14 +921,35 @@ class SpacetimeDBConnectionOptions:
 
 | Name | Description |
 | --- | --- |
-| `frame_budget_us` | Per-frame time budget in microseconds for applying parsed server messages. Higher drains bursts (initial subscription, mass updates) faster at the cost of frame time; lower keeps frames smoother but backlogs longer. When `auto_tune_frame_budget` is enabled this is the seed value. |
-| `max_messages_per_frame` | Hard ceiling on messages applied per frame, regardless of the time budget. Safety backstop against unbounded drain. |
-| `auto_tune_frame_budget` | When `true`, `frame_budget_us` is auto-tuned at runtime by an fps feedback loop: ramp up while a backlog drains and fps stays healthy, back off when fps dips. |
+| `frame_budget_us` | Per-frame time budget, in microseconds, for applying parsed server messages. The seed value when auto-tuning is on. |
+| `max_messages_per_frame` | Hard ceiling on messages applied per frame, regardless of the time budget. A backstop against unbounded drain. |
+| `auto_tune_frame_budget` | When `true`, `frame_budget_us` is auto-tuned at runtime by an fps feedback loop. |
 | `frame_budget_min_us` | Lower clamp for the auto-tuned budget, in microseconds. |
 | `frame_budget_max_us` | Upper clamp for the auto-tuned budget, in microseconds. |
-| `auto_tune_target_fps` | Target fps the auto-tuner defends. `0` resolves it: the engine's frame cap (`Engine.max_fps`) once the game is actually reaching it, otherwise `Engine.physics_ticks_per_second`. The tuner reads the *rendered* frame rate, so the target has to be a rendered rate too — a game capped at 30 fps with 60 Hz physics would otherwise read as permanently below target and drive the drain budget to its floor. A cap the game never reaches is ignored, since capping above what the hardware delivers (240 on a machine rendering 60) would do the same thing in reverse. Set this explicitly when the cap comes from vsync rather than `max_fps`, or when capping far below the physics rate for power — down there the rendered rate no longer says anything about what the drain costs, so lower `frame_budget_max_us` or turn `auto_tune_frame_budget` off instead. |
+| `auto_tune_target_fps` | Target fps the auto-tuner defends. `0` resolves it from the engine. |
 
-#### Reconnection options
+**Choosing `frame_budget_us`.** Higher drains bursts (an initial subscription, a mass
+update) faster at the cost of frame time; lower keeps frames smoother but backlogs
+longer.
+
+**How the auto-tuner behaves.** It ramps the budget up while a backlog is draining and
+fps stays healthy, and backs off when fps dips, staying within `frame_budget_min_us` and
+`frame_budget_max_us`.
+
+**How `auto_tune_target_fps = 0` resolves.** It picks the engine's frame cap
+(`Engine.max_fps`) once the game is actually reaching it, and `Engine.physics_ticks_per_second`
+otherwise. The tuner reads the *rendered* frame rate, so the target has to be a rendered
+rate too: a game capped at 30 fps with 60 Hz physics would otherwise read as permanently
+below target and drive the drain budget to its floor. A cap the game never reaches is
+ignored, since capping above what the hardware delivers (240 on a machine rendering 60)
+does the same thing in reverse.
+
+Set the target explicitly when the cap comes from vsync rather than `max_fps`. When
+capping far below the physics rate to save power, the rendered rate no longer says
+anything about what the drain costs — lower `frame_budget_max_us` or turn
+`auto_tune_frame_budget` off instead.
+
+### Reconnection options
 
 ```gdscript
 class SpacetimeDBConnectionOptions:
@@ -942,14 +965,28 @@ class SpacetimeDBConnectionOptions:
 
 | Name | Description |
 | --- | --- |
-| `auto_reconnect` | Whether to automatically reconnect on disconnect. Must be `true` for reconnection to work. |
-| `max_reconnect_attempts` | Maximum number of reconnection attempts. Set to 0 for infinite retries. |
-| `reconnect_initial_delay` | Initial delay before the first reconnection attempt, in seconds. |
+| `auto_reconnect` | Whether to reconnect automatically on disconnect. Must be `true` for any of the rest to apply. |
+| `max_reconnect_attempts` | Maximum reconnection attempts. `0` for infinite retries. |
+| `reconnect_initial_delay` | Delay before the first reconnection attempt, in seconds. |
 | `reconnect_max_delay` | Maximum delay between reconnection attempts, in seconds. |
 | `reconnect_backoff_multiplier` | Multiplier applied to the delay after each failed attempt. |
-| `reconnect_jitter_fraction` | Random jitter applied to each delay (0.0 = none, 1.0 = full delay range). Prevents thundering herd on reconnect. |
-| `reconnect_on_app_resume` | When `true` (default), regaining application focus fires a reconnect attempt that is still waiting out its backoff. A backgrounded app's frame loop is throttled (web tab) or stopped (suspended mobile app), which stalls the `SceneTreeTimer` the backoff runs on, so a drop that happens off-screen would otherwise sit unreconnected well after the player is back. The attempt is re-scheduled under its own number, so `max_reconnect_attempts` still bounds the cycle. |
-| `process_while_paused` | When `true` (default), the client and its children keep processing while `get_tree().paused` is set. The socket is polled from `_physics_process`, and that poll is what sends the keepalive ping, reads inbound frames and flushes outbound ones — on the default process mode a paused game stops polling entirely, the server closes the connection after its 30-second idle timeout, and a reducer called while paused is queued but never sent. The cost of leaving this on is that row callbacks keep arriving while the game is paused, which matches the server's world continuing to move. Set it to `false` to freeze the SDK with the game. |
+| `reconnect_jitter_fraction` | Random jitter applied to each delay (`0.0` none, `1.0` full delay range). Prevents a thundering herd. |
+| `reconnect_on_app_resume` | When `true` (default), regaining focus fires a pending attempt immediately. |
+| `process_while_paused` | When `true` (default), the client keeps processing while the scene tree is paused. |
+
+**`reconnect_on_app_resume`.** A backgrounded app's frame loop is throttled (a web tab)
+or stopped (a suspended mobile app), which stalls the `SceneTreeTimer` the backoff runs
+on. Without this, a drop that happens off-screen would sit unreconnected well after the
+player is back. The re-fired attempt is scheduled under its own number, so
+`max_reconnect_attempts` still bounds the cycle.
+
+**`process_while_paused`.** The socket is polled from `_physics_process`, and that poll
+is what sends the keepalive ping, reads inbound frames and flushes outbound ones. On the
+default process mode a paused game stops polling entirely: the server closes the
+connection after its 30-second idle timeout, and a reducer called while paused is queued
+but never sent. The cost of leaving this on is that row callbacks keep arriving while the
+game is paused, which matches the server's world continuing to move. Set it to `false` to
+freeze the SDK with the game.
 
 ## `SpacetimeDBSubscription` class
 
@@ -959,7 +996,7 @@ A handle to a subscription to the SpacetimeDB database. The handle does not cont
 
 **A handle survives an auto-reconnect.** A drop suspends it — `active` goes false and `suspended` goes true — and the reconnect re-registers the same handle under a fresh query set id, so `active` returns to true and `applied` fires again once the server confirms. Hold the handle across the drop; do not take a fresh one in response to `reconnected`, which would subscribe the same query a second time. `end` means the subscription really is over: an unsubscribe, a server-side subscription error, a terminal `disconnected`, or a re-subscribe whose send failed. Use the client's `reconnecting` signal to observe a drop.
 
-#### `query_id` property
+### `query_id` property
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -968,7 +1005,7 @@ class SpacetimeDBSubscription:
 
 The id of the subscription.
 
-#### `queries` property
+### `queries` property
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -977,7 +1014,7 @@ class SpacetimeDBSubscription:
 
 The SQL queries that were subscribed to.
 
-#### `error` property
+### `SpacetimeDBSubscription.error` property
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -986,7 +1023,7 @@ class SpacetimeDBSubscription:
 
 A Godot `Error` that is either `OK` if the subscription request was sent successfully, or an error if it failed to send.
 
-#### `error_message` property
+### `SpacetimeDBSubscription.error_message` property
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -995,7 +1032,7 @@ class SpacetimeDBSubscription:
 
 A human-readable error message from the server if the subscription failed. Empty string if no error.
 
-#### `active` property
+### `active` property
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -1004,7 +1041,7 @@ class SpacetimeDBSubscription:
 
 Indicates whether this subscription has been applied and has not yet been unsubscribed.
 
-#### `ended` property
+### `ended` property
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -1013,7 +1050,7 @@ class SpacetimeDBSubscription:
 
 Indicates if this subscription has been terminated due to an unsubscribe confirmation, a server error, or a terminal disconnect. A transient drop that auto-reconnect recovers leaves this false — see `suspended`.
 
-#### `suspended` property
+### `suspended` property
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -1022,7 +1059,7 @@ class SpacetimeDBSubscription:
 
 Indicates whether the connection this handle was registered on has dropped and the reconnect has not re-registered it yet. No rows are arriving and `active` is false, but the subscription is not over — `ended` is false and the query comes back with the connection. False for a handle that has never been dropped.
 
-#### `unsubscribe()` method
+### `SpacetimeDBSubscription.unsubscribe()` method
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -1035,7 +1072,7 @@ While `suspended` there is no socket to send on, so the request is honoured loca
 
 Returns `ERR_DOES_NOT_EXIST` if the subscription has already ended, or if the client that issued the handle has been freed.
 
-#### `wait_for_applied()` method
+### `wait_for_applied()` method
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -1054,7 +1091,7 @@ Returns:
 - `ERR_TIMEOUT` if the timeout was reached.
 - `ERR_DOES_NOT_EXIST` if the subscription ended or errored before being applied. Check `error_message` for details.
 
-#### `wait_for_end()` method
+### `wait_for_end()` method
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -1070,7 +1107,7 @@ Waits for the subscription to be terminated, or until it times out.
 
 Returns `ERR_TIMEOUT` if the timeout is reached, `OK` otherwise.
 
-#### `applied` signal
+### `applied` signal
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -1079,7 +1116,7 @@ class SpacetimeDBSubscription:
 
 Emitted when the server confirms the subscription is active (`SubscribeAppliedMessage`).
 
-#### `end` signal
+### `end` signal
 
 ```gdscript
 class SpacetimeDBSubscription:
@@ -1100,7 +1137,7 @@ A transient drop that auto-reconnect recovers does **not** end a handle — it s
 
 A handle to a reducer call to the SpacetimeDB database.
 
-#### `Outcome` enum
+### `SpacetimeDBReducerCall.Outcome` enum
 
 ```gdscript
 class SpacetimeDBReducerCall:
@@ -1117,7 +1154,7 @@ class SpacetimeDBReducerCall:
 | `TIMEOUT` | Response timed out. |
 | `DISCONNECTED` | Connection was lost while waiting. |
 
-#### `request_id` property
+### `SpacetimeDBReducerCall.request_id` property
 
 ```gdscript
 class SpacetimeDBReducerCall:
@@ -1126,7 +1163,7 @@ class SpacetimeDBReducerCall:
 
 The id of the reducer call request.
 
-#### `error` property
+### `SpacetimeDBReducerCall.error` property
 
 ```gdscript
 class SpacetimeDBReducerCall:
@@ -1135,7 +1172,7 @@ class SpacetimeDBReducerCall:
 
 A Godot `Error` that is `OK` if the request was sent, or an error if it failed to send.
 
-#### `outcome` property
+### `SpacetimeDBReducerCall.outcome` property
 
 ```gdscript
 class SpacetimeDBReducerCall:
@@ -1144,7 +1181,7 @@ class SpacetimeDBReducerCall:
 
 The outcome of the reducer call. Initially `PENDING`, updated when the server responds.
 
-#### `error_message` property
+### `SpacetimeDBReducerCall.error_message` property
 
 ```gdscript
 class SpacetimeDBReducerCall:
@@ -1153,7 +1190,7 @@ class SpacetimeDBReducerCall:
 
 A human-readable error message if the reducer call failed.
 
-#### `transaction_update` property
+### `SpacetimeDBReducerCall.transaction_update` property
 
 ```gdscript
 class SpacetimeDBReducerCall:
@@ -1162,7 +1199,7 @@ class SpacetimeDBReducerCall:
 
 The `TransactionUpdateMessage` from the server when the outcome is `OK`. `null` for other outcomes.
 
-#### `ret_value` property
+### `SpacetimeDBReducerCall.ret_value` property
 
 ```gdscript
 class SpacetimeDBReducerCall:
@@ -1171,14 +1208,14 @@ class SpacetimeDBReducerCall:
 
 Raw BSATN-encoded return value from the reducer. Populated when the outcome is `OK`. Empty for other outcomes or reducers with no return value.
 
-#### `decode()` method
+### `SpacetimeDBReducerCall.decode()` method
 
 ```gdscript
 class SpacetimeDBReducerCall:
     func decode() -> Variant
 ```
 
-Decodes [`ret_value`](#ret_value-property) into the typed ok return value, using the BSATN type the generated reducer method passed at call time. Returns `null` if the reducer returned nothing (unit) or no return type was provided (e.g. a hand-written `call_reducer` without `ret_bsatn_type`).
+Decodes [`ret_value`](#spacetimedbreducercallret_value-property) into the typed ok return value, using the BSATN type the generated reducer method passed at call time. Returns `null` if the reducer returned nothing (unit) or no return type was provided (e.g. a hand-written `call_reducer` without `ret_bsatn_type`).
 
 A `null` on its own is ambiguous — a unit reducer, a missing return type, and bytes that failed to parse all produce one. Use `has_return_value()` and `has_decode_error()` to tell them apart:
 
@@ -1193,7 +1230,7 @@ elif call.has_return_value():
 
 A failed decode also raises a Godot error, so a malformed payload is never silent.
 
-#### `has_return_value()` / `has_decode_error()` methods
+### `SpacetimeDBReducerCall.has_return_value()` / `has_decode_error()` methods
 
 ```gdscript
 class SpacetimeDBReducerCall:
@@ -1204,7 +1241,7 @@ class SpacetimeDBReducerCall:
 
 `has_return_value()` is `false` for a unit reducer, for a hand-written `call_reducer` with no declared return type, and for every non-`OK` outcome. `decode_error_message` is reset at the start of every `decode()`, so it always describes the latest attempt. An `opt_` return is never one of the ambiguous cases — it decodes to an `Option` whose `is_none()` is true, not to a bare `null`.
 
-#### `is_ok()` / `is_error()` / `is_completed()` methods
+### `SpacetimeDBReducerCall.is_ok()` / `is_error()` / `is_completed()` methods
 
 ```gdscript
 class SpacetimeDBReducerCall:
@@ -1213,7 +1250,7 @@ class SpacetimeDBReducerCall:
     func is_completed() -> bool   # outcome != PENDING
 ```
 
-#### `wait_for_response()` method
+### `SpacetimeDBReducerCall.wait_for_response()` method
 
 ```gdscript
 class SpacetimeDBReducerCall:
@@ -1225,7 +1262,7 @@ class SpacetimeDBReducerCall:
 | ----------- | ----------------------------------------------------------------- |
 | timeout_sec | The number of seconds to wait for the response before timing out. See [Response deadlines](#response-deadlines). |
 
-Waits for the reducer call response, or until it times out, then returns this handle (`self`) so the result is available in one step. Inspect [`outcome`](#outcome-property), [`transaction_update`](#transaction_update-property), [`error_message`](#error_message-property-1), and [`decode()`](#decode-method) on the returned handle. On timeout `outcome` is set to `TIMEOUT`.
+Waits for the reducer call response, or until it times out, then returns this handle (`self`) so the result is available in one step. Inspect [`outcome`](#spacetimedbreducercalloutcome-property), [`transaction_update`](#spacetimedbreducercalltransaction_update-property), [`error_message`](#spacetimedbreducercallerror_message-property), and [`decode()`](#spacetimedbreducercalldecode-method) on the returned handle. On timeout `outcome` is set to `TIMEOUT`.
 
 ## `SpacetimeDBProcedureCall` class
 
@@ -1233,7 +1270,7 @@ Waits for the reducer call response, or until it times out, then returns this ha
 
 A handle to a procedure call to the SpacetimeDB database.
 
-#### `Outcome` enum
+### `SpacetimeDBProcedureCall.Outcome` enum
 
 ```gdscript
 class SpacetimeDBProcedureCall:
@@ -1249,7 +1286,7 @@ class SpacetimeDBProcedureCall:
 | `TIMEOUT` | Response timed out. |
 | `DISCONNECTED` | Connection was lost while waiting. |
 
-#### `request_id` property
+### `SpacetimeDBProcedureCall.request_id` property
 
 ```gdscript
 class SpacetimeDBProcedureCall:
@@ -1258,7 +1295,7 @@ class SpacetimeDBProcedureCall:
 
 The id of the procedure call request.
 
-#### `error` property
+### `SpacetimeDBProcedureCall.error` property
 
 ```gdscript
 class SpacetimeDBProcedureCall:
@@ -1267,7 +1304,7 @@ class SpacetimeDBProcedureCall:
 
 A Godot `Error` that is `OK` if the request was sent, or an error if it failed to send.
 
-#### `outcome` property
+### `SpacetimeDBProcedureCall.outcome` property
 
 ```gdscript
 class SpacetimeDBProcedureCall:
@@ -1276,7 +1313,7 @@ class SpacetimeDBProcedureCall:
 
 The outcome of the procedure call. Initially `PENDING`, updated when the server responds.
 
-#### `error_message` property
+### `SpacetimeDBProcedureCall.error_message` property
 
 ```gdscript
 class SpacetimeDBProcedureCall:
@@ -1285,7 +1322,7 @@ class SpacetimeDBProcedureCall:
 
 A human-readable error message if the procedure call failed.
 
-#### `return_bytes` property
+### `SpacetimeDBProcedureCall.return_bytes` property
 
 ```gdscript
 class SpacetimeDBProcedureCall:
@@ -1294,7 +1331,7 @@ class SpacetimeDBProcedureCall:
 
 The raw BSATN-encoded return value from the procedure. Use `decode()` to get the typed value.
 
-#### `wait_for_response()` method
+### `SpacetimeDBProcedureCall.wait_for_response()` method
 
 ```gdscript
 class SpacetimeDBProcedureCall:
@@ -1306,9 +1343,9 @@ class SpacetimeDBProcedureCall:
 | ----------- | ----------------------------------------------------------------- |
 | timeout_sec | The number of seconds to wait for the response before timing out. See [Response deadlines](#response-deadlines). |
 
-Waits for the procedure response, or until it times out, then returns this handle (`self`). Inspect `outcome`, `return_bytes`, `error_message`, and [`decode()`](#decode-method-1) on the returned handle. On timeout `outcome` is set to `TIMEOUT`.
+Waits for the procedure response, or until it times out, then returns this handle (`self`). Inspect `outcome`, `return_bytes`, `error_message`, and [`decode()`](#spacetimedbprocedurecalldecode-method) on the returned handle. On timeout `outcome` is set to `TIMEOUT`.
 
-#### `decode()` method
+### `SpacetimeDBProcedureCall.decode()` method
 
 ```gdscript
 class SpacetimeDBProcedureCall:
@@ -1319,7 +1356,7 @@ Decodes the raw `return_bytes` using the BSATN type information provided at call
 
 As with the reducer handle, a `null` is ambiguous on its own — pair it with `has_return_value()` and `has_decode_error()`, and read `decode_error_message` when the latter is `true`. A failed decode also raises a Godot error.
 
-#### `has_return_value()` / `has_decode_error()` methods
+### `SpacetimeDBProcedureCall.has_return_value()` / `has_decode_error()` methods
 
 ```gdscript
 class SpacetimeDBProcedureCall:
@@ -1328,7 +1365,7 @@ class SpacetimeDBProcedureCall:
     var decode_error_message: String  # why it failed, or "" when it did not
 ```
 
-#### `is_ok()` / `is_error()` / `is_completed()` methods
+### `SpacetimeDBProcedureCall.is_ok()` / `is_error()` / `is_completed()` methods
 
 ```gdscript
 class SpacetimeDBProcedureCall:
@@ -1343,14 +1380,14 @@ class SpacetimeDBProcedureCall:
 
 Per-request round-trip latency tracker, read via [`SpacetimeDBClient.get_stats()`](#get_stats-method). Records the microsecond gap between sending a request and receiving its response, bucketed by category. Main-thread only, always-on (one `Time.get_ticks_usec` plus two dict ops per request), with a bounded pending set so a never-answered request can't leak.
 
-#### `Category` enum
+### `Category` enum
 
 ```gdscript
 class SpacetimeDBStats:
     enum Category { REDUCER, PROCEDURE, ONE_OFF, SUBSCRIBE }
 ```
 
-#### Methods
+### Methods
 
 ```gdscript
 class SpacetimeDBStats:
@@ -1359,7 +1396,7 @@ class SpacetimeDBStats:
     func reset() -> void                              # clear all counters and pending sends
 ```
 
-#### `Tracker` (per-category stats)
+### `Tracker` (per-category stats)
 
 ```gdscript
 class Tracker:
@@ -1476,7 +1513,7 @@ class LocalDatabase:
 
 Returns the number of subscribed rows in the table with the given `table_name`.
 
-#### Query helpers
+#### `LocalDatabase` query helpers
 
 ```gdscript
 class LocalDatabase:
@@ -1493,7 +1530,7 @@ class LocalDatabase:
 
 Exchanges a provider credential for a SpacetimeDB token via the SpacetimeAuth OIDC token endpoint. Thin `HTTPRequest` glue over an exponential-backoff retry loop; provider-agnostic — the `grant_type` and credential fields are caller-supplied. Add it to the tree before calling [`exchange()`](#exchange-method).
 
-#### Exports
+### Exports
 
 ```gdscript
 class SpacetimeAuth:
@@ -1518,7 +1555,7 @@ suspend for up to 29 minutes. The two retry delays are resolved once per exchang
 negatives and `NAN`) falls back to the default above, and anything over `60.0` — the ceiling
 on a pause *between two attempts of one exchange*, `INF` included — is clamped to it.
 
-#### `exchange()` method
+### `exchange()` method
 
 ```gdscript
 class SpacetimeAuth:
@@ -1529,9 +1566,9 @@ class SpacetimeAuth:
     ) -> SpacetimeAuthResult
 ```
 
-Coroutine — `await` it for the [`SpacetimeAuthResult`](#spacetimeauthresult-class), or connect [`exchange_completed`](#signals-1); the same result is delivered both ways. `extra_fields` carries the provider-specific credential fields. Transient failures (submit error, no response, 5xx) are retried with exponential backoff; a 2xx/4xx is authoritative and returned immediately.
+Coroutine — `await` it for the [`SpacetimeAuthResult`](#spacetimeauthresult-class), or connect [`exchange_completed`](#spacetimeauth-signals); the same result is delivered both ways. `extra_fields` carries the provider-specific credential fields. Transient failures (submit error, no response, 5xx) are retried with exponential backoff; a 2xx/4xx is authoritative and returned immediately.
 
-#### Signals
+### `SpacetimeAuth` signals
 
 ```gdscript
 signal exchange_completed(result: SpacetimeAuthResult)
@@ -1599,7 +1636,7 @@ class JwtHelper:
     static func summarize(jwt: String) -> String            # one-line human summary
 ```
 
-# Rust Enums in Godot
+## Rust Enums in Godot
 
 There is full support for rust enum sumtypes when derived from SpacetimeType.
 
@@ -1656,11 +1693,11 @@ Since BowOptions in rust is not being used as a sumtype in godot it becomes just
 
 ![image](https://github.com/user-attachments/assets/0c4b4c00-c479-47cc-a459-394b917457c1)
 
-# Technical Details
+## Technical Details
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/plaught-armor/Godot-SpacetimeDB-SDK)
 
-## Type System & Serialization
+### Type System & Serialization
 
 The SDK handles serialization between Godot types and SpacetimeDB's BSATN format based on your schema Resources.
 
@@ -1690,7 +1727,7 @@ The SDK handles serialization between Godot types and SpacetimeDB's BSATN format
 
 -   **Reducer Type Hints:** The `types` array in `call_reducer` helps serialize arguments correctly, especially important for non-default integer/float types.
 
-### Supported Data Types
+#### Supported Data Types
 
 -   **Primitives:** `bool`, `int` (maps to `i8`-`i64`, `u8`-`u64` via metadata/hints), `float` (maps to `f32`, `f64` via metadata/hints), `String`
 -   **Godot Types:** `Vector2`, `Vector2i`, `Vector3`, `Vector3i`, `Vector4`, `Vector4i`, `Quaternion`, `Color`, `Plane` (require compatible server structs)
@@ -1700,7 +1737,7 @@ The SDK handles serialization between Godot types and SpacetimeDB's BSATN format
 -   **Custom Resources:** Nested `Resource` classes defined in your schema path.
 -   **Rust Enums:** Code generator creates a RustEnum class in Godot
 
-## Compression
+### Compression
 
 -   **Client -> Server:** Not currently implemented. Messages sent from the client (like reducer calls) are uncompressed.
 -   **Server -> Client:**
@@ -1710,7 +1747,7 @@ The SDK handles serialization between Godot types and SpacetimeDB's BSATN format
 
 ---
 
-### Other documentation
+## Other documentation
 
 -   [Installation](installation.md)
 -   [Generate module bindings](codegen.md)

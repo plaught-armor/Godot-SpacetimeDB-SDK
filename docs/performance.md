@@ -80,9 +80,9 @@ benches should sweep it. Mostly **no** — most of the cost is tick-invariant:
 So: bench apply once (tick-invariant); express headroom as rows/**sec** (below); only
 revisit tick rate when tuning the *latency vs game-physics-budget* trade, not throughput.
 
-## Already shipped (branch `perf/parse-poll-hot-path`)
+## Already shipped
 
-All measured + test-verified (suite green — 53/53 test files at time of writing):
+All measured, and test-verified against a green suite:
 
 - **Dispatch reorder** — `_handle_parsed_message` `is`-chain ordered hottest-first
   (`TransactionUpdate`/`ReducerResult` first, one-shot `IdentityToken` last). Steady-

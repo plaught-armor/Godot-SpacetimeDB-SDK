@@ -20,6 +20,8 @@ A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetime
 -   [SpacetimeAuth + GodotSteam: Steam sign-in](docs/spacetimeauth-godotsteam.md) — turn a Steam login into a SpacetimeDB connection
 -   [Design Decisions](docs/design-decisions.md) — what's built, what's blocked by the wire, what's deliberately out of scope (and why)
 -   [Submodules / namespaces](docs/submodules.md) — what a namespaced module looks like on the wire, and how its tables and reducers reach the generated bindings
+-   [Performance Notes](docs/performance.md) — where the inbound path spends time, and which optimizations were deliberately skipped
+-   [Wire Coverage](docs/wire-coverage.md) — what is validated against bytes a real server sent
 -   [Changelog](CHANGELOG.md)
 
 ## Features
