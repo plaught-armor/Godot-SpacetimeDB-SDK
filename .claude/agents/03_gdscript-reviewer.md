@@ -139,19 +139,26 @@ var consumed: int = sink.ingest(batch)
 
 Exceptions where `call`/`callv` is correct: genuine reflection — editor tools, plugins inspecting unknown user scripts, generated-binding dispatch over schema-unknown reducer/table names, save-system deserialization. Hand-written gameplay/SDK-consumer dispatch is never that. Flag any `has_method(&"...")` + `call(&"...")` pair on the same `Object` in non-`@tool`, non-codegen script as `H13` and suggest the typed-dispatch fix.
 
-**H14. Redundant `as` cast after `is` guard.** When `if x is T:` narrows `x` to `T` inside the branch, member access `x.member` is already typed — `(x as T).member` adds a Variant-dispatch round-trip and reads as noise. Only use `as` when binding to a new var (`var n: Node = obj as Node`) or when no `is` guard has narrowed the type. Flag any `(x as T).<member>` or `(x as T).<method>()` inside an `if x is T:` / `elif x is T:` branch.
+**H14. Per-use `as` cast inside an `is` guard.** `is` does **not** narrow — measured on 4.8.dev with `unsafe_method_access=2`, inside `if x is T:` the analyzer still reports `x` as its declared type (`Variant`, or `Node` for a class-typed var), and the narrowing visible in the editor comes from `modules/gdscript/gdscript_editor.cpp:2488`, an autocomplete-only special case the engine source labels "Super dirty hack, but very useful". So `(x as T).member` is not a *redundant* cast but a *repeated* one — every use pays the runtime check again — while the bare `x.member` it would be replaced by is an unsafe dynamic access that trips `unsafe_property_access`. The fix is to bind a typed local once, hoisted above any loop the guard allows. Measured ns/access (2M iterations, best of 7): hoisted bind **23.0**, bare `x.member` **44.7**, per-use `(x as T).member` **61.2**, bind repeated per iteration **61.7**. Flag any `(x as T).<member>` or `(x as T).<method>()` inside an `if x is T:` / `elif x is T:` branch, and suggest the bind — not the bare access.
 
 ```gdscript
-# Bad
+# Bad — the cast repeats the check on every access.
 if row is PlayerRow:
     (row as PlayerRow).apply(db)
+    (row as PlayerRow).mark_seen()
 
-# Good
+# Also weak — faster than the cast, but every access is an unsafe dynamic lookup.
 if row is PlayerRow:
     row.apply(db)
+
+# Good — one check, statically typed accesses after it.
+if row is PlayerRow:
+    var player: PlayerRow = row
+    player.apply(db)
+    player.mark_seen()
 ```
 
-**H14b. Redundant `as` cast on typed-container access.** Typed `Dictionary[K, V].get(k)` / `dict[k]` / `Array[T][i]` already return the value type `V` / `T`. Recasting with `as T` on the result pays the same wasted Variant round-trip as H14. The container's type system is the guarantee — trust it. Flag any `<typed-collection>[key] as T` or `<typed-collection>.get(key) as T` where the collection's declared element type is `T` (or compatible).
+**H14b. Redundant `as` cast on typed-container access.** Typed `Dictionary[K, V].get(k)` / `dict[k]` / `Array[T][i]` already return the value type `V` / `T`. Recasting with `as T` on the result repeats a runtime check for a type the container already carries **statically** — unlike H14 the narrowing here is real (`var s: String = d[0].x` on a `Dictionary[int, Foo]` fails to parse), so the cast is genuinely redundant. The container's type system is the guarantee — trust it. Flag any `<typed-collection>[key] as T` or `<typed-collection>.get(key) as T` where the collection's declared element type is `T` (or compatible).
 
 ```gdscript
 # Setup
