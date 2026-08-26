@@ -35,7 +35,7 @@ var error_message: String = ""
 ## The transaction update from a successful reducer (populated on [constant Outcome.OK]).
 var transaction_update: TransactionUpdateMessage = null
 ## Raw BSATN bytes of the reducer's return value (populated only on [constant Outcome.OK]; empty on [constant Outcome.OK_EMPTY] and all other outcomes).
-var ret_value: PackedByteArray = PackedByteArray()
+var ret_value: PackedByteArray = []
 ## Why the most recent [method decode] returned [code]null[/code], or [code]""[/code]
 ## when it did not fail. Reset at the start of every [method decode].
 var decode_error_message: String = ""

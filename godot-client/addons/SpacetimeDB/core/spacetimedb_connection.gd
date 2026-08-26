@@ -425,10 +425,10 @@ func _physics_process(_delta: float) -> void:
 					# which is what this used to say, asserts a network drop and sends
 					# the reader looking in the wrong place for a typo'd database name.
 					var refusal: String = handshake_refused_diagnostic(_target_url, _db_name)
-					printerr(refusal)
+					printerr(refusal) # gdlint: ignore[S11] — one close transition, not per frame
 					connection_error.emit(code, refusal)
 				else:
-					printerr(
+					printerr( # gdlint: ignore[S11] — one close transition, not per frame
 						"SpacetimeDBConnection: connection_error %d, abnormal closure. Reason: %s"
 						% [code, reason]
 					)

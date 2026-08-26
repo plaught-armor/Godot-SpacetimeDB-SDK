@@ -132,7 +132,7 @@ func _run_module(module: String, regen: bool) -> void:
 
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _build_config(module)
-	var paths: Array[String] = codegen._generate_gdscript_from_schema(module, schema)
+	var paths: PackedStringArray = codegen._generate_gdscript_from_schema(module, schema)
 
 	if paths.is_empty():
 		_fail("%s: generator produced no files" % module)
@@ -171,9 +171,9 @@ func _run_module(module: String, regen: bool) -> void:
 ## The alias list is fixed rather than taken from `_fixtures`: it exists to pin the
 ## snake_case -> PascalCase conversion and the emission order, and tying it to the fixture
 ## set would rewrite this golden every time a fixture is added.
-## Typed `Array[String]` rather than a packed array because that is what the generator
-## takes; a plain `var`, never `const`, for the same C1 reason as `_fixtures` above.
-var AUTOLOAD_MODULES: Array[String] = ["blackholio", "my_module", "vtypes"]
+## Typed `PackedStringArray` because that is what the generator takes; a plain `var`,
+## never `const`, for the same C1 reason as `_fixtures` above.
+var AUTOLOAD_MODULES: PackedStringArray = ["blackholio", "my_module", "vtypes"]
 const AUTOLOAD_REL: String = "spacetime_autoload.gd"
 
 

@@ -15,7 +15,7 @@ extends RefCounted
 static var _identifier_regex: RegEx
 
 var _table_name: String
-var _conditions: Array[String] = []
+var _conditions: PackedStringArray = []
 
 
 ## Creates a query targeting [param name].

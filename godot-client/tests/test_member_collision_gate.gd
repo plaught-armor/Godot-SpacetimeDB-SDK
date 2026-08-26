@@ -131,13 +131,13 @@ func _test_autoload_alias_collision() -> int:
 	var f: int = 0
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new("%s/autoload" % TMP_ROOT)
 
-	var colliding: Array[String] = ["myModule", "my_module"]
+	var colliding: PackedStringArray = ["myModule", "my_module"]
 	var dups: PackedStringArray = SpacetimeCodegen.find_duplicate_members(
 		codegen._generate_autoload_gdscript(colliding)
 	)
 	f += _check("autoload: colliding aliases flagged", dups.has("MyModule"), true)
 
-	var distinct: Array[String] = ["blackholio", "my_module"]
+	var distinct: PackedStringArray = ["blackholio", "my_module"]
 	var clean: PackedStringArray = SpacetimeCodegen.find_duplicate_members(
 		codegen._generate_autoload_gdscript(distinct)
 	)
@@ -181,8 +181,7 @@ func _generate(module: String) -> PackedStringArray:
 	module_config.hide_scheduled_reducers = false
 	config.module_configs[module] = module_config
 	codegen._plugin_config = config
-	# The generator hands back Array[String]; the gate only iterates it (S6).
-	return PackedStringArray(codegen._generate_gdscript_from_schema(module, schema))
+	return codegen._generate_gdscript_from_schema(module, schema)
 
 
 func _check_one(label: String, source: String, want: String) -> int:

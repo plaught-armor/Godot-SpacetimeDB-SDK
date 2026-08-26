@@ -353,7 +353,7 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 	var size_hint_type: int = read_u8(spb)
 	if has_error():
 		return { }
-	var offsets: PackedInt64Array = PackedInt64Array()
+	var offsets: PackedInt64Array = []
 
 	if size_hint_type == ROW_LIST_FIXED_SIZE:
 		var row_size: int = read_u16_le(spb)

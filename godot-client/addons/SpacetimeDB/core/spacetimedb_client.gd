@@ -2194,7 +2194,7 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		var rid: int = message.request_id
 		var handle: SpacetimeDBProcedureCall = _pending_procedure_calls.get(rid)
 		var can_stamp: bool = handle and handle.outcome == SpacetimeDBProcedureCall.Outcome.PENDING
-		var ret_bytes: PackedByteArray = PackedByteArray()
+		var ret_bytes: PackedByteArray = []
 
 		var _status_tag: int = message.status_tag
 		if _status_tag == 0: # Returned
@@ -2855,7 +2855,11 @@ func _resubscribe_saved_queries() -> void:
 		if not saved.ended:
 			restoring.append(saved)
 	var total_sets: int = restoring.size()
-	var applied_count: Array[int] = [0]
+	# A one-int box the settle callbacks below share and bump. `Array[int]` rather than a
+	# packed array for one reason only — `_on_resubscribe_watchdog` takes that type — and
+	# not for the usual one: a PackedInt32Array boxes just as well (measured on 4.8.dev,
+	# two lambda bumps land as [2]), because packed arrays are passed by reference too.
+	var applied_count: Array[int] = [0] # gdlint: ignore[S6]
 
 	if total_sets == 0:
 		_finish_resubscribe(epoch)

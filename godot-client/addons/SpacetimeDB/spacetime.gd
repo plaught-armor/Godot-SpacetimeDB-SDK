@@ -249,7 +249,7 @@ static func generate_schema(
 
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(BINDINGS_SCHEMA_PATH)
 	codegen._plugin_config = config
-	var generated_files: Array[String] = codegen.generate_bindings()
+	var generated_files: PackedStringArray = codegen.generate_bindings()
 
 	if not finalize_bindings(codegen, generated_files, BINDINGS_SCHEMA_PATH):
 		return false
@@ -301,7 +301,7 @@ func _sanitize_uri() -> void:
 ## can point the destructive half at a temp directory.
 static func finalize_bindings(
 	codegen: SpacetimeCodegen,
-	generated_files: Array[String], # gdlint: ignore[S6] — what generate_bindings returns
+	generated_files: PackedStringArray,
 	dir_path: String,
 ) -> bool:
 	# A run over no modules writes nothing but the autoload and reports no failure, so
@@ -337,8 +337,8 @@ static func finalize_bindings(
 	# that reports only the first leaves the author fixing them one regeneration at a time.
 	# The member check runs FIRST on purpose — it is the one that reports a file it could
 	# not read back, which the class check then passes over in silence.
-	var members_ok: bool = _check_member_collisions(PackedStringArray(generated_files))
-	var classes_ok: bool = _check_class_collisions(PackedStringArray(generated_files), dir_path)
+	var members_ok: bool = _check_member_collisions(generated_files)
+	var classes_ok: bool = _check_class_collisions(generated_files, dir_path)
 	if not (members_ok and classes_ok):
 		print_err("Code generation failed!")
 		return false
@@ -348,7 +348,7 @@ static func finalize_bindings(
 	return true
 
 
-static func _cleanup_unused_classes(dir_path: String = "res://schema", files: Array[String] = []) -> void:
+static func _cleanup_unused_classes(dir_path: String = "res://schema", files: PackedStringArray = []) -> void:
 	var dir: DirAccess = DirAccess.open(dir_path)
 	if not dir:
 		return

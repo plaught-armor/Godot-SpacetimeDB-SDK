@@ -410,7 +410,7 @@ static func _build_record_columns(script: Script) -> Array:
 	var cols: Array = _EMPTY_COLUMNS
 	var bt: Variant = script.get_script_constant_map().get(&"BSATN_TYPES", null)
 	if bt is Dictionary:
-		cols = (bt as Dictionary).keys()
+		cols = (bt as Dictionary).keys() # gdlint: ignore[H14] — bt is Variant; `is` does not narrow it
 		cols.make_read_only()
 	_record_columns_cache[script] = cols
 	return cols

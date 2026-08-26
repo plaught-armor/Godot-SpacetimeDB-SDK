@@ -211,11 +211,12 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 			register_type_by_class(script)
 			var instance: Variant = script.new()
 			if instance is RefCounted: # Resource extends RefCounted — one check covers both
-				var fallback_table_names: Array[String] = [file_name.get_basename().get_file()]
-
 				if constants.has('table_names'):
 					_add_table_names(constants['table_names'], true, script, script_path)
-				_add_table_names(fallback_table_names, false, script, script_path)
+				# Fallback alias: the file's own basename, so a script that declares no
+				# table_names is still reachable by name.
+				var fallback: Array = [file_name.get_basename().get_file()]
+				_add_table_names(fallback, false, script, script_path)
 
 	dir.list_dir_end()
 
@@ -235,7 +236,7 @@ static func _is_foreign_module(constants: Dictionary, prefix: String) -> bool:
 
 
 func _add_table_names(table_names: Array, is_table: bool, script: GDScript, script_path: String) -> void:
-	for table_name in table_names:
+	for table_name: Variant in table_names:
 		var sn: StringName = StringName(table_name)
 		var exact_name: StringName = sn.to_lower()
 		var lower_table_name: StringName = StringName(String(exact_name).replace("_", ""))

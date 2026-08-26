@@ -48,7 +48,7 @@ func _test_legal_name_generates(module_key: String) -> int:
 	_reset_dir(tmp)
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config(module_key)
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 
 	var f: int = 0
 	f += _check_b("%s: run completed" % module_key, not codegen.generation_incomplete, true)
@@ -73,7 +73,7 @@ func _test_digit_leading_refused() -> int:
 
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config("2048")
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 
 	var f: int = 0
 	f += _check_i("2048: nothing generated", files.size(), 0)
@@ -102,7 +102,7 @@ func _test_empty_name_refused() -> int:
 	_reset_dir(tmp)
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config("")
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 
 	var f: int = 0
 	f += _check_i("empty: nothing generated", files.size(), 0)
@@ -112,7 +112,7 @@ func _test_empty_name_refused() -> int:
 
 ## Every identifier the run spelled itself — `class_name X`, `var X:`, `const X =`,
 ## `enum X` — is a legal GDScript identifier.
-func _all_identifiers(files: Array[String]) -> bool: # gdlint: ignore[S6]
+func _all_identifiers(files: PackedStringArray) -> bool:
 	for path: String in files:
 		if not path.ends_with(".gd"):
 			continue

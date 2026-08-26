@@ -109,7 +109,7 @@ func _test_intact_schema_prunes(fixture: Dictionary) -> int:
 
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config(JSON.stringify(fixture))
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 
 	var stale: String = "%s/module_vtypes_gone.gd" % tmp
 	_write(stale, "# stale\n")
@@ -135,7 +135,7 @@ func _degraded(label: String, schema: Dictionary, fixture: Dictionary) -> int:
 
 	var first: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	first._plugin_config = _config(JSON.stringify(fixture))
-	var complete: Array[String] = first.generate_bindings() # gdlint: ignore[S6]
+	var complete: PackedStringArray = first.generate_bindings()
 	f += _check("%s: baseline generated files" % label, complete.size() > 1, true)
 	# Content, not just paths: a run that rewrote half a module against the other half's
 	# stale files leaves a db facade whose table members no longer match the wrappers
@@ -144,7 +144,7 @@ func _degraded(label: String, schema: Dictionary, fixture: Dictionary) -> int:
 
 	var second: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	second._plugin_config = _config(JSON.stringify(schema))
-	var partial: Array[String] = second.generate_bindings() # gdlint: ignore[S6]
+	var partial: PackedStringArray = second.generate_bindings()
 	f += _check("%s: flagged incomplete" % label, second.generation_incomplete, true)
 	f += _check(
 		"%s: finalize refuses" % label,
@@ -175,7 +175,7 @@ func _test_second_module_not_half_written(fixture: Dictionary) -> int:
 
 	var first: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	first._plugin_config = config
-	var complete: Array[String] = first.generate_bindings() # gdlint: ignore[S6]
+	var complete: PackedStringArray = first.generate_bindings()
 	f += _check("two modules: baseline generated both", complete.size() > 20, true)
 	var before: Dictionary[String, String] = _snapshot(complete)
 
@@ -192,7 +192,7 @@ func _test_second_module_not_half_written(fixture: Dictionary) -> int:
 
 	var second: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	second._plugin_config = degraded
-	var partial: Array[String] = second.generate_bindings() # gdlint: ignore[S6]
+	var partial: PackedStringArray = second.generate_bindings()
 	f += _check("two modules: flagged incomplete", second.generation_incomplete, true)
 	f += _check(
 		"two modules: finalize refuses",
@@ -285,7 +285,7 @@ func _config(unparsed: String) -> SpacetimeDBPluginConfig:
 	return config
 
 
-func _all_exist(paths: Array[String]) -> bool: # gdlint: ignore[S6]
+func _all_exist(paths: PackedStringArray) -> bool:
 	for path: String in paths:
 		if not FileAccess.file_exists(path):
 			printerr("      missing: %s" % path)
@@ -294,7 +294,7 @@ func _all_exist(paths: Array[String]) -> bool: # gdlint: ignore[S6]
 
 
 ## path -> content, for every path in [param paths].
-func _snapshot(paths: Array[String]) -> Dictionary[String, String]: # gdlint: ignore[S6]
+func _snapshot(paths: PackedStringArray) -> Dictionary[String, String]:
 	var out: Dictionary[String, String] = { }
 	for path: String in paths:
 		out[path] = FileAccess.get_file_as_string(path)

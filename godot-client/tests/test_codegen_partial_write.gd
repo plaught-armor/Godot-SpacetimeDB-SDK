@@ -55,7 +55,7 @@ func _test_complete_run_prunes() -> int:
 
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config(FileAccess.get_file_as_string(FIXTURE))
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 
 	# A binding from an older schema that this run no longer emits.
 	var stale: String = "%s/module_vtypes_gone.gd" % tmp
@@ -82,7 +82,7 @@ func _test_failed_write_keeps_bindings() -> int:
 	var config: SpacetimeDBPluginConfig = _config(FileAccess.get_file_as_string(FIXTURE))
 	var first: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	first._plugin_config = config
-	var complete: Array[String] = first.generate_bindings() # gdlint: ignore[S6]
+	var complete: PackedStringArray = first.generate_bindings()
 	f += _check("failed write: baseline run generated files", complete.size() > 1, true)
 
 	# A directory where a file belongs is the portable way to make
@@ -95,7 +95,7 @@ func _test_failed_write_keeps_bindings() -> int:
 
 	var second: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	second._plugin_config = _config(FileAccess.get_file_as_string(FIXTURE))
-	var partial: Array[String] = second.generate_bindings() # gdlint: ignore[S6]
+	var partial: PackedStringArray = second.generate_bindings()
 
 	var dropped: PackedStringArray = _dropped(complete, partial, victim)
 	f += _check("failed write: run returned a partial list", dropped.size() > 0, true)
@@ -105,7 +105,7 @@ func _test_failed_write_keeps_bindings() -> int:
 		SpacetimePlugin.finalize_bindings(second, partial, tmp),
 		false,
 	)
-	f += _check("failed write: dropped bindings survive", _all_exist_p(dropped), true)
+	f += _check("failed write: dropped bindings survive", _all_exist(dropped), true)
 	return f
 
 
@@ -119,7 +119,7 @@ func _test_failed_uid_keeps_bindings() -> int:
 
 	var first: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	first._plugin_config = _config(FileAccess.get_file_as_string(FIXTURE))
-	var complete: Array[String] = first.generate_bindings() # gdlint: ignore[S6]
+	var complete: PackedStringArray = first.generate_bindings()
 
 	var victim_uid: String = "%s/%s.uid" % [tmp, VICTIM]
 	DirAccess.remove_absolute(victim_uid)
@@ -128,7 +128,7 @@ func _test_failed_uid_keeps_bindings() -> int:
 
 	var second: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	second._plugin_config = _config(FileAccess.get_file_as_string(FIXTURE))
-	var files: Array[String] = second.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = second.generate_bindings()
 	f += _check("failed uid: flagged incomplete", second.generation_incomplete, true)
 	f += _check(
 		"failed uid: finalize refuses",
@@ -152,7 +152,7 @@ func _test_empty_config_refused() -> int:
 
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = SpacetimeDBPluginConfig.new()
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 	f += _check("empty config: nothing flagged incomplete", codegen.generation_incomplete, false)
 	f += _check(
 		"empty config: finalize refuses",
@@ -172,11 +172,11 @@ func _test_unparsable_module_keeps_bindings() -> int:
 
 	var first: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	first._plugin_config = _config(FileAccess.get_file_as_string(FIXTURE))
-	var complete: Array[String] = first.generate_bindings() # gdlint: ignore[S6]
+	var complete: PackedStringArray = first.generate_bindings()
 
 	var second: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	second._plugin_config = _config("{ not json")
-	var partial: Array[String] = second.generate_bindings() # gdlint: ignore[S6]
+	var partial: PackedStringArray = second.generate_bindings()
 	f += _check("unparsable: flagged incomplete", second.generation_incomplete, true)
 	f += _check(
 		"unparsable: finalize refuses",
@@ -211,8 +211,8 @@ func _config(unparsed: String) -> SpacetimeDBPluginConfig:
 ## Paths the complete run produced that the partial run did not name, minus the victim
 ## itself (which really was not written).
 func _dropped(
-	complete: Array[String], # gdlint: ignore[S6] — what generate_bindings returns
-	partial: Array[String], # gdlint: ignore[S6]
+	complete: PackedStringArray,
+	partial: PackedStringArray,
 	victim: String,
 ) -> PackedStringArray:
 	var out: PackedStringArray = []
@@ -223,11 +223,7 @@ func _dropped(
 	return out
 
 
-func _all_exist(paths: Array[String]) -> bool: # gdlint: ignore[S6]
-	return _all_exist_p(PackedStringArray(paths))
-
-
-func _all_exist_p(paths: PackedStringArray) -> bool:
+func _all_exist(paths: PackedStringArray) -> bool:
 	for path: String in paths:
 		if not FileAccess.file_exists(path):
 			printerr("      missing: %s" % path)

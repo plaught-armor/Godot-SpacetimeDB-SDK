@@ -104,7 +104,7 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 ## on the Godot versions this addon supports (engine issue #88753). The membership check
 ## below runs once per section per parse, so the packed container's access win is worth
 ## nothing here and the enforcement is worth having.
-static var HANDLED_SECTIONS: Array[String] = [
+static var HANDLED_SECTIONS: Array[String] = [ # gdlint: ignore[S6] — see above
 	"ExplicitNames",
 	"LifeCycleReducers",
 	"Procedures",
@@ -691,10 +691,10 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				var pascal_name: String = declared_name if project_enums.has(declared_name) else declared_name.to_pascal_case()
 				if project_enums.has(pascal_name):
 					var project_enum: Dictionary = project_enums[pascal_name]
-					var schema_variants: Array[String] = []
+					var schema_variants: PackedStringArray = []
 					for v: Dictionary in parsed_variants:
 						schema_variants.append(v.get("name", "").to_snake_case())
-					var project_variants: Array[String] = []
+					var project_variants: PackedStringArray = []
 					for pv: String in project_enum["variants"]:
 						project_variants.append(pv.to_snake_case())
 					if schema_variants == project_variants:
@@ -740,7 +740,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				field_type["type_idx"] = type_idx
 
 	var parsed_tables_list: Array[Dictionary] = []
-	var scheduled_reducers: Array[String] = []
+	var scheduled_reducers: PackedStringArray = []
 	for table_info: Dictionary in schema_tables:
 		var table_name_str: String = table_info.get("name", "")
 		var ref_idx_raw: Variant = table_info.get("product_type_ref", -1)

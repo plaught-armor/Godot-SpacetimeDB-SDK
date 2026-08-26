@@ -106,7 +106,7 @@ func _test_colliding_module_refused() -> int:
 
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config(CLASH_MODULE, _fixture_text(CLASH_FIXTURE))
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 
 	# What makes the gate necessary rather than redundant: nothing upstream sees this.
 	f += _check("clash: schema parsed, run not flagged", codegen.generation_incomplete, false)
@@ -137,7 +137,7 @@ func _test_colliding_module_refused() -> int:
 	)
 	f += _check(
 		"clash: the scan itself refuses",
-		SpacetimePlugin._check_class_collisions(PackedStringArray(files), tmp),
+		SpacetimePlugin._check_class_collisions(files, tmp),
 		false,
 	)
 
@@ -169,12 +169,12 @@ func _test_same_path_written_twice() -> int:
 
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config(CLASH_MODULE, JSON.stringify(_with_acronym_pair()))
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 	f += _check("same path: run not flagged", codegen.generation_incomplete, false)
 	f += _check("same path: a path was written twice", _has_duplicate_path(files), true)
 	f += _check(
 		"same path: the scan refuses",
-		SpacetimePlugin._check_class_collisions(PackedStringArray(files), tmp),
+		SpacetimePlugin._check_class_collisions(files, tmp),
 		false,
 	)
 	# Why this shape is not driven through finalize, and why the assertion above is on the
@@ -182,7 +182,7 @@ func _test_same_path_written_twice() -> int:
 	# the module's types facade, so the older gate refuses it whatever this one does.
 	f += _check(
 		"same path: the member gate sees it too",
-		SpacetimePlugin._check_member_collisions(PackedStringArray(files)),
+		SpacetimePlugin._check_member_collisions(files),
 		false,
 	)
 	return f
@@ -236,7 +236,7 @@ func _schema_with_enum() -> Dictionary:
 
 
 ## A schema with one single-field struct per name in [param type_names] and no tables.
-func _schema_with_types(type_names: Array[String]) -> Dictionary: # gdlint: ignore[S6]
+func _schema_with_types(type_names: PackedStringArray) -> Dictionary:
 	var typespace: Array = []
 	var types: Array = []
 	for source_name: String in type_names:
@@ -312,11 +312,11 @@ func _test_duplicate_enum_variants() -> int:
 	_reset_dir(tmp)
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config(CLASH_MODULE, JSON.stringify(_schema_with_enum()))
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 	f += _check("variants: run not flagged", codegen.generation_incomplete, false)
 	f += _check(
 		"variants: the scan refuses",
-		SpacetimePlugin._check_member_collisions(PackedStringArray(files)),
+		SpacetimePlugin._check_member_collisions(files),
 		false,
 	)
 	var stale: String = "%s/module_vclash_gone.gd" % tmp
@@ -397,7 +397,7 @@ func _test_module_prefix_problems() -> int:
 	_write(stale, "# stale\n")
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config("time", _fixture_text(CLEAN_FIXTURE))
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 	f += _check("prefix: run flagged incomplete", codegen.generation_incomplete, true)
 	f += _check("prefix: nothing was written", files.is_empty(), true)
 	f += _check(
@@ -541,13 +541,13 @@ func _test_singleton_flag_decides() -> int:
 
 ## Generates a module whose only types are [param type_names] and reports whether the
 ## class-collision gate accepts the result.
-func _generated_classes_accepted(module: String, type_names: Array[String]) -> bool: # gdlint: ignore[S6]
+func _generated_classes_accepted(module: String, type_names: PackedStringArray) -> bool:
 	var tmp: String = "%s/taken_%s" % [TMP_ROOT, module]
 	_reset_dir(tmp)
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config(module, JSON.stringify(_schema_with_types(type_names)))
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
-	return SpacetimePlugin._check_class_collisions(PackedStringArray(files), tmp)
+	var files: PackedStringArray = codegen.generate_bindings()
+	return SpacetimePlugin._check_class_collisions(files, tmp)
 
 
 ## The gate must not cost the cleanup: a module with no colliding name still finalizes
@@ -559,12 +559,12 @@ func _test_clean_module_still_prunes() -> int:
 
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config(CLEAN_MODULE, _fixture_text(CLEAN_FIXTURE))
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 	f += _check("clean: files were generated", files.size() > 1, true)
 	f += _check("clean: no duplicate path", _has_duplicate_path(files), false)
 	f += _check(
 		"clean: the scan accepts",
-		SpacetimePlugin._check_class_collisions(PackedStringArray(files), tmp),
+		SpacetimePlugin._check_class_collisions(files, tmp),
 		true,
 	)
 
@@ -600,7 +600,7 @@ func _config(module: String, unparsed: String) -> SpacetimeDBPluginConfig:
 	return config
 
 
-func _has_duplicate_path(paths: Array[String]) -> bool: # gdlint: ignore[S6]
+func _has_duplicate_path(paths: PackedStringArray) -> bool:
 	var seen: Dictionary[String, bool] = { }
 	for path: String in paths:
 		if seen.has(path):
@@ -610,7 +610,7 @@ func _has_duplicate_path(paths: Array[String]) -> bool: # gdlint: ignore[S6]
 
 
 ## The paths whose script declares [param class_name_wanted], read back off disk.
-func _files_declaring(paths: Array[String], class_name_wanted: String) -> PackedStringArray: # gdlint: ignore[S6]
+func _files_declaring(paths: PackedStringArray, class_name_wanted: String) -> PackedStringArray:
 	var out: PackedStringArray = []
 	var seen: Dictionary[String, bool] = { }
 	for path: String in paths:
@@ -623,7 +623,7 @@ func _files_declaring(paths: Array[String], class_name_wanted: String) -> Packed
 	return out
 
 
-func _all_exist(paths: Array[String]) -> bool: # gdlint: ignore[S6]
+func _all_exist(paths: PackedStringArray) -> bool:
 	for path: String in paths:
 		if not FileAccess.file_exists(path):
 			printerr("      missing: %s" % path)

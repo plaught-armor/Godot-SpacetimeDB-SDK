@@ -177,7 +177,7 @@ func _generation_flagged(
 	# here takes the pre-write path; one modelling a mid-write failure would need a
 	# different signal.
 	var errors_before: int = SpacetimePlugin.error_count
-	var generated: Array[String] = codegen._generate_gdscript_from_schema(MODULE, schema)
+	var generated: PackedStringArray = codegen._generate_gdscript_from_schema(MODULE, schema)
 	_last_output_dir = tmp
 	return generated.is_empty() and SpacetimePlugin.error_count > errors_before
 

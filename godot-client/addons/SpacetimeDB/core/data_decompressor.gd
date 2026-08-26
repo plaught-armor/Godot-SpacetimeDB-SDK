@@ -30,7 +30,7 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 		return PackedByteArray()
 
 	var last_slice_position: int = 0
-	var decompressed_data: PackedByteArray = PackedByteArray()
+	var decompressed_data: PackedByteArray = []
 	var input_failed: bool = false
 
 	# Explicitly bounded (NASA rule 2) rather than `while true`. The loop already ends

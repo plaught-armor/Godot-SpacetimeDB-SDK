@@ -48,7 +48,7 @@ func set_uri(uri: String) -> void:
 
 
 func update_module_ui() -> void:
-	for child in _modules_container.get_children():
+	for child: Node in _modules_container.get_children():
 		_modules_container.remove_child(child)
 		child.queue_free()
 	set_uri(_plugin_config.uri)
@@ -171,7 +171,7 @@ func add_log(text: Variant) -> void:
 	if text_type == TYPE_STRING:
 		_logs_label.text += "%s\n" % [text]
 	elif text_type == TYPE_ARRAY:
-		for i in text as Array:
+		for i: Variant in text as Array:
 			_logs_label.text += str(i) + " "
 		_logs_label.text += "\n"
 	else:
@@ -187,7 +187,7 @@ func add_err(text: Variant) -> void:
 		]
 	elif text_type == TYPE_ARRAY:
 		_logs_label.text += "[img]%s[/img] [color=#FF786B][b]ERROR:[/b] " % [ERROR_LOG_ICON]
-		for i in text as Array:
+		for i: Variant in text as Array:
 			_logs_label.text += str(i) + " "
 		_logs_label.text += "[/color]\n"
 	else:

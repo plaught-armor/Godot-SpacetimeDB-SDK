@@ -68,7 +68,7 @@ func _test_module(module_key: String) -> int:
 	DirAccess.make_dir_recursive_absolute(tmp)
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(tmp)
 	codegen._plugin_config = _config(module_key)
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 
 	var f: int = 0
 	f += _check_b("%s: run completed" % module_key, not codegen.generation_incomplete, true)
@@ -123,7 +123,7 @@ func _test_module(module_key: String) -> int:
 
 ## The `module_name` constant codegen wrote on the run's row types — the string
 ## [RowReceiver] looks the client up with.
-func _row_module_constant(files: Array[String]) -> String: # gdlint: ignore[S6]
+func _row_module_constant(files: PackedStringArray) -> String:
 	for path: String in files:
 		if not path.contains("/types/"):
 			continue
@@ -136,7 +136,7 @@ func _row_module_constant(files: Array[String]) -> String: # gdlint: ignore[S6]
 
 ## Every type the generated code names resolves to something: a class this run declared, a
 ## class the project registers (the SDK's own), or an engine/builtin type.
-func _all_references_resolve(files: Array[String], declared: Dictionary[String, bool]) -> bool: # gdlint: ignore[S6]
+func _all_references_resolve(files: PackedStringArray, declared: Dictionary[String, bool]) -> bool:
 	var ok: bool = true
 	for path: String in files:
 		if not path.ends_with(".gd"):
@@ -160,7 +160,7 @@ func _all_references_resolve(files: Array[String], declared: Dictionary[String, 
 ## Parameters are covered because that is where the generated reducer and procedure
 ## signatures name a module's types, and nothing else in a run would catch a prefix
 ## misspelled only there.
-func _referenced_types(line: String) -> PackedStringArray: # gdlint: ignore[S6]
+func _referenced_types(line: String) -> PackedStringArray:
 	var found: PackedStringArray = []
 	if line.begins_with("func ") or line.begins_with("static func "):
 		found.append_array(_parameter_types(line))
@@ -256,7 +256,7 @@ func _split_container_type(type_text: String) -> PackedStringArray:
 
 ## Every path a generated file preloads is a file this run wrote. Catches the half of the
 ## bug that lived in the file NAME rather than the class name.
-func _all_preloads_exist(files: Array[String]) -> bool: # gdlint: ignore[S6]
+func _all_preloads_exist(files: PackedStringArray) -> bool:
 	var written: Dictionary[String, bool] = { }
 	for path: String in files:
 		written[path] = true

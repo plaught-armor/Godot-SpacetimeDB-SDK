@@ -39,7 +39,7 @@ func _initialize() -> void:
 	# The previous run's bindings.
 	var first: SpacetimeCodegen = SpacetimeCodegen.new(TMP)
 	first._plugin_config = _config(FileAccess.get_file_as_string(FIXTURE))
-	var complete: Array[String] = first.generate_bindings() # gdlint: ignore[S6]
+	var complete: PackedStringArray = first.generate_bindings()
 	_check("baseline generated the whole fixture", complete.size() >= 18)
 
 	# A schema whose sections list holds something that is not an object. Everything
@@ -48,7 +48,7 @@ func _initialize() -> void:
 	# refuses by type-checking the JSON body).
 	var second: SpacetimeCodegen = SpacetimeCodegen.new(TMP)
 	second._plugin_config = _config('{"sections": ["not an object"]}')
-	var partial: Array[String] = second.generate_bindings() # gdlint: ignore[S6]
+	var partial: PackedStringArray = second.generate_bindings()
 	_check("the faulting run produced less than the baseline", partial.size() < complete.size())
 	_check("flagged incomplete", second.generation_incomplete)
 	_check("finalize refuses", not SpacetimePlugin.finalize_bindings(second, partial, TMP))
@@ -59,7 +59,7 @@ func _initialize() -> void:
 	# unwound run arrives at finalize with the flags exactly as its last stage left them.
 	var third: SpacetimeCodegen = SpacetimeCodegen.new(TMP)
 	third._plugin_config = _config(FileAccess.get_file_as_string(FIXTURE))
-	var clean: Array[String] = third.generate_bindings() # gdlint: ignore[S6]
+	var clean: PackedStringArray = third.generate_bindings()
 	_check("a clean run reached its own return", third.run_reached_return)
 	third.run_reached_return = false
 	_check("not flagged incomplete (the flag cannot see a fault)", not third.generation_incomplete)
@@ -87,7 +87,7 @@ func _config(unparsed: String) -> SpacetimeDBPluginConfig:
 	return config
 
 
-func _all_exist(paths: Array[String]) -> bool: # gdlint: ignore[S6]
+func _all_exist(paths: PackedStringArray) -> bool:
 	for path: String in paths:
 		if not FileAccess.file_exists(path):
 			printerr("      missing: %s" % path)

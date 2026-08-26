@@ -28,7 +28,7 @@ func _initialize() -> void:
 		return
 	var fixture: Dictionary = base
 
-	var baseline: Array[String] = _generate("baseline", fixture) # gdlint: ignore[S6]
+	var baseline: PackedStringArray = _generate("baseline", fixture)
 	print("BASELINE files=%d" % baseline.size())
 
 	_case(
@@ -100,7 +100,7 @@ func _case(
 	fixture: Dictionary,
 	path: Array,
 	value: Variant,
-	baseline: Array[String], # gdlint: ignore[S6]
+	baseline: PackedStringArray,
 ) -> void:
 	var mutant: Dictionary = fixture.duplicate(true)
 	var parent: Variant = mutant
@@ -120,7 +120,7 @@ func _case(
 	)
 	_reset_dir(codegen._schema_path)
 	codegen._plugin_config = _config(JSON.stringify(mutant))
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 	print(
 		(
 			"CASE %s | parse_ok=%s incomplete=%s push_errors=%d "
@@ -140,7 +140,7 @@ func _case(
 	)
 
 
-func _missing(baseline: Array[String], files: Array[String]) -> PackedStringArray: # gdlint: ignore[S6]
+func _missing(baseline: PackedStringArray, files: PackedStringArray) -> PackedStringArray:
 	var have: Dictionary = { }
 	for f: String in files:
 		have[f.get_file()] = true
@@ -151,7 +151,7 @@ func _missing(baseline: Array[String], files: Array[String]) -> PackedStringArra
 	return out
 
 
-func _generate(label: String, schema: Dictionary) -> Array[String]: # gdlint: ignore[S6]
+func _generate(label: String, schema: Dictionary) -> PackedStringArray:
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new("%s/%s" % [TMP_ROOT, label])
 	_reset_dir(codegen._schema_path)
 	codegen._plugin_config = _config(JSON.stringify(schema))

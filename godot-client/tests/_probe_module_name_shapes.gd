@@ -40,7 +40,7 @@ func _run_shape(module_key: String, unparsed: String) -> void:
 
 	var codegen: SpacetimeCodegen = SpacetimeCodegen.new(dir_path)
 	codegen._plugin_config = config
-	var files: Array[String] = codegen.generate_bindings() # gdlint: ignore[S6]
+	var files: PackedStringArray = codegen.generate_bindings()
 	print(
 		"\n=== module %s: %d files, incomplete=%s"
 		% [module_key, files.size(), codegen.generation_incomplete]

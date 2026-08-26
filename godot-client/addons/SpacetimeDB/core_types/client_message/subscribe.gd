@@ -14,10 +14,15 @@ const BSATN_TYPES: Dictionary[StringName, StringName] = { &"request_id": &"u32",
 ## Client-assigned query set id that groups these queries for later unsubscription.
 @export var query_id: int
 ## SQL query strings to subscribe to (e.g. [code]"SELECT * FROM player"[/code]).
-@export var queries: Array[String]
+## [code]Array[String][/code], not [PackedStringArray]: the BSATN serializer reaches
+## element writers through [method BSATNSerializer.write_array], which takes a bare
+## [Array] and reads the element type off the [code]@export[/code] hint. A packed type
+## has neither. [method SpacetimeDBClient.subscribe] still takes a [PackedStringArray] —
+## the conversion happens at this constructor.
+@export var queries: Array[String] # gdlint: ignore[S6]
 
 
-func _init(p_request_id: int = 0, p_query_id: int = 0, p_queries: Array[String] = []) -> void:
+func _init(p_request_id: int = 0, p_query_id: int = 0, p_queries: Array[String] = []) -> void: # gdlint: ignore[S6]
 	request_id = p_request_id
 	query_id = p_query_id
 	queries = p_queries
