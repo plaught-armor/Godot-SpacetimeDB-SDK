@@ -60,7 +60,7 @@ func _init(
 	# Load table row schemas and spacetime types
 	_load_types("%s/types" % p_schema_path, p_module_name.to_snake_case())
 	# Load core types if they are defined as Resources with scripts
-	_load_types(SpacetimePlugin.ADDON_PATH + "/core_types/**")
+	_load_types(SpacetimeDBPaths.ADDON_PATH + "/core_types/**")
 
 
 ## Returns the [GDScript] for [param type_name] (normalized), or [code]null[/code] if unknown.

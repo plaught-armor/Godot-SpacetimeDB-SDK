@@ -71,6 +71,26 @@ It refuses a development file or directory in the package, a second addon beside
 `SpacetimeDB`, a file kind an addon is not made of, a missing `plugin.cfg` or `LICENSE`,
 and a script without its `.uid` sidecar.
 
+## Runtime code cannot name the editor API
+
+Every test, probe and CI job runs the Godot **editor** binary, and an export template is
+a different engine: it is built without `TOOLS_ENABLED`, so `EditorPlugin`,
+`EditorInterface` and the rest of the editor API are simply absent from `ClassDB`. A
+runtime script that names one of them — even only to read a constant off a `@tool` script
+that extends it — fails to parse in an exported game, and GDScript propagates that to
+every script that depends on it. Nothing in the suite sees it, because in the editor the
+name resolves.
+
+`test_runtime_free_of_editor_api.gd` is the gate. It enumerates the editor half of
+`ClassDB`, adds every project class that inherits from it, and refuses any mention of
+those names in code under `addons/SpacetimeDB/{core,core_types,nodes,util}` or
+`spacetime_bindings/`. The addon's editor-only corners — `spacetime.gd`, `cli.gd`,
+`codegen/` and `ui/` — are exempt, and one of them is the test's own control.
+
+Paths and constants the runtime shares with the plugin live on `SpacetimeDBPaths`, which
+an export template can load. Editor code may name runtime classes; runtime code may not
+name editor ones.
+
 ## Codegen golden tests
 
 `test_codegen_golden.gd` locks the exact GDScript text that codegen emits. It

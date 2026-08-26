@@ -4,6 +4,29 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
+### Fixed
+- **The SDK did not run in an exported game at all.** Two runtime scripts —
+  `spacetimedb_server_message.gd` and `spacetimedb_schema.gd` — read `ADDON_PATH` off
+  `SpacetimePlugin`, and that class extends `EditorPlugin`. Export templates are built
+  without the editor API, so `EditorPlugin` is absent from `ClassDB` in a shipped build
+  and a script naming a class derived from it fails to PARSE. GDScript propagates that:
+  measured on a real Godot 4.7 release template with the Blackholio example, the failure
+  took out `bsatn_deserializer.gd`, `spacetimedb_reducer_call.gd`, `spacetimedb_client.gd`,
+  the generated module client and finally the autoload — "Failed to load script
+  res://spacetime_bindings/schema/spacetime_autoload.gd with error Compilation failed" —
+  and the process then segfaulted. Nothing connected, and no message said why.
+
+  The addon root now lives on `SpacetimeDBPaths`, a plain `RefCounted` an export template
+  can load, and the plugin reads it from there instead of owning it. The same example on
+  the same template now connects, subscribes and decodes its 1204 rows.
+
+  Nothing in the suite caught this because every test, probe and CI job runs the EDITOR
+  binary, where `EditorPlugin` exists and the reference resolves.
+  `tests/test_runtime_free_of_editor_api.gd` closes that gap generically: it enumerates
+  the editor half of `ClassDB`, adds every project class that inherits from it, and
+  refuses any mention of those names in code the runtime loads. It fails on the old
+  source naming the exact file and line.
+
 ### Changed
 - **A subscription handle now survives an auto-reconnect instead of being replaced by one
   the caller cannot reach.** `_prepare_for_reconnect` ended every outstanding

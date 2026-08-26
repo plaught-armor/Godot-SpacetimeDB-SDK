@@ -2,17 +2,18 @@
 class_name SpacetimePlugin
 extends EditorPlugin
 
-const ADDON_PATH: String = "res://addons/SpacetimeDB"
+# The addon root lives on SpacetimeDBPaths, not here: the runtime needs it too, and an
+# export template cannot load this script to reach a constant (EditorPlugin is editor-only).
 const LEGACY_DATA_PATH: String = "res://spacetime_data"
 const BINDINGS_PATH: String = "res://spacetime_bindings"
 const BINDINGS_SCHEMA_PATH: String = BINDINGS_PATH + "/schema"
 const AUTOLOAD_NAME: String = "SpacetimeDB"
 const AUTOLOAD_FILE_NAME: String = "spacetime_autoload.gd"
 const AUTOLOAD_PATH: String = BINDINGS_SCHEMA_PATH + "/" + AUTOLOAD_FILE_NAME
-const SAVE_PATH: String = ADDON_PATH + "/plugin_config.tres"
-const CONFIG_PATH: String = ADDON_PATH + "/plugin.cfg"
+const SAVE_PATH: String = SpacetimeDBPaths.ADDON_PATH + "/plugin_config.tres"
+const CONFIG_PATH: String = SpacetimeDBPaths.ADDON_PATH + "/plugin.cfg"
 const UI_PANEL_NAME: String = "SpacetimeDB"
-const UI_PATH: String = ADDON_PATH + "/ui/ui.tscn"
+const UI_PATH: String = SpacetimeDBPaths.ADDON_PATH + "/ui/ui.tscn"
 
 static var instance: SpacetimePlugin
 

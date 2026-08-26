@@ -2,7 +2,7 @@
 class_name SpacetimePluginUI
 extends Control
 
-const ERROR_LOG_ICON: String = SpacetimePlugin.ADDON_PATH + "/ui/icons/Error.svg"
+const ERROR_LOG_ICON: String = SpacetimeDBPaths.ADDON_PATH + "/ui/icons/Error.svg"
 
 signal plugin_config_changed()
 signal check_uri()
