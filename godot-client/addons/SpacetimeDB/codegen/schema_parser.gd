@@ -98,12 +98,14 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 ##
 ## [code]Array[String][/code] rather than the [code]PackedStringArray[/code] the element
 ## type would otherwise ask for, and [code]static var[/code] rather than [code]const[/code].
-## One table shared by every parse in the process is exactly what wants locking, and
-## [method Array.make_read_only] is the only lock the engine offers — [code]Packed*Array[/code]
-## has no such method, and a [code]const[/code] [code]Packed*Array[/code] reads back empty
-## on the Godot versions this addon supports (engine issue #88753). The membership check
-## below runs once per section per parse, so the packed container's access win is worth
-## nothing here and the enforcement is worth having.
+## One table shared by every parse in the process is exactly what wants locking, and a
+## packed array cannot be locked: [method Array.make_read_only] is the only lock the engine
+## offers, [code]Packed*Array[/code] has no such method, and [code]const[/code] does not
+## substitute for one — measured on 4.6.stable and 4.8.dev, a [code]const[/code]
+## [code]Packed*Array[/code] reads back correctly but is NOT read-only, so an append through
+## any binding rewrites the constant process-wide with no error (a [code]const Array[/code]
+## raises there instead). The membership check below runs once per section per parse, so the
+## packed container's access win is worth nothing here and the enforcement is worth having.
 static var HANDLED_SECTIONS: Array[String] = [ # gdlint: ignore[S6] — see above
 	"ExplicitNames",
 	"LifeCycleReducers",

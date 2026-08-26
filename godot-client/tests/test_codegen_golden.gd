@@ -78,7 +78,8 @@ var _sdk_base_scripts: Dictionary[String, Script] = {
 
 ## Members a generated script may declare even though the engine also defines them:
 ## `_init` is the constructor every generated class writes, and overriding it is correct.
-## A plain `var`, never `const` — a const Packed*Array reads back wrong (C1, #88753).
+## A plain `var`, never `const` — a `const Packed*Array` is not read-only, so an append
+## through any binding rewrites the constant process-wide with no error (C1).
 var _collision_exempt: PackedStringArray = ["_init"]
 ## Native member-name sets, keyed by class. ClassDB rebuilds its lists on every call.
 var _native_names_cache: Dictionary[StringName, Dictionary] = { }

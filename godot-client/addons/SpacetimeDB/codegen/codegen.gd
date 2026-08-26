@@ -248,7 +248,8 @@ static func _safe_call_name(call_name: String) -> String:
 ## `BSATN_TYPES` / `create`; the table wrapper spells the three typed change signals and
 ## their `_emit_*` helpers. Everything else those classes carry is inherited, and
 ## [method _column_taken_names] reads that from the bases directly. A plain `var`, never
-## `const` — a const Packed*Array reads back wrong (C1, #88753).
+## `const` — a `const Packed*Array` is not read-only, so an append through any binding
+## rewrites the constant process-wide with no error (C1).
 static var _CODEGEN_OWN_NAMES: PackedStringArray = [
 	"module_name",
 	"table_names",
@@ -328,7 +329,8 @@ static func _safe_field_name(field_name: String) -> String:
 ## named `table_names` would emit `var table_names` next to the `const table_names` the
 ## facade already declares, and Godot rejects `Variable "table_names" has the same name as
 ## a previously declared constant`. The column-side equivalent is [member
-## _CODEGEN_OWN_NAMES]. A plain `var`, never `const` (C1, #88753).
+## _CODEGEN_OWN_NAMES]. A plain `var`, never `const` (C1 — a const packed array is not
+## read-only and an append through a binding rewrites it process-wide).
 static var _DB_FACADE_OWN_NAMES: PackedStringArray = ["table_names"]
 
 
@@ -342,8 +344,9 @@ static func _safe_ref_member_name(member_name: String) -> String:
 
 ## Keywords that introduce a top-level member, in match order. The two-word forms come
 ## first so `static var x` is consumed there and never reaches the bare `var` row, which
-## would otherwise read the member name as `var`. A plain `var`, never `const` — a const
-## Packed*Array reads back wrong (C1, #88753).
+## would otherwise read the member name as `var`. A plain `var`, never `const` — a
+## `const Packed*Array` is not read-only, so an append through any binding rewrites the
+## constant process-wide with no error (C1).
 static var _MEMBER_KEYWORDS: PackedStringArray = [
 	"static var",
 	"static func",

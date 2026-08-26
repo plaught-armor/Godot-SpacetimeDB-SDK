@@ -28,7 +28,8 @@ const MAX_COMPRESSED_CASES_PER_FRAME: int = 64
 const MAX_RECOMPRESSED_CASES_PER_FRAME: int = 24
 # Captures of the same subscription the uncompressed fixture holds, so a mutation that
 # still inflates produces bytes the reader will genuinely try to parse.
-## A plain `var`, never `const` — a const Packed*Array reads back wrong (C1, #88753).
+## A plain `var`, never `const` — a `const Packed*Array` is not read-only, so an append
+## through any binding rewrites the constant process-wide with no error (C1).
 ## No `make_read_only()` either: that is an `Array`/`Dictionary` API, and
 ## `Packed*Array` does not have it (C2a does not reach this type).
 static var COMPRESSED_FIXTURES: PackedStringArray = [
