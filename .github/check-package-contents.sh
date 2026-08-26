@@ -27,6 +27,16 @@ if [ "${#package[@]}" -eq 0 ]; then
 	exit 1
 fi
 
+# The same list as a set, for the membership tests below. Not a convenience: the
+# `printf '%s\n' "${package[@]}" | grep -q` form this replaces is a race under
+# `set -o pipefail` — `grep -q` exits at the match, `printf` takes SIGPIPE, and the
+# pipeline reports 141, which reads as "not found" for a file that is right there.
+# Observed once in thirteen runs, blaming a sidecar that was present and tracked.
+declare -A in_package=()
+for path in "${package[@]}"; do
+	in_package["$path"]=1
+done
+
 # One addon, named for the plugin. A second directory here would be packaged with it.
 mapfile -t addon_dirs < <(printf '%s\n' "${package[@]}" | cut -d/ -f3 | sort -u)
 if [ "${#addon_dirs[@]}" -ne 1 ] || [ "${addon_dirs[0]}" != "SpacetimeDB" ]; then
@@ -67,7 +77,7 @@ done
 for required in \
 	godot-client/addons/SpacetimeDB/plugin.cfg \
 	godot-client/addons/SpacetimeDB/LICENSE; do
-	if ! printf '%s\n' "${package[@]}" | grep -qxF "$required"; then
+	if [ -z "${in_package[$required]+set}" ]; then
 		fail "missing from the package: $required"
 	fi
 done
@@ -78,7 +88,7 @@ done
 for path in "${package[@]}"; do
 	case "$path" in
 		*.gd)
-			if ! printf '%s\n' "${package[@]}" | grep -qxF "$path.uid"; then
+			if [ -z "${in_package[$path.uid]+set}" ]; then
 				fail "script without its .uid sidecar: $path"
 			fi
 			;;
