@@ -85,27 +85,23 @@ const DEFAULT_META_TYPE_MAP: Dictionary[String, String] = {
 
 ## Every schema-v10 section this parser reads, across both of its passes. A section
 ## outside this set is skipped — the two passes below are [code]if[/code]/[code]elif[/code]
-## chains with no final [code]else[/code], so an unrecognized tag simply matches nothing
-## and the parse carries on.
-## That is the intended handling of a section a newer server added: the SDK cannot invent
-## a meaning for it, and refusing the whole schema over one would strand a client on a
-## server it otherwise speaks to perfectly.
+## chains with no final [code]else[/code], so an unrecognized tag matches nothing and the
+## parse carries on. That is the intended handling of a section a newer server added:
+## refusing the whole schema over one would strand a client on a server it otherwise
+## speaks to perfectly.
 ##
-## What it must not be is silent: a section's tables and reducers falling out of the
-## generated bindings with no message reads as a codegen bug rather than an unimplemented
-## feature. Anything not listed here gets named in the log, and the walk that reports it
-## descends into submodules, so a section only a submodule carries is named too.
+## What it must not be is silent, since a section's tables and reducers falling out of the
+## bindings with no message reads as a codegen bug. Anything not listed here is named in
+## the log, and the walk that reports it descends into submodules.
 ##
-## [code]Array[String][/code] rather than the [code]PackedStringArray[/code] the element
-## type would otherwise ask for, and [code]static var[/code] rather than [code]const[/code].
-## One table shared by every parse in the process is exactly what wants locking, and a
-## packed array cannot be locked: [method Array.make_read_only] is the only lock the engine
-## offers, [code]Packed*Array[/code] has no such method, and [code]const[/code] does not
-## substitute for one — measured on 4.6.stable and 4.8.dev, a [code]const[/code]
-## [code]Packed*Array[/code] reads back correctly but is NOT read-only, so an append through
-## any binding rewrites the constant process-wide with no error (a [code]const Array[/code]
-## raises there instead). The membership check below runs once per section per parse, so the
-## packed container's access win is worth nothing here and the enforcement is worth having.
+## [code]Array[String][/code] rather than [code]PackedStringArray[/code], and
+## [code]static var[/code] rather than [code]const[/code], so the shared table can be
+## locked: [method Array.make_read_only] is the only lock the engine offers and
+## [code]Packed*Array[/code] has no such method. [code]const[/code] does not substitute —
+## measured on 4.6.stable and 4.8.dev, a [code]const[/code] [code]Packed*Array[/code] is
+## NOT read-only, so an append rewrites the constant process-wide with no error. The
+## membership check runs once per section per parse, so the packed container's access win
+## is worth nothing here.
 static var HANDLED_SECTIONS: Array[String] = [ # gdlint: ignore[S6] — see above
 	"ExplicitNames",
 	"LifeCycleReducers",
@@ -166,15 +162,14 @@ static func _first_key(d: Dictionary) -> String:
 		return k
 	return ""
 
-# NOTE: the synthesized names ("ResultI32String" and friends) are effectively
-# RESERVED — a user type declared with the same spelling collides, and the flush
-# below appends over it rather than yielding.
 # Synthesized sum types for anonymous inline `Result<T, E>` columns, accumulated by
 # _parse_field_type during a parse and flushed into the type list afterward. Anonymous
-# inline sums (the only ones are Option — handled separately — and Result) have no named
-# Typespace entry, so we synthesize a named RustEnum-style type per distinct Result<T, E>
-# and let the regular enum-with-payload codegen + BSATN path handle it. Keyed by the
-# synthesized bare type name (e.g. "ResultI32String"); reset at the start of each parse.
+# inline sums (only Option — handled separately — and Result) have no named Typespace
+# entry, so a named RustEnum-style type is synthesized per distinct Result<T, E> and the
+# regular enum-with-payload codegen + BSATN path handles it. Keyed by the synthesized bare
+# type name (e.g. "ResultI32String"); reset at the start of each parse.
+# NOTE: those names are effectively RESERVED — a user type spelled the same collides, and
+# the flush appends over it rather than yielding.
 static var _synth_result_types: Dictionary = { }
 
 
@@ -182,14 +177,12 @@ static var _synth_result_types: Dictionary = { }
 ## [method String.to_pascal_case] EXACTLY ONCE.
 ##
 ## `to_pascal_case` is not idempotent — it splits on case boundaries, so a name whose
-## segments are single letters comes back with consecutive capitals that a second pass
-## re-splits differently: `a-b` (a legal SpacetimeDB database name — `parse_database_name`
-## accepts [a-z0-9] with single interior hyphens) gives `AB`, and `AB` gives `Ab`.
-## Applying it twice therefore produced two different prefixes inside one run: the
-## nested-column type map and the `<Prefix>Types` class said `AB…`, while every emitted
-## `class_name` said `Ab…`, and the autoload declared a client class no file wrote.
-## Nothing reported it — the run completed, so the pruning pass then deleted the previous,
-## working bindings.
+## segments are single letters comes back with consecutive capitals a second pass
+## re-splits differently: `a-b` (a legal SpacetimeDB database name) gives `AB`, and `AB`
+## gives `Ab`. Applying it twice yields two different prefixes inside one run — the type
+## map saying `AB…` while every emitted `class_name` says `Ab…`, and the autoload declaring
+## a client class no file wrote — and nothing reports it, so the run completes and the
+## pruning pass deletes the previous working bindings.
 ##
 ## Anything deriving a name from the module — a class name, a file name, the autoload
 ## property — goes through here or through [member SpacetimeParsedSchema.module], which is
@@ -208,9 +201,8 @@ static func module_class_prefix(module_key: String) -> String:
 ## [code]type_offset[/code] is where a module's types land once every module's typespace is
 ## concatenated into the single list the rest of the parser indexes. Each nested typespace
 ## numbers its own types from zero, so the offset is what keeps a submodule's
-## [code]Ref(0)[/code] pointing at the submodule's type instead of the root's — bind those
-## to the wrong type and rows decode as whatever sits at the same index up top, silently.
-## See [code]docs/submodules.md[/code].
+## [code]Ref(0)[/code] pointing at its own type — bound wrong, rows decode as whatever sits
+## at the same index up top, silently. See [code]docs/submodules.md[/code].
 static func _flatten_modules(root: Dictionary) -> Array[Dictionary]:
 	var modules: Array[Dictionary] = []
 	_collect_module(root, PackedStringArray(), modules, { })
@@ -313,11 +305,10 @@ static func _offset_type_refs(value: Variant, offset: int, depth: int = 0) -> Va
 	# algebraic type of arbitrary nesting that arrived over HTTP.
 	#
 	# What makes the bail safe is THIS report, not anything downstream. A Ref left
-	# unrewritten is a small index read against the concatenated list, so it lands in
-	# bounds on another module's type and binds silently — the bounds check in
-	# _parse_field_type does not catch it. The error below is what marks the parse
-	# incomplete, which is what makes codegen discard the whole module. Never weaken it on
-	# the assumption that a later check covers this.
+	# unrewritten is a small index against the concatenated list, so it lands in bounds on
+	# another module's type and binds silently — _parse_field_type's bounds check does not
+	# catch it. This error is what marks the parse incomplete and makes codegen discard the
+	# module, so never weaken it on the assumption a later check covers it.
 	if depth > _PARSE_FIELD_TYPE_MAX_DEPTH:
 		SpacetimePlugin.print_err(
 			"_offset_type_refs recursion exceeded %d levels; aborting" % _PARSE_FIELD_TYPE_MAX_DEPTH
@@ -388,12 +379,10 @@ static func _qualified_type_name(type_prefix: String, type_name: String) -> Stri
 
 static func parse_schema(schema: Dictionary, module_name: String, project_enums: Dictionary = { }) -> SpacetimeParsedSchema:
 	_synth_result_types.clear()
-	# Every "reported it and carried on" path in this parser — a table whose row type did
-	# not resolve, an index column out of range, a view with an unsupported return type —
-	# leaves the schema describing only PART of the module, and codegen's pruning pass
-	# DELETES the bindings for whatever went missing. Snapshotting the plugin's error tally
-	# around the parse is what tells the caller that happened, without every site having to
-	# remember to set a flag.
+	# Every "reported it and carried on" path in this parser leaves the schema describing
+	# only PART of the module, and codegen's pruning pass DELETES the bindings for whatever
+	# went missing. Snapshotting the plugin's error tally around the parse tells the caller
+	# that happened, without every site having to remember to set a flag.
 	var errors_before: int = SpacetimePlugin.error_count
 	var type_map: Dictionary[String, String] = DEFAULT_TYPE_MAP.duplicate() as Dictionary[String, String]
 	type_map.merge(GDNATIVE_PRIMITIVE_TYPES)
@@ -438,12 +427,12 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 	for module: Dictionary in modules:
 		var module_namespace: PackedStringArray = module["namespace"]
 		var type_offset: int = int(module["type_offset"])
-		# Three spellings of the same namespace, because three different things are named from
-		# it. The wire prefix keeps the dots the server registers the def under
-		# ("lib.lib_data"); the identifier prefix is what a class, file or member name can
-		# actually be spelled with ("lib_lib_data"); the type prefix joins a PascalCase type
-		# name ("LibLibPoint"). All three are empty for the root module, so a schema without
-		# submodules parses to exactly what it did before they existed.
+		# Three spellings of the same namespace, for three different things: the wire prefix
+		# keeps the dots the server registers the def under ("lib.lib_data"), the identifier
+		# prefix is what a class, file or member name can be spelled with ("lib_lib_data"),
+		# and the type prefix joins a PascalCase type name ("LibLibPoint"). All three are
+		# empty for the root module, so a schema without submodules parses to exactly what
+		# it did before they existed.
 		var wire_prefix: String = _namespace_wire_prefix(module_namespace)
 		var identifier_prefix: String = _namespace_identifier_prefix(module_namespace)
 		var type_prefix: String = _namespace_type_prefix(module_namespace)
@@ -642,11 +631,9 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				# A product element carries an OPTIONAL name (sats `ProductTypeElement.name`
 				# is `Option<RawIdentifier>`), and everything downstream — the @export var,
 				# the BSATN_TYPES key, the primary-key lookup — spells that name into a
-				# String. An unnamed one used to reach `var pk_field_name: String =
-				# ...struct[i].name` as a null and fault there, which unwound the parse to a
-				# null return and took the module's whole binding set with it. Refuse the
-				# schema instead: a column that cannot be named cannot be generated, and the
-				# server forbids one on a table outright ("has unnamed column, which is
+				# String. Refused here rather than faulting on a null further down, which
+				# would unwind the parse and take the module's whole binding set with it.
+				# The server forbids one on a table outright ("has unnamed column, which is
 				# forbidden").
 				if not (el.get("name", { }).get("some") is String):
 					SpacetimePlugin.print_err(
@@ -746,13 +733,11 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 	for table_info: Dictionary in schema_tables:
 		var table_name_str: String = table_info.get("name", "")
 		var ref_idx_raw: Variant = table_info.get("product_type_ref", -1)
-		# Both of these used to `continue` without a word. Every OTHER skip in this loop
-		# reports first, and the report is what marks the parse incomplete — which is what
-		# stops codegen writing a module short of a table and the pruning pass deleting
-		# that table's previous bindings. Measured on the vtypes fixture: one
-		# `product_type_ref: null` generated 17 files instead of 19 with no error at all,
-		# so the table wrapper and its unique-index accessor (plus their `.uid` sidecars)
-		# were deleted by a run that reported success.
+		# Reported, not skipped silently: the report is what marks the parse incomplete,
+		# which stops codegen writing a module short of a table and the pruning pass
+		# deleting that table's previous bindings. Measured on the vtypes fixture, one
+		# `product_type_ref: null` generated 17 files instead of 19 with no error at all —
+		# the table wrapper and its unique-index accessor, plus their `.uid` sidecars.
 		if table_name_str.is_empty():
 			SpacetimePlugin.print_err(
 				(
@@ -1052,11 +1037,11 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 				tables_of_same_type.append(table)
 
 		# A `Query<T>` view with no ViewPrimaryKeys entry takes the primary key of a table
-		# built on the same row type — `assign_query_view_primary_keys` does exactly that
-		# server-side, and serializes nothing, so the client has to redo it. Its rules,
-		# followed here: a table with no key of its own does not count, and two keyed
-		# tables naming different columns leave the view without one ("Ambiguous source
-		# table: keep the view without a primary key"). A procedural view never inherits.
+		# built on the same row type — `assign_query_view_primary_keys` does that
+		# server-side and serializes nothing, so the client redoes it. Its rules: a table
+		# with no key of its own does not count, and two keyed tables naming different
+		# columns leave the view without one ("Ambiguous source table: keep the view without
+		# a primary key"). A procedural view never inherits.
 		if view_pk_name.is_empty() and is_query_view:
 			var inherited_pk_name: String = ""
 			var inherited_pk_idx: int = 0
@@ -1100,10 +1085,8 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			return_type["is_public"] = is_public_list
 			# The type_def is shared by every table and view of this row type, so its
 			# primary key is only a default for the ones that agree; a disagreement is
-			# carried per table (codegen emits PRIMARY_KEY_BY_TABLE). Never overwrite a
-			# key that is already there — this view's key is not the table's — and leave
-			# the field absent when neither has one, which is what a plain key-less table
-			# does.
+			# carried per table (codegen emits PRIMARY_KEY_BY_TABLE). Never overwrite a key
+			# already there — this view's key is not the table's.
 			if not view_pk_name.is_empty() and String(return_type.get("primary_key_name", "")).is_empty():
 				return_type["primary_key"] = view_pk_idx
 				return_type["primary_key_name"] = view_pk_name
@@ -1113,9 +1096,9 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		# (above), no indexes, no constraints, no schedule, and never `is_event` — the
 		# server builds it the same way (`TableSchema::from_view_def_for_codegen` passes
 		# empty index/constraint/sequence lists and `is_event: false`). Copying the source
-		# table's entry instead handed the view an index accessor whose column carries no
-		# uniqueness promise, and dropped its accessors entirely when the row type belonged
-		# to an event table.
+		# table's entry would hand the view an index accessor whose column carries no
+		# uniqueness promise, and drop its accessors when the row type belongs to an event
+		# table.
 		parsed_tables_list.append({
 			"name": name,
 			"wire_name": view_wire_name,
@@ -1130,11 +1113,11 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 			"is_public": true,
 		})
 
-	# Second flush. The one above runs before reducers and procedures are parsed, so
-	# a Result<T, E> first seen in a RETURN type registered after it and was never
-	# emitted — codegen still referenced the synthesized name, leaving the decoder to
-	# fail with "Unsupported BSATN type 'ResultVector3String'" on every value-returning
-	# procedure. Skips names the first flush already took.
+	# Second flush. The one above runs before reducers and procedures are parsed, so a
+	# Result<T, E> first seen in a RETURN type registers after it and would never be
+	# emitted, leaving codegen referencing a synthesized name the decoder fails on —
+	# "Unsupported BSATN type 'ResultVector3String'" on every value-returning procedure.
+	# Skips names the first flush already took.
 	for synth_name: String in _synth_result_types:
 		if type_map.has(synth_name):
 			continue
@@ -1284,12 +1267,11 @@ static func _is_sum_option(sum_def: Dictionary) -> bool:
 
 
 # Structural ScheduleAt: exactly two variants, `Interval` carrying a TimeDuration and
-# `Time` carrying a Timestamp — the shape SpacetimeDB's `SumType::is_schedule_at`
-# matches (crates/sats/src/sum_type.rs). Recognised by TYPE, never by column name: the
-# `#[scheduled]` macro accepts `scheduled(my_reducer, at = other_column)`, so the column
-# can be called anything, and an ordinary table is free to carry an unrelated column
-# actually named `scheduled_at`. Getting either wrong desyncs the row — a ScheduleAt is
-# a tag byte plus an i64, an i64 is eight bytes — and one bad row fails the whole packet.
+# `Time` carrying a Timestamp — the shape SpacetimeDB's `SumType::is_schedule_at` matches
+# (crates/sats/src/sum_type.rs). Recognised by TYPE, never by column name: `#[scheduled]`
+# accepts `scheduled(my_reducer, at = other_column)`, and an ordinary table may carry an
+# unrelated column named `scheduled_at`. Either mistake desyncs the row (a ScheduleAt is a
+# tag byte plus an i64), and one bad row fails the whole packet.
 static func _is_sum_schedule_at(sum_def: Dictionary) -> bool:
 	var variants: Array = sum_def.get("variants", [])
 	if variants.size() != 2:

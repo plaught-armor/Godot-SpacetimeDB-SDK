@@ -25,20 +25,18 @@ var selected_table_name: StringName:
 	set = set_selected_table_name
 var _derived_table_names: Array[StringName] = []
 var _current_db_instance: LocalDatabase = null
-## Bumped every time the node leaves the tree. The subscription path awaits (for
-## the database, for the parent, for the current rows), and a receiver can leave
-## and re-enter the tree while one of those awaits is suspended — which arms a
-## second subscription pass. Each pass carries the generation it started under
-## and drops itself at the next resume point if a newer entry has taken over, so
-## only one pass ever reaches the row replay in [method _subscribe_to_table].
+## Bumped every time the node leaves the tree. The subscription path awaits, and a
+## receiver can leave and re-enter while one of those awaits is suspended, arming a second
+## pass. Each pass carries the generation it started under and drops itself at the next
+## resume point if a newer entry has taken over, so only one reaches the row replay in
+## [method _subscribe_to_table].
 var _entry_generation: int = 0
 ## The table [method _subscribe_to_table] actually registered the listeners under, which
 ## is not always [member selected_table_name] by the time the receiver leaves the tree:
-## assigning [member table_to_receive] at runtime moves that property (through
-## [method on_set]) without re-subscribing. Unsubscribing the current name instead of
-## this one left the first table's listeners registered for good — Callables bound to a
-## node that is about to be freed, which [LocalDatabase] then calls on every row event
-## for that table. Empty until a subscription pass completes.
+## assigning [member table_to_receive] at runtime moves that property without
+## re-subscribing. Unsubscribing the current name instead would leave the first table's
+## listeners registered for good, bound to a node about to be freed. Empty until a
+## subscription pass completes.
 var _subscribed_table_name: StringName = &""
 
 
@@ -77,12 +75,10 @@ func _init_subscription(generation: int) -> void:
 func _exit_tree() -> void:
 	_unsubscribe_from_table(_subscribed_table_name)
 	_subscribed_table_name = &""
-	# _ready runs once per node, not once per tree entry, so without this a
-	# receiver that leaves the tree and comes back (a pooled node, a re-parented
-	# actor, a scene swapped out and back in) stays unsubscribed for good — with
-	# no error to show for it. request_ready re-arms _ready for the next entry;
-	# the generation bump retires any subscription pass still suspended on an
-	# await, so the new entry is the only one that replays rows and subscribes.
+	# _ready runs once per node, not once per tree entry, so without this a receiver that
+	# leaves the tree and comes back stays unsubscribed for good, with no error to show for
+	# it. request_ready re-arms _ready for the next entry; the generation bump retires any
+	# pass still suspended on an await.
 	_entry_generation += 1
 	request_ready()
 
@@ -242,12 +238,11 @@ func _unsubscribe_from_table(table_name_sn: StringName) -> void:
 
 	_print_log("Unsubscribing from table: %s" % table_name_sn)
 
-	# Assumption: this reaches the unsubscribe calls below without suspending —
-	# _exit_tree calls it without awaiting, and _get_db only awaits on its
-	# wait_for_init branch, which this call does not take. Should _get_db ever
-	# gain an await on this path, the removal would land after a new entry has
-	# re-subscribed and would strip that entry's listeners; the generation check
-	# _subscribe_to_table uses would have to be mirrored here.
+	# Assumption: this reaches the unsubscribe calls below without suspending — _exit_tree
+	# calls it without awaiting, and _get_db only awaits on its wait_for_init branch, which
+	# this call does not take. Should _get_db gain an await on this path, the removal would
+	# land after a new entry re-subscribed and strip that entry's listeners, so the
+	# generation check _subscribe_to_table uses would have to be mirrored here.
 	var db: LocalDatabase = await _get_db()
 	if not is_instance_valid(db):
 		return

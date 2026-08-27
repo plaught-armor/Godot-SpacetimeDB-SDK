@@ -33,16 +33,12 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 	var decompressed_data: PackedByteArray = []
 	var input_failed: bool = false
 
-	# Explicitly bounded (NASA rule 2) rather than `while true`. The loop already ends
-	# on drained input, on the size ceiling, or on a stream error, but that is
-	# StreamPeerGZIP's semantics guaranteeing it, not this code — and the Brotli path
-	# above is here precisely because a decoder's loop semantics did not hold. Each
-	# pass moves at least one chunk of input or output, so the ceiling divided by the
-	# chunk size is the most passes a legitimate stream can need.
-	# Doubled rather than "+ 2": a maximal stream needs one pass per output chunk plus
-	# one to see the drain, and `get_partial_data` may return short, so an exact budget
-	# would reject a legitimate stream that read short even once. Doubling keeps the
-	# margin proportional if the ceiling is ever raised.
+	# Explicitly bounded (NASA rule 2) rather than `while true`. The loop already ends on
+	# drained input, on the size ceiling, or on a stream error, but that is StreamPeerGZIP's
+	# semantics guaranteeing it, not this code. Each pass moves at least one chunk of input
+	# or output, so the ceiling divided by the chunk size is the most passes a legitimate
+	# stream can need. Doubled rather than "+ 2" because `get_partial_data` may return
+	# short, so an exact budget would reject a stream that read short even once.
 	var max_passes: int = _MAX_DECOMPRESSED_SIZE / _CHUNK_SIZE * 2 + 2
 	var drained: bool = false
 	for _pass: int in max_passes:
@@ -78,12 +74,11 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 			printerr("DataDecompressor Error: Failed while getting partial data.")
 			return PackedByteArray()
 
-	# An input failure means the stream broke partway: whatever inflated before it is
-	# the front of a message whose tail is missing, and handing that to the reader is
-	# strictly worse than admitting the frame is gone — it decodes as far as the cut
-	# and then reports a corruption that belongs to this layer. Every other failure
-	# path here returns empty; so does this one. The cause was already reported above,
-	# and repeating it would misattribute it to the wire payload.
+	# An input failure means the stream broke partway: whatever inflated before it is the
+	# front of a message whose tail is missing, and handing that to the reader is worse than
+	# admitting the frame is gone — it decodes as far as the cut and then reports a
+	# corruption belonging to this layer. The cause was already reported above; repeating
+	# it here would misattribute it to the wire payload.
 	if input_failed:
 		return PackedByteArray()
 	if not drained:
@@ -96,20 +91,17 @@ static func decompress_packet(compressed_bytes: PackedByteArray) -> PackedByteAr
 		)
 		return PackedByteArray()
 	# Both remaining ways out are a partial payload, and both are refused rather than
-	# delivered, which is the opposite of the policy one layer up (a packet that fails
-	# mid-way still delivers the messages read before it). The difference: at this layer
-	# a CUT member and a CORRUPTED one are indistinguishable. The only check that
-	# separates them is the member's CRC32, computed at member end and swallowed by
-	# StreamPeerGZIP — the same swallowing that makes the trailer heuristic below
-	# necessary. Deflate's own structure catches most corruption — Godot runs inflate
-	# inside put_partial_data, so it exits through THAT error branch above (measured: 40
-	# of 40 mid-member corruptions of a valid member) — but a hit inside a stored block's
-	# literals, or one that stays a valid Huffman decode, inflates into plausible-but-
-	# wrong bytes that only the CRC would have caught, and those can parse as
-	# structurally valid BSATN and land wrong values in the mirror. That residual is
-	# reasoned, not reproduced. The parse layer's partial delivery is safe
-	# because what it delivers was verified by the structure that parsed it; nothing
-	# here can make that claim.
+	# delivered — the opposite of the policy one layer up, where a packet that fails midway
+	# still delivers the messages read before it. The difference is that at this layer a CUT
+	# member and a CORRUPTED one are indistinguishable: the only check separating them is
+	# the member's CRC32, computed at member end and swallowed by StreamPeerGZIP (the same
+	# swallowing that makes the trailer heuristic below necessary). Deflate's own structure
+	# catches most corruption through put_partial_data's error branch above (measured: 40 of
+	# 40 mid-member corruptions), but a hit inside a stored block's literals, or one that
+	# stays a valid Huffman decode, inflates into plausible-but-wrong bytes only the CRC
+	# would have caught, and those can parse as valid BSATN. That residual is reasoned, not
+	# reproduced. The parse layer's partial delivery is safe because what it delivers was
+	# verified by the structure that parsed it.
 	if last_slice_position < compressed_bytes.size():
 		# Input the decoder never consumed: everything past the first member's trailer.
 		# The SpacetimeDB server writes exactly one gzip member per frame, so this is a

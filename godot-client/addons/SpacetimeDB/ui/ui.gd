@@ -92,12 +92,12 @@ func update_module_ui() -> void:
 				.connect(func(text: String):
 					module_config.name = text
 					plugin_config_changed.emit())
-		# Committed when the edit ends, not per keystroke. Re-keying on every keystroke
-		# walked the dictionary through every prefix of what was being typed, and each
-		# of those re-keys overwrote whatever module already had that alias: typing
-		# "alpha" into a second module's alias field left ONE entry, keyed "alpha" but
-		# carrying the other module's name — the first module's name, flags and schema
-		# were gone, saved over on the same keystroke, with both rows still on screen.
+		# Committed when the edit ends, not per keystroke. Re-keying per keystroke walks
+		# the dictionary through every prefix of what is being typed, and each re-key
+		# overwrites whatever module already had that alias — typing "alpha" into a second
+		# module's alias field leaves ONE entry keyed "alpha" but carrying the other
+		# module's name: the first module's name, flags and schema were saved over on the
+		# same keystroke, with both rows still on screen.
 		alias_input \
 				.text_submitted \
 				.connect(func(text: String):

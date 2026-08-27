@@ -179,10 +179,9 @@ static func resolve_retry_delay(value: float, fallback: float, setting: String) 
 ## [constant REFUSED_REQUEST_TIMEOUT] when it cannot be used at all.
 ##
 ## Zero, negative, NaN and anything under [constant MIN_REQUEST_TIMEOUT_SECONDS] are NOT
-## clamped up to something usable: they are the caller saying something
-## [method SpacetimeAuth.exchange] refuses outright, and it reports the refusal as the
-## exchange's own error rather than silently substituting a deadline. The refusal comes
-## back as a distinct value rather than a substitute, which is why this is not shaped like
+## clamped up to something usable: [method SpacetimeAuth.exchange] refuses them outright
+## and reports that as the exchange's own error rather than substituting a deadline. The
+## refusal comes back as a distinct value, which is why this is not shaped like
 ## [method resolve_retry_delay].
 static func resolve_request_timeout(value: float) -> float:
 	if value > MAX_REQUEST_TIMEOUT_SECONDS:
@@ -211,10 +210,9 @@ static func resolve_request_timeout(value: float) -> float:
 
 ## [param value] clamped into the attempt budget one exchange may spend.
 ##
-## [method SpacetimeAuth.exchange] refuses a budget below one outright, before calling this,
-## so the bottom arm here is only reachable by a direct caller — it exists so this cannot
-## answer with a value nothing can use. See [constant MAX_ATTEMPTS] for what the ceiling
-## bounds.
+## [method SpacetimeAuth.exchange] refuses a budget below one before calling this, so the
+## bottom arm is only reachable by a direct caller — it exists so this cannot answer with
+## a value nothing can use. See [constant MAX_ATTEMPTS] for what the ceiling bounds.
 static func resolve_attempts(value: int) -> int:
 	if value < 1:
 		push_error("SpacetimeAuthProtocol: max_attempts = %d is not a request; using 1." % value)

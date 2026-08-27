@@ -41,14 +41,13 @@ var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = 
 ## no-listener path. Read-only so a stray mutation fails loud (C2a).
 static var _EMPTY_LISTENERS: Array = []
 ## Column-name list per generated record [Script], cached from its BSATN_TYPES const.
-## [method Script.get_script_constant_map] allocates a fresh Dictionary and `.keys()`
-## a fresh Array on every call, and [method _values_equal] needs that list once per
-## nested column per row compared — uncached, it dominated nested-row change
-## detection. Keyed by [Script] (process-lived, bounded by the generated record
-## count). Entries are read-only so a caller cannot mutate the shared list (C2a).
-## Reached only from the main-thread [method apply_table_update] path — NOT
-## synchronized. Moving row equality or row hashing onto the deserializer worker
-## needs either a mutex here or a per-thread cache.
+## [method Script.get_script_constant_map] allocates a fresh Dictionary and `.keys()` a
+## fresh Array on every call, and [method _values_equal] needs that list once per nested
+## column per row compared — uncached, it dominated nested-row change detection. Keyed by
+## [Script] (process-lived, bounded by the generated record count); entries are read-only
+## (C2a). Reached only from the main-thread [method apply_table_update] path — NOT
+## synchronized, so moving row equality or hashing onto the deserializer worker needs a
+## mutex here or a per-thread cache.
 static var _record_columns_cache: Dictionary[Script, Array] = { }
 ## Shared read-only empty column list for objects that are not generated records.
 static var _EMPTY_COLUMNS: Array = []
@@ -87,37 +86,33 @@ var _pk_less_counts: Dictionary[StringName, Dictionary] = { }
 ## (PK-less: { hash -> [[row, count]] }) }. Both shapes carry a COUNT, because one query
 ## set can deliver the same row more than once: the server evaluates each query in a
 ## subscribe independently (execute_plans in crates/core/src/subscription/mod.rs emits one
-## TableUpdate per query, with no dedupe across the set), so overlapping queries in one
-## subscribe each contribute a reference. The count is exactly the number of references
-## this query contributed to _ref_counts, so a prune can hand every one of them back. On
-## the PK side a single reference is stored as the bare row and only a repeat widens the
-## entry to a pair, which keeps the common subscribe path allocation-free.
-## Records which rows each subscription contributes so a SubscriptionError on an already-
-## applied query can be pruned precisely (decrement those rows' refcounts, evict any that
-## no other query holds) — the server sends no dropped rows on an error, unlike unsubscribe.
+## TableUpdate per query, with no dedupe across the set). The count is exactly the number
+## of references this query contributed to _ref_counts, so a prune can hand every one of
+## them back. On the PK side a single reference is stored as the bare row and only a
+## repeat widens the entry to a pair, which keeps the common subscribe path
+## allocation-free.
+##
+## This membership is what lets a SubscriptionError on an already-applied query be pruned
+## precisely, since the server sends no dropped rows on an error, unlike unsubscribe.
 var _query_rows: Dictionary[int, Dictionary] = { }
 ## Bumped by every cache wipe — [method clear_local_db] and [method clear_all_tables]
-## both, since both detach the containers below. Every loop that dispatches
-## callbacks snapshots it first and abandons the rest of its work when it no longer
-## matches, because a wipe is reachable from INSIDE one of those callbacks: a listener
-## that calls [method SpacetimeDBClient.connect_db] wipes the mirror synchronously
-## before it opens the new socket.
+## both, since both detach the containers below. Every loop that dispatches callbacks
+## snapshots it first and abandons the rest of its work when it no longer matches, because
+## a wipe is reachable from INSIDE one of those callbacks: a listener that calls
+## [method SpacetimeDBClient.connect_db] wipes the mirror synchronously.
 ##
-## Without that, the frame below the wipe keeps applying a dead session's rows into the
-## containers it hoisted into locals before dispatching — and the wipe empties the INNER
-## containers of [member _tables] / [member _pk_less_tables] (so those locals stay live)
-## while clearing the OUTER maps of [member _ref_counts] / [member _pk_less_counts] (so
-## those locals detach). Measured: the rest of the batch landed in the mirror with no
-## refcount at all, which is the one state the refcount paths treat as impossible — a
-## later delete reads 0 and skips, so the row never leaves the cache and no
-## [signal row_deleted] ever fires, and on the PK-less side every re-delivery cached
-## another copy of it.
+## Without that, the rest of the batch keeps applying into containers the dispatching loop
+## hoisted into locals — and a wipe empties the INNER containers of [member _tables] /
+## [member _pk_less_tables] (locals stay live) while clearing the OUTER maps of
+## [member _ref_counts] / [member _pk_less_counts] (locals detach). Measured: rows landed
+## with no refcount at all, the one state the refcount paths treat as impossible, so a
+## later delete reads 0 and skips and the row never leaves the cache.
 var _generation: int = 0
 ## Bumped by [method clear_local_db] ONLY, i.e. by the wipe that marks a session
 ## boundary. [method clear_all_tables] detaches the same containers (so it bumps
 ## [member _generation] and a batch under it is still abandoned) but says nothing about
-## the connection — a caller rebuilding its own view mid-session must not make the client
-## drop the rest of a live transaction, which is what reading the wrong counter did.
+## the connection: a caller rebuilding its own view mid-session must not make the client
+## drop the rest of a live transaction.
 var _session_generation: int = 0
 ## Cache-emptying [Callable]s registered by the generated index accessors through
 ## [method register_index_invalidator]. Fired by [method clear_all_tables], the one wipe
@@ -157,18 +152,15 @@ func _init(p_schema: SpacetimeDBSchema) -> void:
 ##
 ## The snapshot is what makes the [code]is_valid()[/code] guard at every
 ## [code]listener.call[/code] site below necessary: a callback that frees ANOTHER
-## subscriber (its node, or any object holding a subscribed [Callable]) leaves that
-## object's Callable in this already-taken copy. Calling it is a GDScript runtime
-## error, which unwinds the whole apply — measured: freeing a second receiver from
-## an insert handler applied 1 of a 3-row batch, dropped the rest of the transaction
-## from the mirror and fired no transactions_completed, and the server never resends.
-## Skipping a dead listener instead matches how the engine treats a signal whose
-## receiver was freed. The guard covers a method Callable ([code]obj.method[/code]),
-## which is what every subscriber in this SDK registers; a LAMBDA that captured a
-## node stays valid after that node is freed, so a lambda subscriber still has to
-## check its own captures. [method Object.queue_free] was never affected (the free lands
-## after the batch), and a callback that frees its OWN object is refused by the
-## engine ("Object is locked and can't be freed").
+## subscriber leaves that object's Callable in this already-taken copy, and calling it is
+## a GDScript runtime error that unwinds the whole apply (measured: freeing a second
+## receiver from an insert handler applied 1 of a 3-row batch, fired no
+## transactions_completed, and the server never resends). Skipping a dead listener matches
+## how the engine treats a signal whose receiver was freed. The guard covers a method
+## Callable, which is what every subscriber in this SDK registers; a LAMBDA that captured
+## a node stays valid after that node is freed, so a lambda subscriber must check its own
+## captures. [method Object.queue_free] is unaffected (the free lands after the batch), and
+## a callback that frees its OWN object is refused by the engine.
 func _listener_snapshot(by_table: Dictionary, key: StringName) -> Array:
 	var live: Array = by_table.get(key, _EMPTY_LISTENERS)
 	return live.duplicate() if not live.is_empty() else _EMPTY_LISTENERS
@@ -187,10 +179,9 @@ func _normalize(table_name: StringName) -> StringName:
 # Adds [param callable] to a table's listener array, dropping any listener whose object
 # has since been freed. A subscriber that goes away without calling the matching
 # unsubscribe leaves its Callable in the array for good: the dispatch loops skip an
-# invalid one, so it is not a correctness problem, but nothing ever removed it and a
-# pool that subscribes raw callbacks per instance grew the array without bound. Pruning
-# here rather than per update keeps the cost on the cold path — the next subscriber on
-# that table clears the previous generation's dead entries.
+# invalid one, so it is not a correctness problem, but a pool subscribing raw callbacks
+# per instance would grow the array without bound. Pruning here rather than per update
+# keeps the cost on the cold path.
 func _add_listener(by_table: Dictionary, key: StringName, callable: Callable) -> void:
 	if not by_table.has(key):
 		by_table[key] = []
@@ -206,27 +197,21 @@ func _add_listener(by_table: Dictionary, key: StringName, callable: Callable) ->
 ## reporting the rows it dropped.
 ##
 ## The generated index accessors keep their caches current through the ordinary
-## insert/update/delete listeners, which is enough for every wipe that reports
-## ([method clear_local_db]) and for nothing at all otherwise:
-## [method clear_all_tables] empties the storage in silence, and an index left holding
-## the previous contents answers [code]find()[/code] / [code]filter()[/code] with rows
-## the mirror no longer has. A game listener in that position is the documented cost of
-## that method — an index is not a listener but part of the mirror's own read path, so it
-## is invalidated here instead.
+## insert/update/delete listeners, which covers every wipe that reports
+## ([method clear_local_db]). [method clear_all_tables] empties the storage in silence, and
+## an index left holding the previous contents answers [code]find()[/code] /
+## [code]filter()[/code] with rows the mirror no longer has. A game listener in that
+## position is the documented cost of that method — an index is part of the mirror's own
+## read path, so it is invalidated here instead.
 ##
-## Dead [Callable]s are pruned here, the same shape (and for the same reason) as
-## [method _add_listener], and again at the top of [method clear_all_tables] — one of the
-## two is the cold path whichever way an index is released. A [Callable] bound to a method
-## holds its target by [code]ObjectID[/code], not a reference, so registering here does not
-## keep an index alive.
+## Dead [Callable]s are pruned here, the same shape as [method _add_listener], and again at
+## the top of [method clear_all_tables] — one of the two is the cold path whichever way an
+## index is released. A [Callable] bound to a method holds its target by
+## [code]ObjectID[/code], so registering here does not keep an index alive.
 ##
 ## [param invalidator] is expected to empty a cache and nothing else — it must not mutate
 ## this database. Wiping again is the dangerous shape: the list is a registry no wipe
-## empties, so a re-entrant [method clear_all_tables] would fire every entry again (that
-## descent is bounded there, but nothing needs it). Delivering rows is merely surprising:
-## an [method apply_table_update] from here lands in a database the caller believes it
-## just emptied, and the invalidators after this one in the same pass then clear the
-## caches those rows just populated.
+## empties, so a re-entrant [method clear_all_tables] would fire every entry again.
 func register_index_invalidator(invalidator: Callable) -> void:
 	for i: int in range(_index_invalidators.size() - 1, -1, -1):
 		if not _index_invalidators[i].is_valid():
@@ -323,13 +308,10 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 		return &""
 	# The generated row script's PRIMARY_KEY const is the whole answer: codegen emits it
 	# for every table the schema gives a primary key and omits it for every table it does
-	# not. There used to be a fallback here that took a storage property named `id` or
-	# `identity` as the key when the const was absent — but the const is absent precisely
-	# because the table HAS no primary key, and such a table's `id` column carries no
-	# uniqueness promise. Two rows sharing one (a log or junction table keyed by an entity,
-	# `identity` appearing once per row rather than once per player) collapsed into a
-	# single cached entry, so the mirror silently showed one row where the server held
-	# several. A table with no primary key is refcounted by row value instead.
+	# not. Nothing may guess a key from a property named `id` or `identity` — such a column
+	# on an unkeyed table carries no uniqueness promise, and two rows sharing one would
+	# collapse into a single cached entry. A table with no primary key is refcounted by row
+	# value instead.
 	var constants: Dictionary = schema.get_script_constant_map()
 	# One row type can back several tables that disagree about the key — a procedural view
 	# returning a table's row type has a primary key only when the module declared one, so
@@ -348,14 +330,13 @@ func _get_primary_key_field(table_name_lower: StringName) -> StringName:
 
 
 # The row script registered for a table, or null. Reports a missing one ONCE per table:
-# both callers below need it on every update, so the old per-call printerr repeated for
-# the life of the connection, and neither said what goes wrong when it is absent.
+# both callers below need it on every update, so a per-call report would repeat for the
+# life of the connection.
 #
-# What goes wrong is not a degraded lookup but a wrong answer. Without the script there is
-# no column list, so _rows_equal reports every row equal and _row_hash sends them all to
-# one bucket: a table with no primary key collapses into a single cached entry and its
-# deletes release the wrong row. Nothing is cached here, so a script registered later
-# still resolves.
+# What goes wrong without it is not a degraded lookup but a wrong answer: with no column
+# list _rows_equal reports every row equal and _row_hash sends them all to one bucket, so a
+# table with no primary key collapses into a single cached entry and its deletes release
+# the wrong row. Nothing is cached here, so a script registered later still resolves.
 #
 # Exact wire name, not the underscore-stripped type key: `user_data` and `userdata` are
 # both legal table names and collapse onto one entry in schema.types.
@@ -417,17 +398,15 @@ static func _build_record_columns(script: Script) -> Array:
 	return cols
 
 
-# Value-equality that descends into nested Resource columns (product/sum-type
-# wrappers) and Arrays. Variant `==` compares two Objects by identity, and every
-# row/nested record is a fresh `.new()` per delivery (no interning), so an identity
-# compare reports two structurally-equal rows unequal — firing spurious row_updated
-# on the PK path and missing dedup on the PK-less path. Columns come from the
-# record's BSATN_TYPES; primitives / Packed*Array short-circuit on the final
-# `a == b`. That short-circuit is not free: value equality costs ~1.6x an identity
-# compare on an all-primitive row and ~2.9x on a nested one (tests/bench_rows_equal.gd).
-# It is the price of not firing spurious row_updated, not a no-op — which is why
-# [method _rows_equal] compares primitive columns inline and only calls this for
-# the Object / Array columns that actually need the walk.
+# Value-equality that descends into nested Resource columns (product/sum-type wrappers)
+# and Arrays. Variant `==` compares two Objects by identity, and every row/nested record is
+# a fresh `.new()` per delivery, so an identity compare reports two structurally-equal rows
+# unequal — firing spurious row_updated on the PK path and missing dedup on the PK-less
+# path. Columns come from the record's BSATN_TYPES; primitives / Packed*Array
+# short-circuit on the final `a == b`. Not free: ~1.6x an identity compare on an
+# all-primitive row and ~2.9x on a nested one (tests/bench_rows_equal.gd), which is why
+# [method _rows_equal] compares primitive columns inline and only calls this for the
+# Object / Array columns that need the walk.
 static func _values_equal(a: Variant, b: Variant) -> bool:
 	var ta: int = typeof(a)
 	if ta != typeof(b):
@@ -443,13 +422,12 @@ static func _values_equal(a: Variant, b: Variant) -> bool:
 				if not _values_equal(a.get(col), b.get(col)):
 					return false
 			return true
-		# No BSATN_TYPES. The SDK's own wrapper types carry their payload in named
-		# members instead, so each needs its own descent — without it an Option, a
-		# sum-type or a scheduled_at column compares by identity, and every delivery
-		# builds a fresh instance, so two structurally equal rows never match. These
-		# three are every wrapper the deserializer can put in a column (option.gd,
-		# rust_enum.gd — the base of every generated sum type — and schedule_at.gd);
-		# a fourth would have to be added here and to [method _value_hash] together.
+		# No BSATN_TYPES. The SDK's own wrapper types carry their payload in named members
+		# instead, so each needs its own descent, or it compares by identity and two
+		# structurally equal rows never match. These three are every wrapper the
+		# deserializer can put in a column (option.gd, rust_enum.gd — the base of every
+		# generated sum type — and schedule_at.gd); a fourth would have to be added here
+		# and to [method _value_hash] together.
 		if a is Option:
 			if b is Option:
 				return _values_equal(a.data, b.data)
@@ -478,20 +456,18 @@ static func _values_equal(a: Variant, b: Variant) -> bool:
 
 
 # Two values Variant `==` calls different are still the same row value when the only
-# difference is NaN. `NAN == NAN` is false in GDScript, while `hash(NAN)` is a single
-# value — Godot's hash_djb2_one_float normalizes NaN (and -0.0) before hashing — and
-# [method _value_hash] is built on that hash. Without this the two disagree: a PK-less
-# row carrying NaN is found by hash and then never matched, so every delivery cached
-# another copy and every delete was dropped (the row could never leave the mirror), and
-# a PK row carrying NaN was reported as an update on every unchanged re-delivery.
+# difference is NaN. `NAN == NAN` is false in GDScript, while `hash(NAN)` is a single value
+# (Godot's hash_djb2_one_float normalizes NaN and -0.0), and [method _value_hash] is built
+# on that hash. Without this the two disagree: a PK-less row carrying NaN is found by hash
+# and then never matched, so every delivery caches another copy and every delete is
+# dropped; a PK row carrying NaN is reported as an update on every unchanged re-delivery.
 #
 # It also follows the server, which holds ONE such row: sats types a float column as
 # `decorum::Total<f32>` (crates/sats/src/algebraic_value.rs), a total order in which NaN
 # equals itself.
 #
-# Reached only from the values-differ path of [method _values_equal] /
-# [method _rows_equal], so an equal row that carries no NaN pays nothing for it. An equal
-# row that DOES carry one walks this, because a NaN makes even `Vector2 == Vector2` false.
+# Reached only from the values-differ path of [method _values_equal] / [method _rows_equal],
+# so an equal row that carries no NaN pays nothing for it.
 static func _nan_equal(a: Variant, b: Variant, t: int) -> bool:
 	if t == TYPE_FLOAT:
 		return is_nan(a) and is_nan(b)
@@ -538,9 +514,8 @@ static func _value_hash(v: Variant) -> int:
 
 func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array[StringName]) -> bool:
 	for prop_name: StringName in props:
-		# Primitive columns (the majority of every row) compare inline — the
-		# per-field [method _values_equal] call is itself the dominant cost of an
-		# all-primitive row. Only Object/Array columns need the recursive walk.
+		# Primitive columns (the majority of every row) compare inline — the per-field
+		# [method _values_equal] call is itself the dominant cost of an all-primitive row.
 		# Semantics stay identical: differing types are unequal, no `==` coercion.
 		var av: Variant = a.get(prop_name)
 		var bv: Variant = b.get(prop_name)
@@ -552,9 +527,9 @@ func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array[StringNa
 				return false
 		elif av != bv:
 			# Nested rather than `and`-ed into the branch above: a compound condition
-			# materializes both operands' results per column even when the first
-			# short-circuits, and this runs once per column of every compared row
-			# (measured +17% on an all-primitive row, tests/bench_rows_equal.gd).
+			# materializes both operands per column even when the first short-circuits,
+			# once per column of every compared row (+17% on an all-primitive row,
+			# tests/bench_rows_equal.gd).
 			if not _nan_equal(av, bv, ta):
 				return false
 	return true
@@ -593,12 +568,10 @@ func _pk_less_remove(counts: Dictionary, h: int, entry: Array) -> void:
 		counts.erase(h)
 
 
-## Reports ONCE per table that a delete arrived for a row value the mirror does not
-## hold. Silent before: the delete was dropped, the row it was meant to remove stayed
-## cached for the rest of the session, and nothing said so — the shape both the NaN
-## column bug and a local write into a handed-out row produce (see the class note).
-## Once per table because the same mutated row is re-delivered by every later
-## subscription, and the second line adds nothing to the first.
+## Reports ONCE per table that a delete arrived for a row value the mirror does not hold.
+## The delete is dropped and the row it meant to remove stays cached for the session — the
+## shape a local write into a handed-out row produces (see the class note). Once per table
+## because the same mutated row is re-delivered by every later subscription.
 func _warn_unmatched_delete(table_name_lower: StringName) -> void:
 	if _unmatched_delete_warned.has(table_name_lower):
 		return
@@ -683,9 +656,8 @@ func prune_query(query_id: int) -> void:
 	for table_name_lower: StringName in tables:
 		if _generation != gen:
 			# A delete callback wiped the mirror (a listener that reconnects). Every row
-			# this prune had left to drop is gone with it, and _query_rows was cleared —
-			# re-entering apply_table_update here would rebuild membership for a query
-			# the wipe just forgot.
+			# this prune had left to drop is gone with it, and re-entering
+			# apply_table_update would rebuild membership for a query the wipe forgot.
 			return
 		var membership: Dictionary = tables[table_name_lower]
 		var drop: TableUpdateData = TableUpdateData.new()
@@ -735,8 +707,7 @@ func apply_database_subscription_applied(db_update: SubscribeAppliedMessage) -> 
 		return
 	# The SESSION counter, not _generation: every iteration re-hoists its own containers
 	# through apply_table_update, so a mid-session clear_all_tables() leaves the rest of
-	# this message perfectly applicable — truncating it would drop rows the server sent
-	# on a live connection. Only a session boundary makes the remainder dead traffic.
+	# this message applicable. Only a session boundary makes the remainder dead traffic.
 	var session: int = _session_generation
 	for table_update: TableUpdateData in db_update.tables:
 		apply_table_update(table_update, db_update.query_set_id.id)
@@ -760,14 +731,13 @@ func apply_database_update(db_update: DatabaseUpdateData) -> void:
 ## its listeners, emitted only when [param dispatched] says this batch actually changed
 ## something.
 ##
-## Called at the END of every path through [method apply_table_update], including the
-## ones a mid-dispatch cache wipe abandons — a batch that reported rows and no terminator
-## leaves a consumer that redraws on this signal (which is what it is for) holding a view
-## it was told to update and never told to finish. The wipe cannot be relied on to have
-## sent one instead: [method clear_all_tables] reports nothing at all, and the PK delete
-## pass erases each row BEFORE it dispatches, so the wipe can find the table empty and
-## report nothing for it. A repeated terminator only makes a consumer flush twice; a
-## missing one leaves the flush undone for the rest of the session.
+## Called at the END of every path through [method apply_table_update], including the ones
+## a mid-dispatch cache wipe abandons: a batch that reported rows and no terminator leaves
+## a consumer that redraws on this signal holding a view it was told to update and never
+## told to finish. The wipe cannot be relied on to have sent one — [method clear_all_tables]
+## reports nothing at all, and the PK delete pass erases each row BEFORE it dispatches, so
+## the wipe can find the table empty. A repeated terminator only makes a consumer flush
+## twice; a missing one leaves the flush undone for the session.
 func _end_table_transaction(table_name_lower: StringName, tx_listeners: Array, dispatched: bool) -> void:
 	if not dispatched:
 		return
@@ -897,18 +867,16 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 
 		if not table_update.deletes.is_empty():
 			# instance_id -> the cached row, for a single-pass array compact and for the
-			# delete callbacks that follow it. The two delete callbacks split on whether the
-			# row is still in the cache, so on_before_delete fires here (row still listed)
-			# and on_delete only after the compaction below — matching the PK path, which
-			# erases from the table dict between the two. Firing both from this loop left
-			# on_delete able to find the row in iter(), so a listener that rebuilt its view
-			# from the cache kept showing what it was just told had been deleted.
+			# delete callbacks that follow it. The two delete callbacks split on whether
+			# the row is still in the cache, so on_before_delete fires here (row still
+			# listed) and on_delete only after the compaction below — matching the PK path,
+			# which erases from the table dict between the two. Firing both from this loop
+			# would let on_delete still find the row in iter().
 			#
-			# One difference from the PK path remains, and it follows from the compaction
-			# being a single pass over the array: a batch evicting several rows reports
-			# every before_delete first, then every delete, where the PK path interleaves
-			# them per row. Both orders keep each row's own pair in order and keep the
-			# cache state each callback promises; only the cross-row interleaving differs.
+			# One difference from the PK path follows from the compaction being a single
+			# pass: a batch evicting several rows reports every before_delete first, then
+			# every delete, where the PK path interleaves them per row. Both orders keep
+			# each row's own pair in order and the cache state each callback promises.
 			var evicted: Dictionary[int, _ModuleTableType] = { }
 			for deleted_row: _ModuleTableType in table_update.deletes:
 				if _generation != gen:
@@ -956,10 +924,9 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				for gone_id: int in evicted:
 					# No generation check here, unlike every other dispatch loop: the
 					# compaction above already took these rows out of rows_array, so a wipe
-					# fired from inside this loop snapshots an array that no longer holds
-					# them and cannot report them. This loop is their only record — bailing
-					# left a before_delete with no matching delete (measured: 3 reported,
-					# 1 delivered), which the class contract says cannot happen.
+					# fired from inside this loop cannot report them. This loop is their
+					# only record, and bailing would leave a before_delete with no matching
+					# delete, which the class contract says cannot happen.
 					var gone: _ModuleTableType = evicted[gone_id]
 					if has_delete_listeners:
 						for listener: Callable in delete_listeners:
@@ -987,19 +954,18 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 
 	# Update detection (delete+insert of the same pk) only matters when this update has
 	# BOTH inserts and deletes. Pure inserts (subscribe) and pure deletes (rows leaving)
-	# skip the pk-count build entirely. Null PKs are warned in the delete pass below,
-	# which a batch whose every delete pairs with an insert skips — so such a row is
-	# dropped silently, the same as it always was.
+	# skip the pk-count build entirely. Null PKs are warned in the delete pass below, which
+	# a batch whose every delete pairs with an insert skips, so such a row is dropped
+	# silently.
 	var detect_updates: bool = (
 		not table_update.inserts.is_empty() and not table_update.deletes.is_empty()
 	)
 	# pk -> deletes not yet paired with an insert, plus the running total of those. A row
 	# held by N overlapping queries of one set is reported N times in a single update (the
-	# server groups every fragment's rows under one TableUpdate, flattened into these two
-	# lists above), so a COUNT is what pairs them: min(inserts, deletes) of a pk are one
-	# update delivered N times, and only the surplus is a new reference or a real delete.
-	# A set here consumed one delete and dropped the rest, which both inflated the refcount
-	# and skipped the delete pass — a row that outlived its own deletion.
+	# server groups every fragment's rows under one TableUpdate), so a COUNT is what pairs
+	# them: min(inserts, deletes) of a pk are one update delivered N times, and only the
+	# surplus is a new reference or a real delete. A set rather than a count would consume
+	# one delete and drop the rest, inflating the refcount and skipping the delete pass.
 	var deleted_pks: Dictionary = { }
 	var unpaired_deletes: int = 0
 	if detect_updates:
@@ -1029,14 +995,13 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 			deleted_pks[pk_value] = pending_deletes - 1
 			unpaired_deletes -= 1
 			if old_ref == 0:
-				# Nothing held this pk yet, so "unchanged" would leave the row cached at
-				# refcount 0: the matching delete is consumed here, so the delete pass
-				# never records this delivery's reference. An unreferenced cached row is
-				# permanent — a later delete reads refcount 0 and skips it, so the row
-				# never leaves the cache and no on_delete ever fires. Record ONE reference,
-				# whatever the pair count: this only happens on a desync (a delete for a pk
-				# the mirror never held), and under-counting self-heals — the first later
-				# delete evicts the row — while over-counting is the ghost above.
+				# Nothing held this pk yet, so leaving the refcount alone would cache the
+				# row at 0 (the matching delete is consumed here, so the delete pass never
+				# records this delivery's reference). An unreferenced cached row is
+				# permanent: a later delete reads 0 and skips it, so no on_delete ever
+				# fires. Record ONE reference whatever the pair count — this only happens
+				# on a desync, and under-counting self-heals on the first later delete
+				# while over-counting is the ghost above.
 				ref_table[pk_value] = 1
 				if track_query:
 					qmem[pk_value] = inserted_row
@@ -1047,10 +1012,8 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				_qmem_refresh(qmem, pk_value, inserted_row)
 			var prev_u: _ModuleTableType = table_dict.get(pk_value)
 			if prev_u == null:
-				# No prior cached row → this is an insert, not an update. Firing the
-				# update path here would hand listeners a null `prev` (the index
-				# listeners dereference it and crash). Refcount stays as the branch
-				# intends (the matching delete pass is skipped via deleted_pks).
+				# No prior cached row, so this is an insert: the update path would hand
+				# listeners a null `prev`, which the index listeners dereference.
 				table_dict[pk_value] = inserted_row
 				had_any_change = true
 				if has_insert_listeners:
@@ -1086,9 +1049,8 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				_qmem_add_repeat(qmem, pk_value, inserted_row)
 			var prev_o: _ModuleTableType = table_dict.get(pk_value)
 			if prev_o == null:
-				# Refcount bumped above but no cached row (desync / first sight under
-				# an existing ref) → insert semantics, not update. Avoids a null `prev`
-				# reaching listeners (the index listeners would crash on it).
+				# Refcount bumped above but no cached row (desync, or first sight under an
+				# existing ref): insert semantics, so no null `prev` reaches listeners.
 				table_dict[pk_value] = inserted_row
 				had_any_change = true
 				if has_insert_listeners:
@@ -1132,9 +1094,9 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				continue
 			if track_query:
 				# One delete releases ONE reference, matching the single decrement below.
-				# Dropping the whole entry here would leave a doubly-referenced pk with a
-				# live refcount and no membership, so a later prune of this same query
-				# would hand back nothing and strand the row.
+				# Dropping the whole entry would leave a doubly-referenced pk with a live
+				# refcount and no membership, so a later prune of this query would hand
+				# back nothing and strand the row.
 				_qmem_release(qmem, pk_value)
 			if old_ref > 1:
 				ref_table[pk_value] = old_ref - 1
@@ -1151,9 +1113,8 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 				if _generation != gen:
 					# Wiped from inside this row's before_delete. The row was still in
 					# table_dict when the wipe snapshotted it, so the wipe reported the
-					# delete itself — carrying on here reported it a SECOND time, after
-					# the wipe's own transactions_completed (measured: pk deleted twice).
-					# The erase below is a no-op on the emptied dict either way.
+					# delete itself and carrying on would report it a SECOND time. The
+					# erase below is a no-op on the emptied dict either way.
 					_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
 					return
 				table_dict.erase(pk_value)
@@ -1172,13 +1133,12 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 ## only the rows that still exist, so reporting the wipe is what lets a consumer drop
 ## whatever it built for a row that was deleted while the client was away.
 func clear_local_db() -> void:
-	# Snapshot the rows, then clear the INNER containers (keeping the outer table keys
-	# that _init pre-populates and apply_table_update's known-table guard relies on —
-	# reassigning the outer dicts to {} would drop those keys and every later PK-table
-	# update would be rejected as "unknown table"), THEN run the delete callbacks. So a
-	# listener that re-enters apply_table_update lands in the freshly-cleared maps
-	# instead of rows we're about to wipe (M4). The snapshot loops invoke no listeners,
-	# so they can't mutate the dicts mid-iteration.
+	# Snapshot the rows, then clear the INNER containers, THEN run the delete callbacks, so
+	# a listener that re-enters apply_table_update lands in the freshly-cleared maps
+	# instead of rows about to be wiped (M4). Inner, not outer: the outer table keys are
+	# what _init pre-populates and apply_table_update's known-table guard relies on, so
+	# reassigning to {} would make every later PK-table update an "unknown table". The
+	# snapshot loops invoke no listeners, so they cannot mutate the dicts mid-iteration.
 	var pk_rows: Array = [] # of [table_name, rows]
 	for table_name_lower: StringName in _tables:
 		var inner: Dictionary = _tables[table_name_lower]
@@ -1198,10 +1158,8 @@ func clear_local_db() -> void:
 	_generation += 1
 	_session_generation += 1 # this wipe IS the session boundary; clear_all_tables is not
 	# The loops below do NOT stop on a re-entrant wipe, unlike every dispatch loop in
-	# apply_table_update. A nested clear_local_db() finds the containers already emptied
-	# above, so it reports nothing and this snapshot is the only record of the rows that
-	# were dropped — bailing here would silently swallow every row after the one whose
-	# callback wiped again (measured: 1 of 3 reported).
+	# apply_table_update: a nested clear_local_db() finds the containers already emptied
+	# above, so this snapshot is the only record of the rows that were dropped.
 	for entry: Array in pk_rows:
 		_emit_clear_for_table(entry[0], entry[1])
 	for entry: Array in pk_less_rows:
@@ -1358,9 +1316,9 @@ func count_where(table_name: StringName, predicate: Callable) -> int:
 ##
 ## The generated index caches are the exception, and are emptied here: they answer
 ## [code]find()[/code] / [code]filter()[/code] / the range queries, so they are part of
-## this database's own read path rather than a consumer of it, and a caller cannot rebuild
-## them — nothing outside the SDK can reach them. Left standing they reported rows
-## [method get_all_rows] no longer yields, for the rest of the session.
+## this database's own read path rather than a consumer of it, and nothing outside the SDK
+## can rebuild them. Left standing they answer with rows [method get_all_rows] no longer
+## yields.
 func clear_all_tables() -> void:
 	# Whether this call is the one that dropped the rows, read BEFORE the containers are
 	# emptied. It is what ends a re-entrant wipe — see the invalidator loop below.
@@ -1376,14 +1334,12 @@ func clear_all_tables() -> void:
 	_ref_counts.clear()
 	_pk_less_counts.clear()
 	_query_rows.clear()
-	# Same containers as clear_local_db, so the same hazard: this is public and its own
-	# docstring invites a consumer rebuilding its view to call it, which can happen from
-	# a row callback. Measured without this bump: the rest of the batch stayed cached
-	# with an empty _ref_counts, i.e. rows no later delete can evict. See [member _generation].
+	# Same containers as clear_local_db, so the same hazard: this is public and can be
+	# called from a row callback. Without this bump the rest of the batch stays cached with
+	# an empty _ref_counts, i.e. rows no later delete can evict. See [member _generation].
 	_generation += 1
-	# Dead entries first, so the walk below cannot meet one: an index whose owner has been
-	# freed would otherwise sit in the list for the process, and calling an invalid Callable
-	# is a runtime error, which unwinds this whole function.
+	# Dead entries first, so the walk below cannot meet one: calling an invalid Callable is
+	# a runtime error, which unwinds this whole function.
 	for i: int in range(_index_invalidators.size() - 1, -1, -1):
 		if not _index_invalidators[i].is_valid():
 			_index_invalidators.remove_at(i)
@@ -1393,14 +1349,12 @@ func clear_all_tables() -> void:
 	# one — and from a COPY, like every other dispatch loop in this class, since an
 	# invalidator may register or release another index.
 	#
-	# The `dropped_rows` gate above is what makes a re-entrant wipe terminate, and it is
-	# load-bearing rather than an optimisation. clear_local_db()'s emit loops stop on their
-	# own because what they report comes from containers the outer call already emptied;
-	# this list is a registry no wipe empties, so an invalidator that calls back into
-	# clear_all_tables() re-fired every entry including itself, without bound (measured: 12
-	# calls for 3 invalidators with the recursion capped at three levels; uncapped it
-	# overflows the stack). An already-emptied database has nothing left to invalidate, so
-	# the nested call returns here and the descent ends one level down.
+	# The `dropped_rows` gate above is load-bearing, not an optimisation: it is what makes a
+	# re-entrant wipe terminate. clear_local_db()'s emit loops stop on their own because
+	# what they report comes from containers the outer call already emptied; this list is a
+	# registry no wipe empties, so an invalidator that calls back into clear_all_tables()
+	# would re-fire every entry including itself without bound. An already-emptied database
+	# has nothing left to invalidate, so the nested call returns above.
 	for invalidator: Callable in _index_invalidators.duplicate():
 		if invalidator.is_valid():
 			invalidator.call()

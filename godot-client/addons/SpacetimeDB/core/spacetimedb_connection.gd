@@ -54,38 +54,34 @@ enum CompressionPreference {
 ## sub-protocol (servers below 2.2.0) is no longer offered — see the 2.0 changelog.
 const BSATN_PROTOCOL_V3 = "v3.bsatn.spacetimedb"
 
-## WebSocket close code 1009. Godot hands [member WebSocketPeer.inbound_buffer_size]
-## to wslay as the maximum receivable message length, so a server message larger than
-## that buffer is never delivered. The server's own ceiling is 32 MiB
-## (`WebSocketConfig::max_message_size` in `crates/client-api`), well above this
-## client's default buffer, so a large enough subscription or transaction update is a
-## message the server considers perfectly legal and this client cannot receive.[br]
+## WebSocket close code 1009. Godot hands [member WebSocketPeer.inbound_buffer_size] to
+## wslay as the maximum receivable message length, so a server message larger than that
+## buffer is never delivered. The server's own ceiling is 32 MiB
+## (`WebSocketConfig::max_message_size` in `crates/client-api`), well above this client's
+## default buffer, so a large subscription or transaction update can be perfectly legal
+## and still unreceivable here.[br]
 ## [br]
-## An oversized message arrives one of TWO ways, and only the first announces itself:[br]
-## - Sent as a SINGLE frame, wslay compares the frame's payload length against the
-##   limit and closes the socket itself with this code and the reason "Message too
-##   big".[br]
-## - Sent as FRAGMENTS (what a real server does with a large snapshot), the limit is
-##   never reached: Godot runs wslay with `no_buffering`, and the running message
-##   length is only accumulated by the chunk-append call that no-buffering skips
-##   (`wslay_event.c`), so each fragment is measured on its own. The message is
-##   reassembled into a ring sized `Math::nearest_shift(inbound_buffer_size)` — the
-##   next power of two AT OR ABOVE it, so up to twice the number set here — while the
-##   buffer it is read out into is exactly this size. A message between the two is
-##   assembled, queued, and then refused by `PacketBuffer::read_packet`;
-##   `WSLPeer::get_packet` ignores that failure and returns OK with a zero-length
-##   packet — no close, no error, no packet. Worse, the refused read has already
-##   consumed the packet's queue slot without draining its payload, so the frames
-##   after it are read at the wrong offset (measured against a live 2.8.0 server:
-##   "Unknown compression tag 120" for several frames afterwards).[br]
-## - Past the ring as well, nothing is assembled at all: no packet, no error, no
-##   close, and nothing for this SDK to notice. That band is beyond reach from here —
-##   the caller sees it as a subscribe that never applies. Pinned by
-##   `tests/test_oversized_inbound_message.gd` so a future engine that does report it
-##   shows up as a failing test.[br]
+## An oversized message arrives one of three ways, and only the first announces itself:[br]
+## - As a SINGLE frame, wslay compares the payload length against the limit and closes the
+##   socket itself with this code and the reason "Message too big".[br]
+## - As FRAGMENTS (what a real server does with a large snapshot), the limit is never
+##   reached: Godot runs wslay with `no_buffering`, and the running message length is only
+##   accumulated by the chunk-append call that no-buffering skips (`wslay_event.c`), so
+##   each fragment is measured on its own. The message is reassembled into a ring sized
+##   `Math::nearest_shift(inbound_buffer_size)` — up to twice the number set here — while
+##   the buffer it is read out into is exactly this size. A message between the two is
+##   assembled, queued, then refused by `PacketBuffer::read_packet`, and
+##   `WSLPeer::get_packet` ignores that failure and returns OK with a zero-length packet.
+##   The refused read has already consumed the packet's queue slot without draining its
+##   payload, so the frames after it are read at the wrong offset (measured against a live
+##   2.8.0 server: "Unknown compression tag 120" for several frames afterwards).[br]
+## - Past the ring as well, nothing is assembled at all: no packet, no error, no close, and
+##   nothing for this SDK to notice — the caller sees a subscribe that never applies.
+##   Pinned by `tests/test_oversized_inbound_message.gd` so a future engine that does
+##   report it shows up as a failing test.[br]
 ## [br]
-## The second shape is why an empty inbound packet is treated as fatal rather than
-## skipped — see [method dropped_message_diagnostic].
+## The second shape is why an empty inbound packet is treated as fatal rather than skipped
+## — see [method dropped_message_diagnostic].
 const CLOSE_MESSAGE_TOO_BIG: int = 1009
 
 ## Default size of both WebSocket buffers, and what an unusable one falls back to.
@@ -115,24 +111,21 @@ const MIN_BUFFER_SIZE: int = 4096
 ## Largest socket buffer this SDK will hand the engine.
 ##
 ## [method WebSocketPeer.set_inbound_buffer_size] takes a C++ 32-bit int and a GDScript
-## int is 64-bit, so a large enough number does not fail — it TRUNCATES, straight back
-## into the two failures [constant MIN_BUFFER_SIZE] describes. Measured on 4.8.dev:
-## [code]1 << 31[/code] reads back as -2147483648 (the hang) and [code]1 << 32[/code]
-## reads back as 0 (the silent drop), so "give it plenty" is the dangerous input here.
+## int is 64-bit, so a large enough number does not fail — it TRUNCATES, straight back into
+## the two failures [constant MIN_BUFFER_SIZE] describes. Measured on 4.8.dev:
+## [code]1 << 31[/code] reads back as -2147483648 (the hang) and [code]1 << 32[/code] reads
+## back as 0 (the silent drop), so "give it plenty" is the dangerous input here.[br]
 ## [br]
 ## The ceiling is the server's own message limit (`WebSocketConfig::max_message_size` in
 ## `crates/client-api`), which no legal SpacetimeDB message exceeds as of 2.8.3 — check
-## that before raising this, since a server that lifted its limit would make the SDK the
-## one refusing the message. A value over the ceiling is CLAMPED rather than defaulted —
-## a caller asking for more wants as much as possible, and answering that with the 2 MiB
-## default would be a cut of three orders of magnitude.[br]
+## that before raising this. A value over the ceiling is CLAMPED rather than defaulted,
+## since a caller asking for more wants as much as possible.[br]
 ## [br]
-## Note what a big buffer costs. The engine allocates a reassembly ring of
-## `nearest_shift(size)` — for an exact power of two, TWICE the size — plus a packet
-## buffer of the full size, so roughly 3× the number set, per direction. Measured on
-## 4.8.dev across a completed handshake: 2 MiB in + 2 MiB out costs ~6.2 MiB, and this
-## ceiling both ways costs ~90 MiB. Reach for [member
-## SpacetimeDBConnectionOptions.compression] before reaching for the ceiling.
+## Note what a big buffer costs: the engine allocates a reassembly ring of
+## `nearest_shift(size)` plus a packet buffer of the full size, so roughly 3× the number
+## set, per direction. Measured on 4.8.dev across a completed handshake, 2 MiB in + 2 MiB
+## out costs ~6.2 MiB and this ceiling both ways costs ~90 MiB. Reach for
+## [member SpacetimeDBConnectionOptions.compression] first.
 const MAX_BUFFER_SIZE: int = 1024 * 1024 * 32
 
 ## The feature tag for a Web export. Named here rather than spelled at the one use site
@@ -201,18 +194,16 @@ var _inbound_buffer_size: int = DEFAULT_BUFFER_SIZE
 var _outbound_buffer_size: int = DEFAULT_BUFFER_SIZE
 var _heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS
 ## Why the last refused send was refused, or [constant SendRefusal.NONE] before the first
-## one. Held for two reasons: the refusals repeat every frame a game keeps sending into
-## the same condition and each report is a paragraph, so an unchanged CAUSE is reported
-## once rather than 60 times a second; and [code]push_error[/code] is not observable
-## in-process, so this is what a test reads to check that the right cause was reported.
+## one. Held for two reasons: the refusals repeat every frame a game keeps sending into the
+## same condition and each report is a paragraph, so an unchanged CAUSE is reported once;
+## and [code]push_error[/code] is not observable in-process, so this is what a test reads.
 ##
-## Keyed on the cause and not on the rendered text on purpose: the backpressure text
-## embeds the live queued-byte count, so a game streaming into a stalled peer changes it
-## every frame and gets no throttling at all (measured: 29 reports in 40 frames).
+## Keyed on the cause, not on the rendered text: the backpressure text embeds the live
+## queued-byte count, so a game streaming into a stalled peer changes it every frame and
+## gets no throttling at all (measured: 29 reports in 40 frames).
 ##
-## Cleared when a new connection is started and when the peer is replaced — the same
-## condition in a later session is reported again — and, for the transient one, by a send
-## that gets through.
+## Cleared when a new connection is started and when the peer is replaced, and — for the
+## transient one — by a send that gets through.
 ##
 ## The full key is (cause, [member _send_refusal_limit], [member _send_refusal_size]); what
 ## each part is for is at the branch that reads it in [method send_bytes].
@@ -291,13 +282,11 @@ func _init(options: SpacetimeDBConnectionOptions, db_name: String) -> void:
 ## application to undo.
 func apply_options(options: SpacetimeDBConnectionOptions) -> void:
 	if options == null:
-		# Every line below dereferences it, and this used to fault on the first one —
-		# which, being a fault in a callee, unwound only this function and left the
-		# connection with a null _options plus unresolved buffer sizes and heartbeat,
-		# then faulted again on every later read of them. Refused loudly instead, with
-		# the previous options left in place. Recorded as well as printed, following
-		# _send_refusal: push_error is not observable in-process, so this is what a test
-		# reads to check the refusal fired rather than only that nothing changed.
+		# Every line below dereferences it, and a fault there unwinds only this function,
+		# leaving the connection with a null _options plus unresolved buffer sizes and
+		# heartbeat to fault on again at every later read. Refused loudly instead, with the
+		# previous options left in place. Recorded as well as printed, following
+		# _send_refusal: push_error is not observable in-process.
 		_options_refused = true
 		push_error(
 			"SpacetimeDBConnection: apply_options(null) refused for database '%s'; options unchanged."
@@ -369,13 +358,12 @@ func _physics_process(_delta: float) -> void:
 		while _websocket.get_available_packet_count() > 0:
 			var packet_bytes: PackedByteArray = _websocket.get_packet()
 			if packet_bytes.is_empty():
-				# The peer counted a packet and then handed over nothing. No
-				# SpacetimeDB frame is empty — every one carries a compression byte
-				# and a payload — so this is the engine dropping a message that did
-				# not fit inbound_buffer_size (see CLOSE_MESSAGE_TOO_BIG). Skipping
-				# it, which is what this branch used to do, left the session running
-				# on a stream that had silently lost a message AND been left at the
-				# wrong offset, with nothing reported to the game at all.
+				# The peer counted a packet and then handed over nothing. No SpacetimeDB
+				# frame is empty — every one carries a compression byte and a payload — so
+				# this is the engine dropping a message that did not fit
+				# inbound_buffer_size (see CLOSE_MESSAGE_TOO_BIG). Skipping it would leave
+				# the session running on a stream that silently lost a message and is now
+				# at the wrong offset.
 				_abort_on_dropped_message()
 				return
 
@@ -406,11 +394,10 @@ func _physics_process(_delta: float) -> void:
 		var reason: String = _websocket.get_close_reason()
 		if _is_connected or _connection_requested: # Only report if we were connected or trying
 			if code == -1: # Abnormal closure
-				# `and _is_connected`: the engine keepalive only pings an OPEN socket, so
-				# a stall can only ever have false-killed one that was up. Without that
-				# half, a frame-loop freeze that happens to overlap a refused handshake
-				# was diagnosed as a stall and answered with a no-backoff reconnect into
-				# the same refusal.
+				# `and _is_connected`: the engine keepalive only pings an OPEN socket, so a
+				# stall can only have false-killed one that was up. Without that half, a
+				# frame-loop freeze overlapping a refused handshake reads as a stall and is
+				# answered with a no-backoff reconnect into the same refusal.
 				if _post_stall_polls > 0 and _is_connected:
 					push_warning(
 						"SpacetimeDBConnection: abnormal close right after a main-thread stall — stall-induced, fast reconnect"
@@ -664,22 +651,19 @@ static func resolve_buffer_size(size: int, setting: String) -> int:
 ##
 ## Zero is legal and documented for both callers — it disables keepalive / the handshake
 ## budget. Negative is not: [method WebSocketPeer.set_heartbeat_interval] refuses it
-## (`ERR_FAIL_COND p_interval < 0`) and leaves the property at whatever it already held —
-## 0 on a fresh peer, the previous session's interval on a re-applied one — and the SDK's own
-## thresholds derived from the same number go negative and stop firing — so asking for a
-## SHORTER interval than the default silently turned dead-socket detection off entirely.
-## Falling back keeps the protection on, which is the safer reading of a value that
-## cannot have been meant.
+## (`ERR_FAIL_COND p_interval < 0`) and leaves the property at whatever it held, while the
+## SDK's own thresholds derived from the same number go negative and stop firing — so
+## asking for a SHORTER interval than the default would silently turn dead-socket detection
+## off. Falling back keeps the protection on.
 static func resolve_interval_seconds(value: float, minimum: float, fallback: float, setting: String) -> float:
 	# Zero first, and on its own: it is the documented way to turn the matching timeout
 	# off, so it has to survive a minimum that would otherwise refuse it.
 	if value == 0.0:
 		return 0.0
 	# The upper bound is load-bearing, not defensive: both callers turn the result into
-	# milliseconds as an int, and a conversion that does not fit gives INT64_MIN — so an
-	# interval too large to represent stopped every threshold derived from it, which is
-	# the opposite of what asking for a large one means. NaN fails this test too (every
-	# comparison against it is false), which is the intent, not an accident.
+	# milliseconds as an int, and a conversion that does not fit gives INT64_MIN, stopping
+	# every threshold derived from it — the opposite of what asking for a large one means.
+	# NaN fails this test too, which is the intent.
 	if value >= minimum and value <= MAX_INTERVAL_SECONDS:
 		return value
 	push_error(
@@ -774,15 +758,14 @@ func get_received_packets() -> int:
 ## can. Pure, so the check is testable without a socket.
 ##
 ## The token reaches the wire as an [code]Authorization: Bearer <token>[/code] entry in
-## [member WebSocketPeer.handshake_headers], and Godot writes those out verbatim —
-## [code]request += handshake_headers[i] + "\r\n"[/code] in [code]wsl_peer.cpp[/code],
-## with no validation of its own. A CR or LF inside the token therefore ends the header
-## line early and everything after it becomes further request headers (verified against
-## a local socket: a token of [code]abc\r\nX-Injected: yes[/code] produces an
-## [code]X-Injected[/code] header, and truncates the credential to [code]abc[/code]).
-## Tokens are not always the game's own: [SpacetimeAuth] returns one parsed from a
-## third-party OIDC host's JSON, the client can read one from a file on disk, and the
-## server supplies one in its IdentityToken message.
+## [member WebSocketPeer.handshake_headers], which Godot writes out verbatim
+## ([code]wsl_peer.cpp[/code]) with no validation. A CR or LF inside the token ends the
+## header line early and everything after it becomes further request headers (verified
+## against a local socket: [code]abc\r\nX-Injected: yes[/code] produces an
+## [code]X-Injected[/code] header and truncates the credential to [code]abc[/code]).
+## Tokens are not always the game's own: [SpacetimeAuth] parses one from a third-party
+## OIDC host's JSON, the client can read one from disk, and the server supplies one in its
+## IdentityToken message.
 static func token_reject_reason(token: String) -> String:
 	if token.is_empty():
 		return "it is empty"
@@ -904,13 +887,10 @@ static func send_backpressure_diagnostic(
 ## [code]WebSocketPeer.send[/code] answers it with a bare
 ## [code]ERR_FAIL_COND_V ... Returning: ERR_OUT_OF_MEMORY[/code] naming a C++ file, which
 ## says nothing about which knob bounds it or that the failure is permanent for that
-## message. Both paths return [constant ERR_OUT_OF_MEMORY]. They differ only in what an
-## oversized message gets on a peer that is not OPEN — the engine's not-open test runs
-## first and answers [constant FAILED], this one runs before it — which is reachable both
-## from a direct caller and from the client's own entry points, since those gate on
-## [method is_connected_db] / [method is_websocket_active] and a peer can be CONNECTING or
-## CLOSING under either. Both values are errors and both stamp the caller's handle the
-## same way.
+## message. Both paths return [constant ERR_OUT_OF_MEMORY], differing only on a peer that
+## is not OPEN — the engine's not-open test runs first and answers [constant FAILED], this
+## one runs before it. Both values are errors and both stamp the caller's handle the same
+## way.
 ##
 ## Each CAUSE is reported once per boundary (see [member _send_refusal]): the text is a
 ## paragraph, the condition repeats every frame a game keeps sending, and the return code
@@ -920,11 +900,9 @@ func send_bytes(bytes: PackedByteArray) -> Error:
 	if bytes.size() > largest:
 		# Keyed on the boundary AND the refused size. The boundary because one that MOVED
 		# (apply_options resolving a new outbound_buffer_size mid-session) makes the last
-		# report's numbers wrong, and a wrong number left standing is worse than a repeat.
-		# The size because two call sites sending two different oversized messages are two
-		# problems, and the second would otherwise be silent for the rest of the session —
-		# a game retrying ONE of them every frame still reports once, which is the case
-		# this throttle exists for.
+		# report's numbers wrong. The size because two call sites sending two different
+		# oversized messages are two problems, while a game retrying ONE of them every
+		# frame still reports once.
 		if (
 			_send_refusal != SendRefusal.OVERSIZED or _send_refusal_limit != largest
 			or _send_refusal_size != bytes.size()
@@ -936,13 +914,12 @@ func send_bytes(bytes: PackedByteArray) -> Error:
 		return ERR_OUT_OF_MEMORY
 
 	var err: Error = _websocket.send(bytes)
-	# The size test above already passed, so the only way left to be out of room is a
-	# queue the remote has not drained. The static re-checks the code because which
-	# errors may be described as backpressure is a fact about the engine, and that is
-	# where a test can pin it.
-	# Keyed on the boundary but NOT on the size: the queue is the subject here, the message
-	# only the one that met it, and a game streaming varied payloads into a stalled peer
-	# would otherwise report every frame (measured: 29 reports in 40 frames).
+	# The size test above already passed, so the only way left to be out of room is a queue
+	# the remote has not drained. The static re-checks the code because which errors count
+	# as backpressure is a fact about the engine, and that is where a test can pin it.
+	# Keyed on the boundary but NOT on the size: the queue is the subject, so a game
+	# streaming varied payloads into a stalled peer reports once rather than every frame
+	# (measured: 29 reports in 40 frames).
 	if (
 		err == ERR_OUT_OF_MEMORY
 		and (_send_refusal != SendRefusal.BACKPRESSURE or _send_refusal_limit != largest)
@@ -961,11 +938,10 @@ func send_bytes(bytes: PackedByteArray) -> Error:
 			)
 		)
 	if err == OK:
-		# A send getting through proves the QUEUE drained, so the next backpressure is
-		# worth reporting again. It proves nothing about an oversized message: that one
-		# is a property of the message, not of the socket, and re-arming it here reported
-		# the same paragraph every frame for the shape this guard exists for (a bulk call
-		# refused while ordinary traffic keeps succeeding).
+		# A send getting through proves the QUEUE drained, so the next backpressure is worth
+		# reporting again. It proves nothing about an oversized message, which is a property
+		# of the message rather than the socket — re-arming that here would report the same
+		# paragraph every frame for a bulk call refused while ordinary traffic succeeds.
 		if _send_refusal == SendRefusal.BACKPRESSURE:
 			_send_refusal = SendRefusal.NONE
 		_second_bytes_sent += bytes.size()
@@ -1039,11 +1015,11 @@ static func build_query_params(
 ## [param base_url], with the scheme rewritten to `ws`/`wss`.
 ##
 ## Trailing slashes on [param base_url] are dropped first. `String.path_join` concatenates
-## when either side already carries the separator, so a host written with the trailing
-## slash a browser shows (`http://127.0.0.1:3000/`) produced `//v1/database/...`, and the
-## server routes that as a path with an empty first segment: measured against 2.7.x,
-## `/v1/ping` answers 200 and `//v1/ping` answers 404. The handshake failed with nothing
-## pointing at the extra character.
+## when either side already carries the separator, so a host written with the trailing slash
+## a browser shows (`http://127.0.0.1:3000/`) gives `//v1/database/...`, which the server
+## routes as a path with an empty first segment (measured against 2.7.x: `/v1/ping` answers
+## 200, `//v1/ping` answers 404) and the handshake fails with nothing naming the extra
+## character.
 static func build_socket_url(base_url: String, version: String, database_name: String) -> String:
 	var ws_url_base: String = base_url.rstrip("/")
 	# Rewrite only the leading scheme — a stray "http://" elsewhere in base_url
@@ -1160,24 +1136,21 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 ## A close frame's payload is capped at 125 bytes, two of which are the status code, so
 ## wslay refuses a reason over [constant MAX_CLOSE_REASON_BYTES] UTF-8 bytes with
 ## [code]WSLAY_ERR_INVALID_ARGUMENT[/code] — and [code]WSLPeer::close[/code] ignores that
-## return and moves the peer to [code]STATE_CLOSING[/code] anyway. No close frame is ever
-## queued, so [code]close_sent[/code] stays false, the peer never reaches
-## [code]STATE_CLOSED[/code] on its own, [method is_websocket_active] stays true, and the
-## server keeps the session open with nothing to time it out but its own idle limit. Web
-## reaches the same place by another road: [code]EMWSPeer::close[/code] sets
-## [code]STATE_CLOSING[/code] and then hands the reason to the browser's
-## [code]WebSocket.close[/code], which throws [code]SyntaxError[/code] over the same limit.
-## The close matters more than the wording, so an over-long reason is trimmed rather than
-## refused — trimmed by CHARACTER, so the result is never a broken multi-byte sequence (a
-## combining mark can still lose its base character; grapheme clusters are not preserved).
+## return and moves the peer to [code]STATE_CLOSING[/code] anyway. No close frame is
+## queued, so the peer never reaches [code]STATE_CLOSED[/code], [method is_websocket_active]
+## stays true, and the server keeps the session open with nothing but its own idle limit to
+## end it. Web reaches the same place through [code]EMWSPeer::close[/code], where the
+## browser's [code]WebSocket.close[/code] throws [code]SyntaxError[/code] over the same
+## limit. The close matters more than the wording, so an over-long reason is trimmed by
+## CHARACTER — never a broken multi-byte sequence, though a combining mark can lose its
+## base character.
 static func fit_close_reason(reason: String) -> String:
 	if reason.to_utf8_buffer().size() <= MAX_CLOSE_REASON_BYTES:
 		return reason
-	# Cut to the character count first: a UTF-8 character is at least one byte, so no
-	# string longer than the byte limit in characters can fit, and the loop below then
-	# re-encodes at most 123 characters instead of the whole reason. Without this the
-	# trim is quadratic in the reason's length — measured on 4.8.dev, a 200_000-character
-	# reason took 9.4 SECONDS on the main thread, against 0 for the pre-cut form.
+	# Cut to the character count first: a UTF-8 character is at least one byte, so the loop
+	# below re-encodes at most 123 characters instead of the whole reason. Without this the
+	# trim is quadratic — measured on 4.8.dev, a 200_000-character reason took 9.4 SECONDS
+	# on the main thread, against 0 for the pre-cut form.
 	var trimmed: String = reason.substr(0, MAX_CLOSE_REASON_BYTES)
 	# One character comes off per pass, so the fit is reached inside the bound; the bound
 	# is what makes that a fact rather than a belief.

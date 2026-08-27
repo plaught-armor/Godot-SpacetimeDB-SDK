@@ -79,10 +79,9 @@ func print_log(log_message: String) -> void:
 
 
 func set_token(token: String) -> void:
-	# One definition of an unusable token for the whole SDK: this used to check CR/LF
-	# only, which let a tab or a DEL through here while the WebSocket path refused it.
-	# Cleared rather than left alone on refusal, so a later call_reducer cannot go out
-	# under a credential this call was told not to accept.
+	# One definition of an unusable token for the whole SDK, shared with the WebSocket path.
+	# Cleared rather than left alone on refusal, so a later call_reducer cannot go out under
+	# a credential this call was told not to accept.
 	var reason: String = SpacetimeDBConnection.token_reject_reason(token)
 	if not reason.is_empty():
 		push_error("SpacetimeDBRestAPI: refusing the auth token — %s." % reason)

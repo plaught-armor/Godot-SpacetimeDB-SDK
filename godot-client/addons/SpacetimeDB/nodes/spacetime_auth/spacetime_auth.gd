@@ -103,15 +103,14 @@ func _ensure_http(request_timeout: float) -> void:
 	# Set every call so an inspector tweak to request_timeout_seconds after the
 	# first exchange still takes effect on reuse (not just at construction).
 	_http.timeout = request_timeout
-	# Never follow a redirect. This request carries the provider credential in its
-	# body, and HTTPRequest re-sends that body to whatever host the Location names
-	# — it rewrites the method to GET and strips the content headers for a
-	# 301/302/303/305, but the body itself is carried over, and a `Location:
-	# http://…` from an https endpoint is followed with TLS off. Following can
-	# never succeed either: the rewritten GET is not a token request, and Godot
-	# already refuses to follow a 307/308 for an unsafe method. So a redirect has
-	# nothing to offer here and one thing to lose. With the limit at 0 the 3xx is
-	# reported as itself (RESULT_REDIRECT_LIMIT_REACHED carries the status code).
+	# Never follow a redirect. This request carries the provider credential in its body,
+	# and HTTPRequest carries that body over to whatever host the Location names — it
+	# rewrites the method to GET and strips the content headers for a 301/302/303/305, but
+	# the body itself goes with it, and a `Location: http://…` from an https endpoint is
+	# followed with TLS off. Following cannot succeed either: the rewritten GET is not a
+	# token request, and Godot already refuses a 307/308 for an unsafe method. With the
+	# limit at 0 the 3xx is reported as itself (RESULT_REDIRECT_LIMIT_REACHED carries the
+	# status code).
 	_http.max_redirects = 0
 
 
@@ -126,11 +125,10 @@ func exchange(
 	extra_fields: Dictionary[String, Variant],
 	client_id: String,
 ) -> SpacetimeAuthResult:
-	# Re-entrancy guard. The node owns one _http child; a second concurrent
-	# exchange would collide on it (its request() returns ERR_BUSY and burns the
-	# retry budget waiting for the first to release the socket). Reject the
-	# overlapping call cleanly. This wrapper is the single site that clears
-	# _pending, so it holds on every _exchange_impl return path.
+	# Re-entrancy guard. The node owns one _http child, so a second concurrent exchange
+	# collides on it (request() returns ERR_BUSY and burns the retry budget). This wrapper
+	# is the single site that clears _pending, so it holds on every _exchange_impl return
+	# path.
 	if _pending:
 		var busy: SpacetimeAuthResult = SpacetimeAuthResult.new()
 		busy.error = "exchange already in flight on this SpacetimeAuth node"
@@ -163,9 +161,9 @@ func _exchange_impl(
 		exchange_completed.emit(result)
 		return result
 	# Clamped above, refused below: one attempt spends a request timeout plus a backoff
-	# delay, both bounded, and nothing else bounds their product — an unbounded budget
-	# turned "retry a few times" into hours of suspended coroutine with _pending held and
-	# no way for the caller to cancel.
+	# delay, both bounded, and nothing else bounds their product — an unbounded budget makes
+	# "retry a few times" hours of suspended coroutine with _pending held and no way to
+	# cancel.
 	var attempts: int = SpacetimeAuthProtocol.resolve_attempts(max_attempts)
 	# Refused rather than clamped: 0 is HTTPRequest's "no timeout", and a silent
 	# host would then suspend this coroutine forever — no result, no signal, and

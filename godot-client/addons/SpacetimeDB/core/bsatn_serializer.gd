@@ -210,11 +210,10 @@ func write_rust_enum(rust_enum: RustEnum) -> void:
 	var data: Variant = rust_enum.data
 	if sub_class.is_empty():
 		return # unit variant — tag only, no payload
-	# Delegate WITHOUT stripping the vec_/opt_ prefix. Those prefixes carry the
-	# length/tag byte the reader expects, and _write_value_from_bsatn_type already
-	# recurses through them symmetrically with the deserializer's
-	# _read_value_from_bsatn_type. Stripping the prefix here dropped that tag and
-	# desynced the wire for Option-carrying variants (opt_T / vec_opt_T).
+	# Delegate WITHOUT stripping the vec_/opt_ prefix. Those prefixes carry the length/tag
+	# byte the reader expects, and _write_value_from_bsatn_type recurses through them
+	# symmetrically with the deserializer's _read_value_from_bsatn_type. Stripping the
+	# prefix drops that tag and desyncs the wire for opt_T / vec_opt_T.
 	if data == null and not (sub_class.begins_with(&"vec_") or sub_class.begins_with(&"opt_")):
 		data = _generate_default_type(sub_class)
 	_write_value_from_bsatn_type(data, sub_class, &"")
@@ -636,11 +635,10 @@ func _write_value_from_bsatn_type(value: Variant, bsatn_type_str: StringName, co
 	# Vec<T> — recursive array serialization via prefix
 	if bsatn_type_str.begins_with(&"vec_"):
 		# Vec<u8> is the one prefixed type the deserializer never takes this path for:
-		# _read_value_from_bsatn_type resolves its primitive reader first, so "vec_u8"
-		# hits read_vec_u8 and comes back as a PackedByteArray. Reject that here and an
-		# Option<Vec<u8>> field — or a Vec<u8> enum variant — read off the wire could
-		# not be written back out. The length prefix and payload are identical either
-		# way; only the container type differs.
+		# _read_value_from_bsatn_type resolves its primitive reader first, so "vec_u8" comes
+		# back as a PackedByteArray. Rejecting that here would make an Option<Vec<u8>> field
+		# — or a Vec<u8> enum variant — unwritable after being read. The length prefix and
+		# payload are identical either way; only the container type differs.
 		if value_type == TYPE_PACKED_BYTE_ARRAY and bsatn_type_str == &"vec_u8":
 			write_vec_u8(value)
 			return not has_error()
@@ -731,12 +729,11 @@ func _create_serialization_plan(script: Script) -> Array:
 
 		if not writer_callable.is_valid():
 			_set_error("Unsupported property or missing writer for '%s' in script '%s'" % [prop_name, script.resource_path])
-			# Leave the cache untouched. A plan is legitimately empty for a schema with
-			# no storage fields, so the cache cannot tell that apart from a failed
-			# build: caching [] here made the *first* attempt fail loudly and every
-			# later one write zero bytes and report success, silently truncating the
-			# payload (a nested reducer-argument struct becomes an empty product).
-			# The deserializer's mirror already returns without caching.
+			# Leave the cache untouched. A plan is legitimately empty for a schema with no
+			# storage fields, so the cache cannot tell that apart from a failed build:
+			# caching [] here makes the first attempt fail loudly and every later one write
+			# zero bytes and report success, silently truncating the payload. The
+			# deserializer's mirror already returns without caching.
 			return []
 
 		# Pre-bind static context args for writers that need them, so the hot loop

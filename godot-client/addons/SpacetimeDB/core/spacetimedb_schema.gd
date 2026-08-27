@@ -16,9 +16,8 @@ var types: Dictionary[StringName, GDScript] = { }
 ## A table is always looked up by the name the server put on the wire, and that name
 ## matches the script's `table_names` entry exactly, so the lossy normalization
 ## [member types] needs buys nothing here and costs correctness: `user_data` and
-## `userdata` are both legal SpacetimeDB table names and both normalize to `userdata`,
-## so one silently displaced the other and its rows decoded against the wrong row type
-## with the wrong primary key.
+## `userdata` are both legal table names that normalize to `userdata`, so one would
+## displace the other and decode its rows against the wrong row type.
 var tables: Dictionary[StringName, GDScript] = { }
 ## Types keyed by the [code]class_name[/code] they declare, exactly as written.
 ##
@@ -74,13 +73,12 @@ func get_type(type_name: StringName) -> GDScript:
 ## Use this, not [method get_type], for anything that starts from a table name: it
 ## cannot confuse two tables whose names differ only in underscore placement.
 ##
-## Deliberately does NOT fall back to the normalized [member types] lookup on a miss.
-## That fallback would hand back whichever colliding script loaded last — the precise
-## wrong answer this exact key exists to prevent — and nothing needs it: every generated
-## row type declares `table_names` and so is registered here, and the only generated
-## scripts that skip it are [RustEnum] payload types, which no wire table name names.
-## A miss means the server sent a table this build does not know about; callers report
-## that rather than guessing.
+## Deliberately does NOT fall back to the normalized [member types] lookup on a miss:
+## that would hand back whichever colliding script loaded last, the exact wrong answer
+## this key exists to prevent. Nothing needs it — every generated row type declares
+## `table_names` and is registered here, and the only scripts that skip it are [RustEnum]
+## payload types, which no wire table name names. A miss means the server sent a table
+## this build does not know about.
 func get_table(table_name_lower: StringName) -> GDScript:
 	return tables.get(table_name_lower)
 
@@ -192,14 +190,12 @@ func _load_types(raw_path: String, prefix: String = "") -> void:
 			# The filename prefix cannot separate two modules whose names prefix each other
 			# (`game` and `game_extra` both emit files beginning `game_`), and the row type
 			# declares which module it came from, so believe the constant. Without this a
-			# foreign row type claimed this schema's table name — `tables` kept whichever
-			# script loaded last, so a table both modules define decoded against the wrong
-			# row type, and `raw_table_names` carried the name twice.
+			# foreign row type claims this schema's table name and a table both modules
+			# define decodes against the wrong row type.
 			#
-			# Only row types declare `module_name`; a sum-type payload script does not, and
-			# it names no table, so it stays loadable as a nested column type either way —
-			# including into the schema of a module that merely shares its filename prefix,
-			# which is harmless because codegen prefixes every class_name with the module.
+			# Only row types declare `module_name`; a sum-type payload script does not and
+			# names no table, so it stays loadable as a nested column type either way —
+			# harmless, because codegen prefixes every class_name with the module.
 			if _is_foreign_module(constants, prefix):
 				if debug_mode:
 					print(

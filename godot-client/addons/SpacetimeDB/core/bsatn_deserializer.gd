@@ -12,13 +12,11 @@ class_name BSATNDeserializer
 extends RefCounted
 
 ## How many elements a `Vec<T>` may claim with FEWER bytes left in the buffer than
-## elements — the one case a count cannot be checked against the data behind it. A
-## zero-width element type (a struct with no fields, which SpacetimeDB accepts and this
-## SDK decodes) encodes N elements in no bytes at all, so a purely byte-derived bound
-## would refuse it. Every count with bytes behind it is bounded by those bytes instead
-## and may run far past this number — see [method _read_array]. So this is NOT a ceiling
-## on rows or elements; the only shape it still refuses is more than 131072 ZERO-WIDTH
-## elements, which no allocation-free bound can tell from a hostile u32.
+## elements — the one case a count cannot be checked against the data behind it, since a
+## zero-width element type (a struct with no fields, which SpacetimeDB accepts) encodes N
+## elements in no bytes at all. NOT a ceiling on rows or elements: every count with bytes
+## behind it is bounded by those bytes instead (see [method _read_array]) and may run far
+## past this number. The only shape it refuses is more than 131072 ZERO-WIDTH elements.
 const MAX_VEC_LEN: int = 131072
 ## Byte length a `String` or `Vec<u8>` field is given without consulting the buffer.
 ## Same role as [constant MAX_VEC_LEN]'s floor and NOT a ceiling — a longer field is
@@ -67,12 +65,10 @@ const NATIVE_ARRAYLIKE: Array[Variant.Type] = [
 
 var debug_mode: bool = false
 ## Parse outcome, single source of truth. [constant ParseStatus.OK] = clean;
-## [constant ParseStatus.ERROR] = malformed; [constant ParseStatus.NEEDS_MORE] = a
-## read ran past the end of the buffer. [method has_error] is true for both non-OK
-## states and the framing loop answers them the same way — it drops the rest of the
-## packet for either, because retaining bytes cannot help: a payload carries WHOLE
-## messages (ws v3), so a continuation is not coming in the next one. The two are
-## still told apart so a diagnostic can say which one happened.
+## [constant ParseStatus.ERROR] = malformed; [constant ParseStatus.NEEDS_MORE] = a read ran
+## past the end of the buffer. [method has_error] is true for both, and the framing loop
+## drops the rest of the packet for either — a ws v3 payload carries WHOLE messages, so a
+## continuation is not coming. They are told apart only so a diagnostic can say which.
 enum ParseStatus { OK, ERROR, NEEDS_MORE }
 var _status: ParseStatus = ParseStatus.OK
 var _last_error: String = ""
@@ -112,11 +108,9 @@ func clear_error() -> void:
 ## Clears parse state at a session boundary (reconnect), so nothing the dropped session
 ## left behind is read as belonging to the fresh one.[br]
 ## [br]
-## Belt and braces as of the packet-scoped framing:
+## Belt and braces under the packet-scoped framing:
 ## [method process_bytes_and_extract_messages] carries no bytes between calls and clears
-## the error at the top of every message, so no observer can reach a stale one today.
-## Kept because the boundary is a real event and stating it here is cheaper than
-## re-deriving that the parse loop happens to cover it.
+## the error at the top of every message. Kept because the boundary is a real event.
 func reset_stream_state() -> void:
 	_last_error = ""
 	_status = ParseStatus.OK
@@ -258,11 +252,10 @@ func read_string_with_u32_len(spb: StreamPeerBuffer) -> String:
 	if has_error() or length == 0:
 		return ""
 	# A byte length is checkable against the bytes present, so it needs no fixed ceiling:
-	# the server allows itself 32 MiB per message and a game may raise
-	# inbound_buffer_size to match, which a 4 MiB cap refused for a legitimate column.
-	# read_bytes below would refuse an unbacked length anyway; checking here keeps the
-	# malformed-stream status (a length past the buffer inside an already bounds-checked
-	# row block is corruption, not a partial arrival) and names the field's own limit.
+	# the server allows itself 32 MiB per message and a game may raise inbound_buffer_size
+	# to match. read_bytes below would refuse an unbacked length anyway; checking here
+	# keeps the malformed-stream status (a length past the buffer inside an already
+	# bounds-checked row block is corruption, not a partial arrival).
 	if length > UNCHECKED_BYTE_LEN:
 		var remaining: int = spb.get_size() - spb.get_position()
 		if length > remaining:
@@ -274,14 +267,11 @@ func read_string_with_u32_len(spb: StreamPeerBuffer) -> String:
 	var str_bytes: PackedByteArray = read_bytes(spb, length)
 	if has_error():
 		return ""
-	# A length-prefixed byte run that read fully is valid at the wire level. Godot's
-	# String is NUL-terminated, so get_string_from_utf8() truncates at a leading or
-	# embedded NUL byte (U+0000) — a Godot representation limit, NOT a wire error.
-	# Return the decoded value as-is and do NOT raise a fatal error here: a fatal
-	# error propagates to the framing loop, which drops the ENTIRE pending packet
-	# (every batched message with it) over one NUL-containing string field. On
-	# genuinely malformed UTF-8, get_string_from_utf8() yields "" — graceful
-	# degradation is far cheaper than tearing down the whole message batch.
+	# A length-prefixed byte run that read fully is valid at the wire level. Godot's String
+	# is NUL-terminated, so get_string_from_utf8() truncates at a leading or embedded NUL
+	# byte — a Godot representation limit, NOT a wire error. Do NOT raise a fatal error here: it
+	# propagates to the framing loop, which drops the ENTIRE pending packet over one
+	# NUL-containing string field. Malformed UTF-8 yields "" for the same reason.
 	return str_bytes.get_string_from_utf8()
 
 
@@ -369,12 +359,11 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 			_set_error("FixedSize data_len %d not divisible by row_size %d" % [data_len, row_size], start_pos)
 			return { }
 		# Guard the resize below against a data_len no bytes back — the lever an unchecked
-		# u32 would pull to allocate gigabytes before any read. The bound is what the
-		# buffer actually holds rather than a row-count ceiling: rows here are
-		# row_size >= 1 bytes each, so a block that fits is a count that fits, and a real
-		# server sends whatever the query matched in ONE list (encode_list chunks
-		# nothing) — a fixed ceiling refused a legitimate large table outright. Status
-		# matches the same condition's check in _read_bsatn_row_list_as_resources.
+		# u32 would pull to allocate gigabytes before any read. Bounded by what the buffer
+		# holds rather than by a row count: rows here are row_size >= 1 bytes each, so a
+		# block that fits is a count that fits, and a server sends whatever the query
+		# matched in ONE list (encode_list chunks nothing). Status matches the same
+		# condition's check in _read_bsatn_row_list_as_resources.
 		var remaining: int = spb.get_size() - spb.get_position()
 		if data_len > remaining:
 			_set_error(
@@ -392,11 +381,10 @@ func _read_row_block_header(spb: StreamPeerBuffer) -> Dictionary:
 		var num_offsets: int = read_u32_le(spb)
 		if has_error():
 			return { }
-		# Guard the resize below — num_offsets is a raw u32 off the wire; an unchecked
-		# value near u32_max would allocate ~32 GiB before reading. Each offset is a u64
-		# in the stream, so requiring the offsets themselves to be present bounds the
-		# allocation by the bytes received (8 allocated per 8 present) without imposing a
-		# row-count ceiling a legitimate large table would hit.
+		# Guard the resize below — num_offsets is a raw u32 off the wire, and an unchecked
+		# value near u32_max would allocate ~32 GiB before reading. Each offset is a u64 in
+		# the stream, so requiring the offsets to be present bounds the allocation by the
+		# bytes received without a row-count ceiling.
 		var offsets_remaining: int = spb.get_size() - spb.get_position()
 		if num_offsets * 8 > offsets_remaining:
 			_set_error(
@@ -482,23 +470,21 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 		var message: SpacetimeDBServerMessage = _parse_message_from_stream(spb)
 
 		if _status != ParseStatus.OK:
-			# Malformed data — including a read that ran off the end (NEEDS_MORE).
-			# A short read is a truncated packet, never the front half of a message
-			# still to arrive: ws v3 states that a payload carries one or more WHOLE
-			# consecutive ServerMessages (client-api-messages/src/websocket/v3.rs), so
-			# a continuation is not coming in the next one. This used to keep the tail
-			# for it and prefix every packet that followed with bytes belonging to
-			# nothing: measured, one frame cut a byte short wedged the session
-			# permanently — not one message reached the game from then on, the carried
-			# buffer grew by the size of every packet, and has_error() stayed false the
-			# whole time because the retain path cleared it. The rest of THIS packet
-			# goes too: a NEEDS_MORE read by definition wanted bytes past the end of
-			# the buffer, so nothing whole follows it anyway, and after a malformed
-			# message of unknown length there is no way to tell where the next starts.
-			# Read _last_error directly rather than through get_last_error(), which
-			# CLEARS the error state: reporting the failure must not also erase it,
-			# or this returns looking like a clean parse and the caller's has_error()
-			# check never fires for the one case it exists to catch.
+			# Malformed data — including a read that ran off the end (NEEDS_MORE). A short
+			# read is a truncated packet, never the front half of a message still to
+			# arrive: ws v3 states that a payload carries one or more WHOLE consecutive
+			# ServerMessages (client-api-messages/src/websocket/v3.rs). Retaining the tail
+			# for a continuation instead prefixes every later packet with bytes belonging
+			# to nothing — measured, one frame cut a byte short wedged the session
+			# permanently: no message reached the game from then on, the carried buffer grew
+			# by every packet, and has_error() stayed false throughout because the retain
+			# path cleared it. The rest of THIS packet goes too: a NEEDS_MORE read
+			# wanted bytes past the end of the buffer, and after a malformed message of
+			# unknown length there is no way to tell where the next starts.
+			#
+			# Read _last_error directly rather than through get_last_error(), which CLEARS
+			# the error state: reporting the failure must not erase it, or this returns
+			# looking like a clean parse.
 			var kind: String = (
 				"Truncated packet" if _status == ParseStatus.NEEDS_MORE else "Unrecoverable parsing error"
 			)
@@ -506,9 +492,9 @@ func process_bytes_and_extract_messages(new_data: PackedByteArray) -> Array[Spac
 			return parsed_messages
 
 		if message == null:
-			# No reader is supposed to reach this — every null return above sets an
-			# error first. Say so rather than ending the packet quietly, which would
-			# read as a clean parse at the caller.
+			# No reader is supposed to reach this — every null return above sets an error
+			# first. Said out loud rather than ending the packet quietly, which would read
+			# as a clean parse at the caller.
 			_set_error("Parser returned no message and no error; dropping the rest of the packet.", cursor)
 			return parsed_messages
 
@@ -976,13 +962,13 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 		return _read_option(spb, { "name": context_prop_name }, bsatn_type_str.right(-4))
 
 	# Native array-like (Vector3, Color, ...) — "vector3[f32,f32,f32]". Reducer and
-	# procedure returns reach this function as a bare type string with no property
-	# to read a Variant type off, so recover it from the name ahead of the brackets.
+	# procedure returns reach this function as a bare type string with no property to read
+	# a Variant type off, so recover it from the name ahead of the brackets.
 	#
-	# Gated on the trailing bracket first: every Vec<T> of a nested struct recurses
-	# through here once per element, and an unconditional regex search costs ~152 ns
-	# against ~18 ns for this check (measured 4.8.dev, tests/bench_arraylike_probe.gd).
-	# Only a component list ends in ']', so this cannot skip a real match.
+	# Gated on the trailing bracket first: every Vec<T> of a nested struct recurses through
+	# here once per element, and an unconditional regex search costs ~152 ns against ~18 ns
+	# for this check (4.8.dev, tests/bench_arraylike_probe.gd). Only a component list ends
+	# in ']', so this cannot skip a real match.
 	if bsatn_type_str.ends_with("]"):
 		var arraylike_match: RegExMatch = _native_arraylike_regex.search(bsatn_type_str)
 		if arraylike_match:
@@ -1023,14 +1009,12 @@ func _read_value_from_bsatn_type(spb: StreamPeerBuffer, bsatn_type_str: StringNa
 	_set_error("Unsupported BSATN type '%s' for deserialization (context: '%s'). No primitive, vec, or custom schema found." % [bsatn_type_str, context_prop_name], start_pos)
 	return null
 
-## Per-field dispatch code. Fixed-width primitives get a code so the row loop reads
-## them inline (no Callable.call, no reader fn-call); everything else is COMPLEX and
-## runs via [member _PlanStep.reader] / the nested-hoist path. COMPLEX is 0 so an
-## unset step defaults to the safe Callable path. Resolved once at plan-build (cold),
-## so the match in [method _inline_type_code] never runs per row. The row-loop
-## dispatch is an if-elif, NOT a match: in interpreted GDScript a match arm test costs
-## ~10x an if-elif branch test, so a match here is slower than the Callable it replaces
-## (measured), while a frequency-ordered if-elif beats it.
+## Per-field dispatch code. Fixed-width primitives get a code so the row loop reads them
+## inline (no Callable.call, no reader fn-call); everything else is COMPLEX and runs via
+## [member _PlanStep.reader] / the nested-hoist path. COMPLEX is 0 so an unset step
+## defaults to the safe Callable path. Resolved once at plan-build (cold). The row-loop
+## dispatch is an if-elif, NOT a match: a match arm test costs ~10x an if-elif branch test
+## in interpreted GDScript, enough to lose to the Callable it replaces (measured).
 enum TC { COMPLEX, U32, I32, U64, I64, F32, F64, U8, U16, I8, I16 }
 
 
@@ -1061,10 +1045,10 @@ func _create_deserialization_plan(script: Script) -> Array:
 			continue
 
 		var prop_name: StringName = prop.name
-		# Lowercased to match the serializer, which does the same at its BSATN_TYPES
-		# read. Codegen emits lowercase, but a hand-written "U32" would otherwise
-		# serialize correctly and then miss every lowercase-keyed primitive reader,
-		# silently falling back to the Variant.Type default (i64 for an int).
+		# Lowercased to match the serializer, which does the same at its BSATN_TYPES read.
+		# Codegen emits lowercase, but a hand-written "U32" would otherwise serialize
+		# correctly and then miss every lowercase-keyed primitive reader, silently falling
+		# back to the Variant.Type default (i64 for an int).
 		var bsatn_type_str: StringName = StringName(bsatn_types.get(prop_name, &"").to_lower())
 		var reader_callable: Callable = _get_reader_callable_for_property(prop, bsatn_type_str)
 
@@ -1148,13 +1132,12 @@ func _get_or_build_plan(script: Script) -> Array:
 ## (the row-list loop) fetch the plan once instead of re-hashing the plan cache per
 ## row.
 func _populate_from_plan(resource: Object, spb: StreamPeerBuffer, plan: Array) -> bool:
-	# Dispatch is a frequency-ordered if-elif on the field's type_code, NOT a Callable
-	# and NOT a match — both lose to if-elif here (see enum TC). Fixed-width primitives
-	# read inline (no Callable.call, no reader fn-call, no per-field _check_read);
-	# COMPLEX falls to the nested-hoist / Callable path. The loop returns on the first
-	# error, so a reader is never entered with a non-OK status — the inline arms skip
-	# the per-read status guard the standalone readers carry. buf_size is constant for
-	# the parse (get_size = capacity, not remaining), so it is hoisted out of the loop.
+	# Dispatch is a frequency-ordered if-elif on the field's type_code, NOT a Callable and
+	# NOT a match — both lose to if-elif here (see enum TC). Fixed-width primitives read
+	# inline; COMPLEX falls to the nested-hoist / Callable path. The loop returns on the
+	# first error, so a reader is never entered with a non-OK status, which is why the
+	# inline arms skip the per-read status guard. buf_size is constant for the parse
+	# (get_size = capacity, not remaining), so it is hoisted out of the loop.
 	var buf_size: int = spb.get_size()
 	for step: _PlanStep in plan:
 		var pos: int = spb.get_position()
@@ -1312,11 +1295,10 @@ func _read_bsatn_row_list_as_resources(
 			return []
 		var row_end: int = block_start + offsets[i + 1]
 		var pos: int = spb.get_position()
-		# Over-read means the row consumed bytes belonging to the next row — a
-		# schema/wire mismatch (e.g. client/server version skew). The old
-		# bounded-slice parser caught this as a hard error; preserve that rather
-		# than returning a row populated with the next row's bytes. Under-read
-		# (trailing bytes ignored) stays a warning — the next iteration re-anchors.
+		# Over-read means the row consumed bytes belonging to the next row — a schema/wire
+		# mismatch (e.g. client/server version skew) — so it is a hard error rather than a
+		# row populated with the next row's bytes. Under-read (trailing bytes ignored)
+		# stays a warning; the next iteration re-anchors.
 		if pos > row_end:
 			_set_error(
 				"Row %d for table '%s' over-read: parsed to %d, row ends at %d (schema/wire mismatch)" % [

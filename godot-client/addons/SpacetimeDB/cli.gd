@@ -10,12 +10,11 @@
 ## Nothing in this file names a `class_name` — not `SpacetimePlugin`, not
 ## `SpacetimeDBPluginConfig`. Global class names resolve through
 ## `.godot/global_script_class_cache.cfg`, which only an import or an editor session
-## writes, and which Godot's own project `.gitignore` excludes from the repository. On a
-## fresh checkout — the CI case this entry point exists for — that file is absent, every
-## `class_name` in the addon is an undeclared identifier, and a script naming one fails to
-## PARSE, before any code of its own can run and say why. A `--script` run never writes
-## the cache either, so running it again does not help. Loading the plugin script by path
-## keeps this file loadable, so the missing cache is reported here with the fix.
+## writes and which Godot's own project `.gitignore` excludes. On a fresh checkout — the
+## CI case this entry point exists for — that file is absent, every `class_name` in the
+## addon is an undeclared identifier, and a script naming one fails to PARSE before it can
+## say why. A `--script` run never writes the cache either. Loading the plugin script by
+## path keeps this file loadable, so the missing cache is reported here with the fix.
 extends SceneTree
 
 const PLUGIN_SCRIPT_PATH: String = "res://addons/SpacetimeDB/spacetime.gd"
@@ -83,15 +82,15 @@ func _initialize() -> void:
 ## Whether [param script] parsed, i.e. whether the class names it depends on resolved.
 ##
 ## [method @GDScript.load] hands back a GDScript object even when the parse failed — the
-## resource exists, it just carries no members — so a null check alone passes and the
-## first constant read is what faults. Asks for exactly the two members this file goes on
-## to reach, [code]SAVE_PATH[/code] and [code]generate_schema[/code]: a parse failure
-## takes both away, and a fault on either would unwind [method _initialize] past every
-## [method SceneTree.quit] and leave a headless process spinning with no exit code.
+## resource exists, it just carries no members — so a null check passes and the first
+## constant read is what faults. Asks for exactly the two members this file reaches,
+## [code]SAVE_PATH[/code] and [code]generate_schema[/code]: a fault on either would unwind
+## [method _initialize] past every [method SceneTree.quit] and leave a headless process
+## spinning with no exit code.
 ##
-## Reflection here is not duck-typed dispatch — the type is known, it is simply not
-## nameable in this file (see the class docs), so this stands in for the compile-time
-## check a typed call would have had.
+## Reflection here is not duck-typed dispatch — the type is known, just not nameable in
+## this file (see the class docs), so this stands in for the compile-time check a typed
+## call would have had.
 static func _is_plugin_script_usable(script: GDScript) -> bool:
 	if script == null:
 		return false
@@ -109,17 +108,14 @@ static func _is_plugin_script_usable(script: GDScript) -> bool:
 ## Whether [param config] is backed by [param config_script], the plugin-config script.
 ##
 ## [method ResourceLoader.exists]'s type hint reads the [code].tres[/code] HEADER, which a
-## stale file can still spell correctly while its [code]script =[/code] line points at
-## something else entirely — measured: a header claiming
-## [code]SpacetimeDBPluginConfig[/code] over a module-config script loaded fine and only
-## failed later. Comparing the resource's script against the one loaded by path settles
-## the type without naming the class (see the class docs for why the name is unusable
-## here), so the mismatch is reported with the file rather than as an argument-type error
-## from inside codegen.
+## stale file can spell correctly while its [code]script =[/code] line points elsewhere
+## (measured: a header claiming [code]SpacetimeDBPluginConfig[/code] over a module-config
+## script loaded fine and failed later). Comparing the resource's script against the one
+## loaded by path settles the type without naming the class, so the mismatch is reported
+## with the file rather than as an argument-type error from inside codegen.
 ##
 ## Deliberately strict identity: a script that merely EXTENDS the plugin config is refused
-## too. Nothing produces one — the dock writes this file — and the base-chain walk that
-## would accept it can wait until something does.
+## too. Nothing produces one, and the base-chain walk that would accept it can wait.
 static func _is_plugin_config(config: Resource, config_script: GDScript) -> bool:
 	if config == null:
 		return false
@@ -129,12 +125,11 @@ static func _is_plugin_config(config: Resource, config_script: GDScript) -> bool
 ## Whether [param config] carries at least one module.
 ##
 ## Reads the field off an untyped [Resource] rather than a typed
-## [code]SpacetimeDBPluginConfig[/code] (see the class docs: naming that type would make
-## this file unparseable on a fresh checkout), so the shape is checked rather than
-## assumed. A stale [code].tres[/code] whose header still claims the class while its
-## script no longer carries the field would otherwise fault on the read — and a fault
-## unwinds [method _initialize] past every [method SceneTree.quit] below, leaving the
-## headless process spinning with no exit code at all.
+## [code]SpacetimeDBPluginConfig[/code] (see the class docs), so the shape is checked
+## rather than assumed. A stale [code].tres[/code] whose header still claims the class
+## while its script no longer carries the field would otherwise fault on the read — and a
+## fault unwinds [method _initialize] past every [method SceneTree.quit] below, leaving
+## the headless process spinning with no exit code.
 static func _has_modules_configured(config: Resource) -> bool:
 	if config == null:
 		return false

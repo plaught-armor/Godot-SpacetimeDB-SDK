@@ -103,11 +103,9 @@ var pending_subscriptions: Dictionary[int, SpacetimeDBSubscription]
 var _packet_queue: Array[PackedByteArray] = []
 var _packet_semaphore: Semaphore
 var _result_queue: Array[SpacetimeDBServerMessage] = []
-# Drain batch held across frames + a cursor into it (main thread only). A batch
-# is refilled from _result_queue only once fully drained, and the cursor advances
-# in place — so a multi-frame backlog is never re-sliced/re-queued (O(1)/frame
-# instead of O(remaining) copy/frame). Newly parsed messages wait in
-# _result_queue until the current batch finishes, preserving arrival order.
+# Drain batch held across frames, with a cursor advanced in place (main thread
+# only): a multi-frame backlog is never re-sliced or re-queued. Refilled from
+# _result_queue only once fully drained, which preserves arrival order.
 var _drain_batch: Array[SpacetimeDBServerMessage] = []
 var _drain_cursor: int = 0
 var _result_mutex: Mutex
@@ -118,10 +116,9 @@ var _thread_should_exit: bool = false
 ## packets parsed under a prior session are discarded instead of being applied to
 ## the fresh post-reconnect database.
 var _session_epoch: int = 0
-# Per-frame apply drain limits: time budget (primary) + hard message ceiling
+# Per-frame apply drain limits: time budget (primary) + message ceiling
 # (bounded-loop backstop). Set from SpacetimeDBConnectionOptions in connect_db.
-# _frame_budget_us is a live value when auto-tuning is on (mutated by
-# _auto_tune_budget), otherwise the fixed configured budget.
+# _frame_budget_us is mutated by _auto_tune_budget when auto-tuning is on.
 var _frame_budget_us: int = 4000
 var _max_msgs_per_frame: int = 256
 var _auto_tune_budget_enabled: bool = true
@@ -132,45 +129,29 @@ const _MAX_RESULT_CACHE_SIZE: int = 256
 ## Cap on outstanding call handles retained, applied per kind (reducer, procedure).
 ## A response that never arrives strands its handle: the pending maps are cleared by a
 ## matching response or by a disconnect, and neither happens when a packet is lost while
-## the socket stays up (the parser drops a corrupt buffer and keeps the connection).
-## Same number as [constant SpacetimeDBStats.MAX_PENDING], which bounds the four-category
-## total rather than any one kind — the constant is shared, the running counts are not.
+## the socket stays up. Shares the number of [constant SpacetimeDBStats.MAX_PENDING],
+## which bounds the four-category total rather than any one kind.
 const _MAX_PENDING_CALLS: int = SpacetimeDBStats.MAX_PENDING
 ## Cap on subscriptions awaiting their first [code]SubscribeApplied[/code].
 ##
-## The same failure the call cap answers, with a second cost on top: a never-applied
-## subscription is SAVED at the next drop and re-sent on the reconnect
-## ([method _start_reconnection] rebuilds from pending as well as current), so a server
-## that stops answering Subscribe while the socket stays up turns into an outbound burst
-## the moment the connection breaks. Measured (`tests/_probe_long_session.gd`): 200
-## unanswered subscribes produced 200 Subscribe messages on the new socket, and nothing
-## bounded either number.
+## Runaway backstop, not a working limit: it counts subscribes IN FLIGHT, so a game
+## issuing hundreds in one frame stays well under it, and the reconnect's resubscribe
+## loop is exempt (see [method _subscribe_uncapped]). It matters because a never-applied
+## subscription is SAVED at the next drop and re-sent on the reconnect, so a server that
+## stops answering Subscribe turns into an unbounded outbound burst when the socket breaks
+## (measured, `tests/_probe_long_session.gd`: 200 unanswered subscribes produced 200
+## Subscribe messages on the new socket, and nothing bounded either number).
 ##
-## Reaching it REFUSES the new subscribe rather than evicting an old one, which is the
-## opposite of what the call caps do, for a reason: a dropped call loses a response, while
-## a dropped subscription loses ownership of state the server is still streaming — no
-## Unsubscribe was ever sent, so the rows keep arriving with no handle left to stop them,
-## and the caller most likely to be waiting is the oldest one. Refusing costs the newest
-## caller a handle it can retry; evicting costs an older caller a query it cannot.
+## Reaching it REFUSES the new subscribe rather than evicting an old one, unlike the call
+## caps: evicting would lose ownership of state the server is still streaming (no
+## Unsubscribe was sent, so the rows keep arriving with no handle left to stop them).
 ##
-## Same number as the call cap for the same reason: this is a runaway backstop, not a
-## working limit. What it counts is subscribes IN FLIGHT, not server muteness — a game
-## issuing hundreds in one frame (a chunked world, a per-entity area of interest) stays
-## well under it, and the reconnect's resubscribe loop, which would otherwise cross it by
-## construction, is exempt (see [method _subscribe_uncapped]).
-##
-## Two related gaps this does NOT close, recorded rather than fixed. [member
-## current_subscriptions] is not capped: the ones the server acknowledged are the caller's
-## real state, but the subset the caller has since unsubscribed is only released when the
-## server answers, so a server that applies Subscribe and never answers Unsubscribe grows
-## it (with [member _unsubscribing_query_ids] and the mirror's per-query membership) until
-## the next disconnect. And a [code]SubscriptionError[/code] carrying no query id cannot
-## release its pending entry at all — with a cap in place that entry would be permanent for
-## the session. The second is not representable on this wire: v3's
+## Not closed, recorded: [member current_subscriptions] is uncapped, so a server that
+## applies Subscribe and never answers Unsubscribe grows it until the next disconnect.
+## A [code]SubscriptionError[/code] with no query id cannot release its pending entry at
+## all, and is not representable on this wire — v3's
 ## [code]SubscriptionError.query_set_id[/code] is a plain [code]QuerySetId[/code], not an
-## [code]Option[/code] (`client-api-messages/src/websocket/v2.rs`), and only
-## [code]request_id[/code] is optional; this SDK's message class keeps a
-## [code]has_query_id()[/code] from the older protocols and the reader always fills it.
+## [code]Option[/code] (`client-api-messages/src/websocket/v2.rs`).
 const _MAX_PENDING_SUBSCRIPTIONS: int = _MAX_PENDING_CALLS
 # Cache of reducer results that arrived before anyone called wait_for_reducer_response
 var _reducer_result_cache: Dictionary[int, TransactionUpdateMessage] = { } # request_id -> TransactionUpdateMessage (or null)
@@ -185,10 +166,9 @@ var _connection: SpacetimeDBConnection
 var _deserializer: BSATNDeserializer
 # Separate deserializer for main-thread SpacetimeDBReducerCall/ProcedureCall
 # decode(): the worker thread mutates _deserializer's status/pending/plan/name
-# caches while parsing, so a user handler calling decode() on the main thread must
-# NOT touch the same instance (unguarded concurrent Dictionary writes = corruption).
-# decode() is always main-thread + synchronous, so a single dedicated instance is
-# race-free without a lock.
+# caches while parsing, so sharing the instance would be an unguarded concurrent
+# Dictionary write. decode() is always main-thread and synchronous, so one
+# dedicated instance is race-free without a lock.
 var _decode_deserializer: BSATNDeserializer
 var _serializer: BSATNSerializer
 var _local_db: LocalDatabase
@@ -213,26 +193,21 @@ var _reconnect_attempt: int = 0
 ## itself, not only on the knobs it is computed from.
 ##
 ## The backoff runs on a [SceneTreeTimer], which cannot resolve finer than a frame, so a
-## delay under this is not a shorter wait — it is no wait at all, and the cycle degenerates
-## into one connection attempt per frame for as long as the budget allows (measured against
-## a closed port: 50 attempts in 120 frames, and with the documented
-## [code]max_reconnect_attempts = 0[/code] that never ends). A delay below it is refused for
-## the default rather than raised to it — see [method _resolve_reconnect_delay].
+## shorter delay is no wait at all and the cycle degenerates into one attempt per frame
+## (measured against a closed port: 50 attempts in 120 frames). A delay below it is refused
+## for the default rather than raised to it — see [method _resolve_reconnect_delay].
 ##
-## It is a frame-resolution floor, not a politeness one, so it is also the SDK's fastest
-## sustained retry: a caller who sets [member SpacetimeDBConnectionOptions.reconnect_max_delay]
-## to this value and [member SpacetimeDBConnectionOptions.max_reconnect_attempts] to
-## [code]0[/code] gets an unbounded cycle at 1/this — ten attempts a second — because both
-## values are legal and mean what they say. Raise this constant, not the resolvers, if that
-## ceiling ever needs to be lower.
+## Being a frame-resolution floor, it is also the SDK's fastest sustained retry: a caller
+## who sets [member SpacetimeDBConnectionOptions.reconnect_max_delay] to this value and
+## [member SpacetimeDBConnectionOptions.max_reconnect_attempts] to [code]0[/code] gets a
+## legal unbounded cycle at ten attempts a second. Raise this constant, not the resolvers,
+## if that ceiling ever needs to be lower.
 const MIN_RECONNECT_DELAY_SECONDS: float = 0.1
 ## Longest reconnect delay the SDK will wait out, and the ceiling both delay knobs clamp to.
 ##
-## Bounding the top is what keeps the computed backoff finite: an infinite or NaN delay
-## reaches [method SceneTree.create_timer], which answers a non-finite wait by either never
-## timing out (INF — the cycle then has no next attempt, no [signal reconnect_failed] and no
-## [signal disconnected], i.e. a wedge with no signal at all) or by firing on the next frame
-## (NaN — the storm above).
+## Bounding the top is what keeps the computed backoff finite. A non-finite delay reaching
+## [method SceneTree.create_timer] either never times out (INF — a wedge with no next
+## attempt and no signal at all) or fires on the next frame (NaN — the storm above).
 const MAX_RECONNECT_DELAY_SECONDS: float = 3600.0
 ## Largest per-attempt multiplier accepted. Anything above this saturates
 ## [member SpacetimeDBConnectionOptions.reconnect_max_delay] on the second attempt anyway,
@@ -258,23 +233,18 @@ const DEFAULT_JITTER_FRACTION: float = 0.5
 ## Shortest response deadline a caller can ask an await for, and the floor
 ## [method resolve_wait_timeout] refuses below.
 ##
-## Every awaited call in the public surface — [method query_sql],
-## [method wait_for_reducer_response], [method wait_for_procedure_response],
-## [method SpacetimeDBReducerCall.wait_for_response],
-## [method SpacetimeDBProcedureCall.wait_for_response],
-## [method SpacetimeDBSubscription.wait_for_applied] and
-## [method SpacetimeDBSubscription.wait_for_end] — measures out on a [SceneTreeTimer], so a
-## deadline under a frame is not a shorter wait but no wait at all: the response the server
-## is already sending arrives after the caller has been told it never came. Three frames at
-## 60 fps is the smallest deadline that can survive a frame of scheduling jitter.
+## Every awaited call in the public surface measures out on a [SceneTreeTimer], so a
+## deadline under a frame is no wait at all: the response the server is already sending
+## arrives after the caller has been told it never came. Three frames at 60 fps is the
+## smallest deadline that can survive a frame of scheduling jitter.
 const MIN_RESPONSE_TIMEOUT_SECONDS: float = 0.05
 ## Longest response deadline the SDK will wait out, and the ceiling
 ## [method resolve_wait_timeout] clamps to.
 ##
 ## [code]INF[/code] is the obvious way to spell "no timeout" and is the one value
-## [method SceneTree.create_timer] never answers: the await is suspended for the life of the
-## process, and with it the caller's coroutine, its signal connection and its entry in the
-## response cache. Bounding the top turns that into a wait that ends.
+## [method SceneTree.create_timer] never answers: the await, the caller's coroutine, its
+## signal connection and its entry in the response cache all live for the rest of the
+## process.
 const MAX_RESPONSE_TIMEOUT_SECONDS: float = 3600.0
 ## Deadline an await falls back to when the caller's is not one that can be waited out.
 ## Matches the default argument of the client's own waiters, so a refused deadline behaves
@@ -296,9 +266,9 @@ var _max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS
 ## first scheduled attempt.
 var _reconnect_immediate: bool = false
 # `disconnected` means "terminally disconnected" (not a transient drop that
-# auto-reconnect recovers), so it must fire at most once per session. Guards
-# against a server close + a cleanup disconnect_db(), or an exhausted reconnect +
-# disconnect_db(), double-firing. Re-armed when a fresh connect is requested.
+# auto-reconnect recovers), so it must fire at most once per session. Two pairs would
+# otherwise fire it twice: a server close plus a cleanup disconnect_db(), and an exhausted
+# reconnect plus disconnect_db(). Re-armed on a fresh connect.
 var _disconnected_emitted: bool = false
 ## Watchdog bound for a resubscribe cycle: if the server accepts the Subscribe but
 ## never delivers a settle (SubscribeApplied/SubscriptionError) for some query set,
@@ -307,20 +277,17 @@ var _disconnected_emitted: bool = false
 const RESUBSCRIBE_TIMEOUT_SECONDS: float = 15.0
 
 ## Key the token store keeps a pre-store token under — the single bare token a file
-## written before the store existed holds, which belongs to no module because every
-## module read it. No module can claim it: a generated [member module_name] is a GDScript
-## identifier derived from the database name, and [method token_store_write] refuses this
-## key outright for a client that sets the property by hand. An EMPTY module name is a
-## normal key, not a reserved one — a client built by hand rather than by codegen has no
-## module name, and two of those share one entry the way every client used to.
+## written before the store existed holds, which belongs to no module because every module
+## read it. No module can claim it: a generated [member module_name] is a GDScript
+## identifier, and [method token_store_write] refuses this key for a client that sets the
+## property by hand. An EMPTY module name is a normal key, not a reserved one.
 const TOKEN_STORE_LEGACY_KEY: String = "*"
 
 ## The handles a reconnect is carrying across the drop — the caller's own
 ## [SpacetimeDBSubscription] objects, not copies of their queries. Holding the handles is
-## what lets the re-subscribe re-register each one instead of making an internal
-## replacement the caller has no reference to, which is what left a query undroppable for
-## the rest of the session: the game could no longer reach the handle whose
-## [method SpacetimeDBSubscription.unsubscribe] would have stopped it.
+## what lets the re-subscribe re-register each one; an internal replacement would leave the
+## query undroppable, with no handle the game can reach to call
+## [method SpacetimeDBSubscription.unsubscribe] on.
 ##
 ## Entries are suspended (not ended) while they sit here, and an entry the caller
 ## unsubscribes in the meantime ends itself — the re-subscribe pass skips it, which is how
@@ -328,14 +295,12 @@ const TOKEN_STORE_LEGACY_KEY: String = "*"
 ## out of attempts; the last two end every entry, since nothing will restore them.
 var _saved_subscriptions: Array[SpacetimeDBSubscription] = []
 ## Query ids whose Unsubscribe has gone out but whose UnsubscribeApplied has not come
-## back. Membership, not a flag on the handle: the server owns when a subscription
-## really ends, and until it answers the entry has to stay in current/pending (that is
-## where its rows and its handle live). What this set adds is that a drop in that window
-## must not carry the query into the reconnect — without it, a query the caller
-## explicitly dropped comes back on the new socket and can never be dropped again,
-## because the resubscribe makes a fresh internal handle the caller has no reference to.
-## Only ever holds ids that were in current/pending when the Unsubscribe was sent, so it
-## is bounded by the live subscription count; cleared with those maps.
+## back. Membership, not a flag on the handle: the server owns when a subscription really
+## ends, so until it answers the entry has to stay in current/pending, where its rows and
+## its handle live. What this set adds is that a drop in that window must not carry the
+## query into the reconnect — it would come back on the new socket behind a fresh internal
+## handle the caller cannot reach, and so could never be dropped again. Bounded by the live
+## subscription count; cleared with those maps.
 var _unsubscribing_query_ids: Dictionary[int, bool] = { }
 ## Whether the subscribe backlog has already been reported since the last subscribe that
 ## got through. The refusal repeats for every call a game makes while the backlog stands
@@ -354,9 +319,8 @@ var _resubscribe_epoch: int = 0
 ## [method connect_db] and [method disconnect_db]. [method connect_db] captures it before
 ## reporting its cache wipe, which is game code, and stops if the number has moved by the
 ## time the wipe returns: a listener that disconnected or started its own connect has
-## replaced this call's intent, and carrying on would connect against a disconnect or
-## clobber the newer call's host and options. [method _attempt_reconnect] makes the same
-## re-check against [member _reconnect_state] after its own wipe.
+## replaced this call's intent. [method _attempt_reconnect] makes the same re-check against
+## [member _reconnect_state] after its own wipe.
 var _session_intent: int = 0
 var _reconnect_timer: SceneTreeTimer = null
 ## Set when a reconnect cycle was in flight as the client left the tree, so
@@ -376,11 +340,10 @@ func _ready() -> void:
 ## local database) on a process mode that survives [member SceneTree.paused], unless
 ## [member SpacetimeDBConnectionOptions.process_while_paused] says otherwise.
 ##
-## The socket is polled from [method Node._physics_process], and that poll is what
-## sends the keepalive ping, reads inbound frames and flushes outbound ones. On the
-## default process mode a paused game stops polling altogether and the server closes
-## the idle connection. The children stay on [constant Node.PROCESS_MODE_INHERIT], so
-## they follow this node.
+## The socket is polled from [method Node._physics_process], which is what sends the
+## keepalive ping and moves frames in both directions. On the default process mode a
+## paused game stops polling and the server closes the idle connection. The children stay
+## on [constant Node.PROCESS_MODE_INHERIT], so they follow this node.
 ##
 ## Opting out selects [constant Node.PROCESS_MODE_PAUSABLE] rather than INHERIT: the
 ## option promises the SDK freezes with the game, and INHERIT would quietly hand that
@@ -397,10 +360,9 @@ func _physics_process(_delta: float) -> void:
 
 
 func _notification(what: int) -> void:
-	# All three mean "the frame loop is running again", and which one the platform
-	# sends varies: FOCUS_IN on desktop/mobile, RESUMED on Android/iOS, the window-level
-	# one on web. Handling all three is free — the handler is a no-op unless a reconnect
-	# is actually waiting out a backoff.
+	# All three mean "the frame loop is running again"; which one the platform sends
+	# varies (FOCUS_IN on desktop/mobile, RESUMED on Android/iOS, the window-level one on
+	# web). The handler is a no-op unless a reconnect is waiting out a backoff.
 	if (
 		what == NOTIFICATION_APPLICATION_FOCUS_IN or what == NOTIFICATION_APPLICATION_RESUMED
 		or what == NOTIFICATION_WM_WINDOW_FOCUS_IN
@@ -410,53 +372,46 @@ func _notification(what: int) -> void:
 
 ## Re-arms what [method _exit_tree] tore down, for a client that comes BACK.
 ##
-## [method Node._ready] runs once per node; [method Node._exit_tree] and this run once
-## per tree entry. A client moved between parents — reparented under a level, pulled out
-## and put back by a pool, `remove_child` then `add_child` — therefore leaves with its
-## deserializer worker joined and any reconnect backoff dropped, and nothing else ever
-## put either back: [method connect_db] and [method initialize_and_connect] are the only
-## other callers of [method _setup_threading] and neither runs again on re-entry.
-## Measured (tests/_probe_client_reparent.gd): the socket stayed open,
-## [method is_connected_db] kept answering true, and every message after the reparent was
-## queued for a worker that no longer existed — 0 of 40 delivered, in silence. Threadless
-## clients were unaffected, which is what named the worker as the cause.
-## A suspended cycle implies an initialized client — RECONNECTING is only reachable from
-## a connection error, which needs [method initialize_and_connect] to have run — so the
-## two branches below cannot disagree today. Stated because they read as independent.
+## [method Node._ready] runs once per node; [method Node._exit_tree] and this run once per
+## tree entry. A client moved between parents therefore leaves with its deserializer worker
+## joined and any reconnect backoff dropped, and no other path puts them back —
+## [method connect_db] and [method initialize_and_connect] are the only other callers of
+## [method _setup_threading]. Measured (tests/_probe_client_reparent.gd): the socket stayed
+## open and [method is_connected_db] kept answering true while 0 of 40 messages after the
+## reparent were delivered, in silence.
+##
+## A suspended cycle implies an initialized client — RECONNECTING is only reachable after
+## [method initialize_and_connect] — so the two branches below cannot disagree today.
 func _enter_tree() -> void:
 	if _is_initialized:
 		_setup_threading()
 	if _reconnect_suspended:
 		_reconnect_suspended = false
-		# Deferred, not called here: Godot enters the parent before its children, so at
-		# this point the client's own _connection, _local_db and _rest_api are still out
-		# of the tree — and _schedule_next_reconnect_attempt emits `reconnecting`
-		# (or, on the last attempt, `reconnect_failed` + `disconnected`) straight into
-		# game code, which may call back in. One frame later the client is whole.
+		# Deferred, not called here: Godot enters the parent before its children, so
+		# _connection, _local_db and _rest_api are still out of the tree while
+		# _schedule_next_reconnect_attempt emits `reconnecting` (or `reconnect_failed` +
+		# `disconnected`) into game code that may call back in. One frame later the client
+		# is whole.
 		#
-		# The attempt counter is deliberately not reset: a client that leaves and
-		# re-enters repeatedly must still run out of attempts. The flip side is that
-		# tree churn spends them — a client detached and re-attached max_reconnect_attempts
-		# times while a cycle is in flight reaches `reconnect_failed` without the network
-		# having been tried that often.
+		# The attempt counter is deliberately not reset, so a client that leaves and
+		# re-enters repeatedly still runs out of attempts — at the cost of tree churn
+		# spending them without the network having been tried that often.
 		_resume_suspended_reconnect.call_deferred()
 
 
 func _exit_tree() -> void:
-	# Suspended, not cancelled. A detached client polls no socket, so the attempt this
-	# backoff leads to could not be serviced — but cancelling drops the saved
-	# subscription queries with it, so a client moved between parents mid-backoff never
-	# reconnected and silently lost the set it would have restored. _enter_tree schedules
-	# the next attempt instead.
+	# Suspended, not cancelled. A detached client polls no socket, so this backoff's
+	# attempt could not be serviced — but cancelling would drop the saved subscription
+	# queries with it, losing the set a reparented client should restore. _enter_tree
+	# schedules the next attempt instead.
 	_suspend_reconnection()
 	if deserializer_worker:
 		_thread_should_exit = true
 		_packet_semaphore.post()
 		deserializer_worker.wait_to_finish()
 		deserializer_worker = null
-		# Cleared for the next worker: the flag is what the loop runs on, so leaving it
-		# set made a restarted worker exit on its first check — alive for an instant,
-		# then gone, with the queue still filling.
+		# Cleared for the next worker: the flag is what the loop runs on, so leaving it set
+		# makes a restarted worker exit on its first check, with the queue still filling.
 		_thread_should_exit = false
 
 
@@ -500,7 +455,7 @@ func initialize_and_connect() -> void:
 
 	# Covers the path connect_db does not: base_url set in the inspector and
 	# initialize_and_connect() called directly. Both consumers strip the trailing slash
-	# themselves, but the property is public, so it reads back as what will be used.
+	# themselves; this makes the public property read back as what will be used.
 	base_url = base_url.rstrip("/")
 
 	# 4. Initialize REST API Handler (optional, mainly for token)
@@ -511,18 +466,15 @@ func initialize_and_connect() -> void:
 	add_child(_rest_api)
 
 	# 5. Initialize Connection Handler
-	# connect_db() supplies options; this method can be reached without them — the
-	# exported auto_connect flag calls it straight from _ready, and it is documented as
-	# callable directly. The connection dereferences the options it is handed, so a null
-	# left it half-built (no buffer sizes, no heartbeat, a null _options every later read
-	# faulted on). Defaulted here rather than there, so this client and its connection
-	# agree about which options are in force.
-	# The defaults are SEEDED FROM THE EXPORTS, not bare: on this path the inspector is
-	# the only place the caller could have configured anything, and a bare default object
-	# both ignores what they set and makes connection_options read back as a description
-	# of a client it disagrees with. compression in particular is write-only on the client
-	# (connect_db writes options INTO it and nothing reads it), so until now an
-	# auto_connect client always handshook with compression=None whatever the export said.
+	# connect_db() supplies options; this method can be reached without them (auto_connect
+	# from _ready, or a direct call). The connection dereferences the options it is handed,
+	# so a null would leave it half-built. Defaulted here rather than there, so client and
+	# connection agree about which options are in force.
+	# The defaults are SEEDED FROM THE EXPORTS, not bare: the inspector is the only place
+	# this path's caller could have configured anything, so a bare default object would
+	# ignore what they set and make connection_options describe a client it disagrees with.
+	# compression in particular is write-only on the client, so a bare default hands the
+	# handshake compression=None whatever the export says.
 	if connection_options == null:
 		var defaults: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
 		defaults.compression = compression
@@ -543,10 +495,9 @@ func initialize_and_connect() -> void:
 	_connection.name = "Connection"
 	add_child(_connection)
 
-	# Ensure the deserializer thread + sync primitives exist before any WS frame
-	# arrives. connect_db() already calls this, but initialize_and_connect() can be
-	# invoked directly, in which case use_threading defaults true and the message
-	# handler would hit a null _packet_mutex on the first frame.
+	# Ensure the deserializer thread + sync primitives exist before any WS frame arrives.
+	# connect_db() already calls this, but a direct initialize_and_connect() would leave
+	# the message handler hitting a null _packet_mutex on the first frame.
 	_setup_threading()
 
 	_is_initialized = true
@@ -570,14 +521,11 @@ func connect_db(
 	options: SpacetimeDBConnectionOptions = null,
 ) -> void:
 	if is_connected_db():
-		# Refused rather than half-applied. The old shape of this call wrote host,
-		# database and options over the live session's and then returned without
-		# opening a socket or handing the options to the connection — so the socket
-		# kept the previous buffers, heartbeat and compression while the client
-		# reported the new target, and the next drop auto-reconnected to a host the
-		# caller never connected to, carrying the old session's subscriptions.
-		# Nothing here is changed, so a caller that ignores this error keeps a
-		# coherent session rather than a spliced one.
+		# Refused rather than half-applied: writing host, database and options over a live
+		# session's leaves the socket on the previous buffers, heartbeat and compression
+		# while the client reports the new target, and the next drop then reconnects to a
+		# host the caller never connected to. Nothing here is changed, so a caller that
+		# ignores this error keeps a coherent session rather than a spliced one.
 		push_error(
 			(
 				"SpacetimeDBClient: already connected to '%s' — call disconnect_db() "
@@ -591,33 +539,29 @@ func connect_db(
 	_disconnected_emitted = false # re-arm the terminal signal for this session
 	# A call that starts a session, rather than reconfiguring a live one, has to leave the
 	# last session's mirror behind. disconnect_db deliberately keeps those rows so a game
-	# can still read last-known state while offline, but they cannot be the floor the next
+	# can read last-known state while offline, but they cannot be the floor the next
 	# session builds on: the resubscribe lands on top of them, so every re-delivered row
-	# comes back one refcount high and its own unsubscribe can no longer evict it, while a
-	# row deleted server-side in the meantime stays cached with no on_delete to report it.
-	# The wipe reports every row as deleted, exactly as the auto-reconnect one does, and
-	# re-arms database_initialized so the new session announces itself.
+	# comes back one refcount high and can no longer be evicted, and a row deleted
+	# server-side stays cached with no on_delete to report it. The wipe reports every row
+	# as deleted and re-arms database_initialized.
 	_session_intent += 1
 	var intent: int = _session_intent
 	# The reconnect cycle _cancel_reconnection just abandoned may have been carrying
-	# handles. They end here rather than there, because this call has now stated its
-	# intent, so the `end` signals are covered by the same countermand check the wipe
-	# below is — see _cancel_reconnection.
+	# handles. They end here rather than there so their `end` signals fall under the same
+	# countermand check as the wipe below — see _cancel_reconnection.
 	_end_saved_subscriptions()
-	# Unconditional: the connected case returned above, so by here there is no live
-	# session whose mirror this would be pulling out from under a running game.
-	# Queues first, then the rows — the same order (and the same reason) as
-	# _prepare_for_reconnect: the wipe is the step that runs game code, so everything
-	# it might observe has to be settled before it does.
+	# Unconditional: the connected case returned above, so no live session's mirror is
+	# being pulled out from under a running game. Queues first, then the rows — same order
+	# and reason as _prepare_for_reconnect: the wipe runs game code, so everything it might
+	# observe has to be settled first.
 	_drop_dead_session_traffic()
 	if _local_db != null:
 		_local_db.clear_local_db()
 	_received_initial_subscription = false
-	# Reporting the wipe runs game code, so by here a listener may have called
-	# disconnect_db() or started its own connect_db(). Either one supersedes this
-	# call: finishing it would open a socket the listener asked to close, or write
-	# this call's host and options over the newer one's. Same countermand check
-	# _attempt_reconnect makes after its wipe.
+	# Reporting the wipe runs game code, so a listener may have called disconnect_db() or
+	# started its own connect_db(). Either supersedes this call: finishing would open a
+	# socket the listener asked to close, or clobber the newer call's host and options.
+	# Same countermand check _attempt_reconnect makes after its wipe.
 	if intent != _session_intent:
 		print_log(
 			"SpacetimeDBClient: connect_db superseded while the wipe and subscription "
@@ -639,10 +583,9 @@ func connect_db(
 	self.one_time_token = options.one_time_token
 	self.save_token = options.save_token
 	if not options.token.is_empty():
-		# Checked before it is stored, not only where it is used: an unusable token kept
-		# in _token survives this call, and a later drop would then spend the whole
-		# auto-reconnect budget re-refusing it, one attempt at a time, when the real
-		# answer is that the caller handed over a token nothing can connect with.
+		# Checked before it is stored, not only where it is used: an unusable token left in
+		# _token survives this call, and a later drop would spend the whole auto-reconnect
+		# budget re-refusing it one attempt at a time.
 		var opt_token_reason: String = SpacetimeDBConnection.token_reject_reason(options.token)
 		if not opt_token_reason.is_empty():
 			push_error("SpacetimeDBClient: refusing options.token — %s." % opt_token_reason)
@@ -691,11 +634,10 @@ func disconnect_db() -> void:
 	_session_intent += 1
 	_token = ""
 	# Close the socket whenever the peer is live — including mid-handshake
-	# (STATE_CONNECTING), which is_connected_db() (== _is_connected, set only on
-	# STATE_OPEN) misses. Leaving a handshake running lets it emit connected after
-	# the user asked to stop, or trigger an auto-reconnect they cancelled.
-	# disconnect_from_server() clears the connection flags, so the later
-	# STATE_CLOSED tick stays silent (no rogue connection signal) — that is why the
+	# (STATE_CONNECTING), which is_connected_db() misses because it tracks STATE_OPEN
+	# only. A handshake left running can emit connected after the user asked to stop, or
+	# trigger an auto-reconnect they cancelled. disconnect_from_server() clears the
+	# connection flags, so the later STATE_CLOSED tick stays silent — which is why the
 	# terminal signal is surfaced here instead of via the connection layer.
 	if _connection and _connection.is_websocket_active():
 		_connection.disconnect_from_server()
@@ -706,29 +648,24 @@ func disconnect_db() -> void:
 	_emit_disconnected()
 
 
-# Idempotent terminal `disconnected`. See _disconnected_emitted: `disconnected`
-# fires at most once per session, so a server-initiated close (or an exhausted
-# reconnect) followed by a cleanup disconnect_db() does not double-fire it.
+# Idempotent terminal `disconnected` — see _disconnected_emitted.
 #
-# This is the third session boundary, alongside _prepare_for_reconnect and
-# connect_db, and it needs the same queue drop they do: the socket is closed but
-# packets received from it are still queued, results parsed out of it are still
-# waiting, and a batch may be halfway through being applied. Without this they keep
-# landing for frames after the terminal signal — row callbacks and transaction
-# updates for a session the game has already been told is over, mutating a mirror
-# disconnect_db deliberately leaves in place as last-known state. Dropped before the
-# signal, so a listener that inspects the client sees a settled one; the call runs
-# no game code of its own.
+# This is the third session boundary, alongside _prepare_for_reconnect and connect_db, and
+# it needs the same queue drop they do: the socket is closed but packets, parsed results
+# and a half-applied batch are still in flight, and would keep landing for frames after
+# the terminal signal — row callbacks for a session the game has been told is over,
+# mutating a mirror disconnect_db deliberately leaves in place. Dropped before the signal,
+# so a listener sees a settled client; the call runs no game code of its own.
 func _emit_disconnected() -> void:
 	if _disconnected_emitted:
 		return
 	_disconnected_emitted = true
 	_drop_dead_session_traffic()
-	# The session is over, so its subscriptions are too. Left standing, they were still
-	# in current/pending when a later connect_db started a NEW session — and the first
-	# drop of that session rebuilt its saved query set from them, resubscribing the dead
-	# session's queries on top of the live one's. Ending them here also stops
-	# `sub.ended` reading false for a subscription nothing can deliver to any more.
+	# The session is over, so its subscriptions are too. Left in current/pending they
+	# survive into the next connect_db, and that session's first drop rebuilds its saved
+	# query set from them — resubscribing a dead session's queries on top of the live one's.
+	# Ending them also stops `sub.ended` reading false for a subscription nothing can
+	# deliver to.
 	_end_all_subscriptions()
 	disconnected.emit()
 
@@ -791,8 +728,7 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 
 	# Refused, not queued: see _MAX_PENDING_SUBSCRIPTIONS. Before the id is taken and
 	# before anything goes out, so a refusal creates no query on the server and no state
-	# here — the alternative, dropping an older pending subscription to make room, would
-	# hand back a handle for a query the server may well still be streaming.
+	# here.
 	if pending_subscriptions.size() >= _MAX_PENDING_SUBSCRIPTIONS:
 		_report_subscribe_backlog()
 		return SpacetimeDBSubscription.fail(ERR_BUSY)
@@ -801,33 +737,30 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 
 
 # The subscribe path without the pending cap, which only the reconnect's resubscribe loop
-# uses. That loop issues every saved set in one synchronous pass, so nothing can be applied
-# while it runs and pending climbs to the whole set by construction — capping it refused
-# and lost the tail of the game's OWN previously-acknowledged state (measured: 4116 live
-# subscriptions, 20 query sets gone, `reconnected` emitted as if it had worked). What it
-# re-sends is bounded by what the server previously acknowledged, which is not the backlog
-# the cap exists to catch.
+# uses. That loop issues every saved set in one synchronous pass, so pending climbs to the
+# whole set by construction and the cap would refuse the tail of the game's OWN
+# previously-acknowledged state (measured: 4116 live subscriptions, 20 query sets gone,
+# `reconnected` emitted as if it had worked). What it re-sends is bounded by what the
+# server already acknowledged, which is not the backlog the cap exists to catch.
 #
-# A parameter rather than a flag on the client on purpose: a flag would exempt whatever ran
-# while it was set (the loop can reach game code through `reconnected`), and a fault inside
-# the loop would leave it exempt for the rest of the session.
+# A parameter rather than a flag on the client: a flag would exempt whatever ran while it
+# was set (the loop reaches game code through `reconnected`), and a fault inside the loop
+# would leave it exempt for the rest of the session.
 #
 # `existing` is the suspended handle a reconnect is restoring. Passing it re-registers the
-# caller's own object under the new query set id instead of returning a fresh one, so the
-# handle the game has held since before the drop goes on working — including its
-# unsubscribe. Every return path hands `existing` back when it is given, failures included;
-# a caller that already holds the object would otherwise have to notice that the thing it
-# got back was a different one.
+# caller's own object under the new query set id, so the handle the game has held since
+# before the drop goes on working — including its unsubscribe. Every return path hands
+# `existing` back when it is given, failures included.
 func _subscribe_uncapped(
 		queries: PackedStringArray,
 		existing: SpacetimeDBSubscription = null,
 ) -> SpacetimeDBSubscription:
 	# A handle that ended between being chosen for restore and reaching this call — the
 	# caller unsubscribed it from inside an `end` handler the same loop emitted. Refused
-	# before an id is taken or anything is sent, because mark_reattached() below correctly
-	# no-ops on an ended handle but nothing else here does: the send would still go out and
-	# still register it, leaving pending_subscriptions holding an ENDED handle under an id
-	# that handle does not carry, which nothing can ever settle or unsubscribe.
+	# before an id is taken or anything is sent: mark_reattached() below no-ops on an ended
+	# handle but the send does not, which would leave pending_subscriptions holding an
+	# ENDED handle under an id it does not carry, and nothing can settle or unsubscribe
+	# that.
 	if existing != null and existing.ended:
 		return existing
 
@@ -898,8 +831,8 @@ func unsubscribe(query_id: int) -> Error:
 
 	# -1 is what a failed handle carries (SpacetimeDBSubscription.fail leaves the default),
 	# and `unsubscribe(handle.query_id)` is the natural next line after a subscribe that
-	# did not go out. Serializing it fails on a u32 field, so the caller used to get a
-	# serializer error about `query_id` instead of being told the handle was never live.
+	# did not go out. Caught here because serializing it fails on a u32 field, which tells
+	# the caller nothing about the handle never having been live.
 	if query_id < 0:
 		push_warning(
 			(
@@ -948,9 +881,8 @@ func unsubscribe(query_id: int) -> Error:
 			"SpacetimeDBClient: Unsubscribe request sent successfully (BSATN), Query ID: %d"
 			% query_id
 		)
-		# Recorded only for a query this client holds a handle for (applied or still
-		# pending), so a caller passing an id the client never issued cannot grow the
-		# set. See _unsubscribing_query_ids.
+		# Recorded only for a query this client holds a handle for, so an id the client
+		# never issued cannot grow the set. See _unsubscribing_query_ids.
 		if current_subscriptions.has(query_id) or pending_subscriptions.has(query_id):
 			_unsubscribing_query_ids[query_id] = true
 		return OK
@@ -1180,17 +1112,15 @@ func wait_for_procedure_response(
 ## deadline has to behave as if the caller had passed nothing, and the subscription handle's
 ## waiters default to a shorter one than the client's.
 ##
-## Clamped at the top, refused at the bottom, the same split the socket limits
+## Clamped at the top, refused at the bottom — the same split the socket limits
 ## ([method SpacetimeDBConnection.resolve_buffer_size]) and the reconnect delays
-## ([method _resolve_reconnect_delay]) take, and for the same reason: above
-## [constant MAX_RESPONSE_TIMEOUT_SECONDS] the intent is unambiguous (wait longer, and
-## [code]INF[/code] means wait forever, which [method SceneTree.create_timer] answers by
-## never firing at all); below [constant MIN_RESPONSE_TIMEOUT_SECONDS] it is not. Zero,
-## negative and NaN all land in the bottom branch and all mean the same thing to the engine
-## — the timer fires on the very next frame — so the caller is handed a timeout before the
-## server could answer, which reads as "the server did not answer" for a server that did.
-## [code]0[/code] is the shape worth naming: [HTTPRequest] reads it as "no timeout", so it
-## is the value a caller reaches for meaning the opposite of what it does here.
+## ([method _resolve_reconnect_delay]) take. Above [constant MAX_RESPONSE_TIMEOUT_SECONDS]
+## the intent is unambiguous (wait longer; [code]INF[/code] means forever, which
+## [method SceneTree.create_timer] answers by never firing); below
+## [constant MIN_RESPONSE_TIMEOUT_SECONDS] it is not. Zero, negative and NaN all fire on
+## the next frame, handing the caller a timeout before the server could answer.
+## [code]0[/code] is worth naming: [HTTPRequest] reads it as "no timeout", the opposite of
+## what it does here.
 static func resolve_wait_timeout(timeout_seconds: float, fallback: float, setting: String) -> float:
 	if timeout_seconds > MAX_RESPONSE_TIMEOUT_SECONDS:
 		push_error(
@@ -1227,10 +1157,8 @@ func _wait_for_response(
 	trailing_args_to_drop: int = 0,
 ) -> Variant:
 	# Resolved here rather than at each public entry point: this is the one place the
-	# caller's float reaches the engine, so a deadline that cannot be waited out is named
-	# once no matter which waiter was called. Before the cache check, not after, or a
-	# caller that always passes a refused deadline would be told about it or not depending
-	# on whether the response happened to have landed already.
+	# caller's float reaches the engine. Before the cache check, not after, or the
+	# diagnostic would depend on whether the response happened to have landed already.
 	var deadline: float = resolve_wait_timeout(
 		timeout_seconds,
 		DEFAULT_RESPONSE_TIMEOUT_SECONDS,
@@ -1241,9 +1169,8 @@ func _wait_for_response(
 		cache.erase(request_id)
 		print_log("SpacetimeDBClient: Cache hit for Req ID: %d" % request_id)
 		return cached
-	# Wall clock (ignore_time_scale): a response timeout measures the server, and a game
-	# frozen with Engine.time_scale = 0 would otherwise leave this await suspended for
-	# the whole freeze — indefinitely, for a pause menu that holds the scale at zero.
+	# Wall clock (ignore_time_scale): a response timeout measures the server, so a game at
+	# Engine.time_scale = 0 must not suspend it for the length of the freeze.
 	var timer: SceneTreeTimer = get_tree().create_timer(deadline, true, false, true)
 	var result_container: Array = [null]
 	# done lives in a container because GDScript lambdas capture local primitives
@@ -1336,15 +1263,11 @@ func _load_token_or_request() -> void:
 ## Reports a connection failure that was decided WITHOUT touching the network, deferred
 ## by one frame.
 ##
-## Everything else that ends a connection attempt — DNS, the socket, the identity
-## request — reports from a later frame by construction. These three do not: a token
-## refused because it carries a control character (from the options, or read back from
-## token_save_path) is decided inside connect_db, so emitting inline reached only the
-## listeners that were already wired. That is the opposite order from the one every
-## caller writes, and it is the order the Blackholio example shipped with — connect
-## first, wire the handlers on the next lines — which lost the report entirely and left
-## the game waiting on a connection the SDK had already given up on. Deferring makes the
-## signal arrive the same way in every case, so wiring order stops mattering.
+## Everything else that ends a connection attempt — DNS, the socket, the identity request
+## — reports from a later frame by construction. A refused token does not: it is decided
+## inside connect_db, so emitting inline would reach only the listeners already wired,
+## which loses the report for the usual calling order (connect first, wire the handlers on
+## the next lines). Deferring makes the signal arrive the same way in every case.
 ##
 ## A caller that frees the client in the same frame never sees it: the deferred call is
 ## dropped when its object is gone, which is the correct outcome.
@@ -1372,12 +1295,11 @@ func _generate_connection_id() -> String:
 
 
 func _on_token_received(received_token: String) -> void:
-	# Every token this client connects with funnels through here — one set in the
-	# options, one read back from token_save_path, and one issued by the REST identity
-	# endpoint — and none of the three is necessarily the game's own text. A token
-	# carrying a CR or LF would split the `Authorization: Bearer ...` handshake header
-	# and turn whatever follows into further request headers, so it is refused here,
-	# before it can be stored, written to disk, or connected with.
+	# Every token this client connects with funnels through here — from the options, from
+	# token_save_path, or from the REST identity endpoint — and none of the three is
+	# necessarily the game's own text. A token carrying a CR or LF would split the
+	# `Authorization: Bearer ...` handshake header, so it is refused before it can be
+	# stored, written to disk, or connected with.
 	var reject_reason: String = SpacetimeDBConnection.token_reject_reason(received_token)
 	if not reject_reason.is_empty():
 		push_error("SpacetimeDBClient: refusing the auth token — %s." % reject_reason)
@@ -1410,17 +1332,16 @@ func _save_token(token_to_save: String) -> void:
 			printerr("SpacetimeDBClient: Failed to create directory for token: ", dir_path)
 			return
 	# Read-modify-write: every client in the process shares this path by default, so a
-	# plain overwrite would drop whichever module wrote last time. Both clients run on
-	# the main thread and FileAccess is synchronous, so two saves in one frame are
-	# sequential — the second one reads what the first just wrote.
+	# plain overwrite would drop whichever module wrote last time. Clients run on the main
+	# thread and FileAccess is synchronous, so two saves in one frame are sequential.
 	var existing: String = ""
 	if FileAccess.file_exists(token_save_path):
 		var read_file: FileAccess = FileAccess.open(token_save_path, FileAccess.READ)
 		if read_file == null:
-			# The file is there and this process cannot read it (permissions, too many
-			# open handles). Carrying on would rebuild the store out of nothing and put
-			# it over entries that are merely unreadable HERE — every other module's
-			# identity, lost to a transient. Refuse the save instead.
+			# The file is there and this process cannot read it (permissions, too many open
+			# handles). Carrying on would rebuild the store out of nothing over entries
+			# that are merely unreadable HERE, losing every other module's identity to a
+			# transient.
 			printerr(
 				"SpacetimeDBClient: the token file exists but could not be read (%s): %s. "
 				% [token_save_path, error_string(FileAccess.get_open_error())]
@@ -1429,36 +1350,32 @@ func _save_token(token_to_save: String) -> void:
 			return
 		existing = read_file.get_as_text()
 		read_file.close()
-	# Nothing to write when this module already resolves to this token — the common case
-	# on a reconnect, where the token came out of this very file. One file now carries
-	# every module's credential, so the cheapest way not to damage it is not to rewrite
-	# it. (Resolves through the pre-store fallback too: a module still living off that
-	# entry keeps doing so rather than minting a duplicate under its own name.)
+	# Nothing to write when this module already resolves to this token — the common case on
+	# a reconnect, where the token came out of this very file. Resolves through the
+	# pre-store fallback too, so a module still living off that entry keeps doing so rather
+	# than minting a duplicate under its own name.
 	if _token_store_read(existing, module_name, false) == token_to_save:
 		return
 	var contents: String = token_store_write(existing, module_name, token_to_save)
 	if contents == existing:
 		return # nothing to change (a refused write hands the store back as it was)
-	# Written to a sibling and renamed over the real path, so a crash between truncating
-	# the file and filling it cannot leave an empty or half-written one — which, now that
-	# one file carries every module's token, would cost all of them at once instead of
-	# one. The rename is atomic on POSIX; on Windows Godot's DirAccess implements it as
-	# delete-then-move, which leaves a much narrower window than writing in place but not
-	# no window. The sibling name carries the process AND this client's instance id: two
-	# copies of the same game share one user:// directory, and a fixed name would let
-	# them truncate each other's half-written file and then rename the result into place.
-	# The instance id is what covers Web, where OS.get_process_id() is a hardcoded 0 and
-	# two browser tabs are the easiest way to get two instances over one user:// — though
-	# there each tab syncs its own filesystem overlay to IndexedDB wholesale, so a
-	# cross-tab save race is last-writer-wins whatever this file does.
+	# Written to a sibling and renamed over the real path, so a crash between truncating the
+	# file and filling it cannot leave an empty or half-written one — which would cost every
+	# module's token at once. The rename is atomic on POSIX; on Windows Godot's DirAccess
+	# implements it as delete-then-move, a narrower window than writing in place but not no
+	# window. The sibling name carries the process AND this client's instance id, because
+	# two copies of the same game share one user:// and a fixed name would let them truncate
+	# each other's half-written file. The instance id covers Web, where OS.get_process_id()
+	# is a hardcoded 0 — though there each tab syncs its whole filesystem overlay to
+	# IndexedDB, so a cross-tab save race is last-writer-wins whatever this file does.
 	var tmp_path: String = (
 		"%s.%d.%d.tmp" % [token_save_path, OS.get_process_id(), get_instance_id()]
 	)
 	var file: FileAccess = FileAccess.open(tmp_path, FileAccess.WRITE)
 	if file != null:
 		# store_string reports a short write (a full disk, a quota). Renaming after one
-		# would install a truncated store over the intact one — the failure this whole
-		# dance exists to prevent — so the sibling is removed and the save refused.
+		# would install a truncated store over the intact one, so the sibling is removed
+		# and the save refused.
 		var stored: bool = file.store_string(contents)
 		file.close()
 		if not stored:
@@ -1477,10 +1394,9 @@ func _save_token(token_to_save: String) -> void:
 			"SpacetimeDBClient: could not move the token file into place (%s): %s"
 			% [token_save_path, error_string(rename_err)]
 		)
-	# The path above is the one that should run. Writing in place is the fallback for a
-	# filesystem where the sibling or the rename is refused (an exported platform whose
-	# user:// is not a real directory), so persistence keeps working there — at the cost
-	# of the guarantee above, which is why it is not the first choice.
+	# Writing in place is the fallback for a filesystem where the sibling or the rename is
+	# refused (an exported platform whose user:// is not a real directory). Persistence
+	# keeps working there, without the atomicity guarantee above.
 	var direct: FileAccess = FileAccess.open(token_save_path, FileAccess.WRITE)
 	if direct == null:
 		printerr("SpacetimeDBClient: Failed to save token to path: ", token_save_path)
@@ -1496,11 +1412,11 @@ func _save_token(token_to_save: String) -> void:
 ## This module's token out of the persisted store's [param text], or [code]""[/code].
 ##
 ## The store is a JSON object keyed by [member module_name], because
-## [member token_save_path] has one default and a project may run a client per module —
-## an unkeyed file let two clients overwrite each other, so the identity a module
-## reconnected with was whichever client saved last (measured: two modules issued two
-## identities on the first run and both came back as one of them on the second, with
-## every row the other identity owned then invisible and nothing reporting it).
+## [member token_save_path] has one default and a project may run a client per module. An
+## unkeyed file lets two clients overwrite each other, so a module reconnects with
+## whichever identity saved last (measured: two modules issued two identities on the first
+## run and both came back as one of them on the second, with every row the other identity
+## owned then invisible and nothing reporting it).
 ##
 ## Three shapes of [param text], deliberately distinguished:
 ## [br]- a JSON object: the store. This module's entry, else the pre-store token kept
@@ -1510,8 +1426,7 @@ func _save_token(token_to_save: String) -> void:
 ## upgrade instead of silently starting a new one.
 ## [br]- text that opens like an object but does not parse: a corrupt store. Reported and
 ## answered [code]""[/code], so the client asks for a fresh token rather than sending the
-## file's bytes as a bearer credential — which is what folding this case into "pre-store"
-## did.
+## file's bytes as a bearer credential.
 static func token_store_read(text: String, p_module_name: String) -> String:
 	return _token_store_read(text, p_module_name, true)
 
@@ -1534,9 +1449,8 @@ static func _token_store_read(text: String, p_module_name: String, report: bool)
 	if stored is String:
 		return stored
 	# No entry of this module's own: fall back to a pre-store token carried over by an
-	# earlier save. Every module read that one bare token before the store existed, so
-	# every module's rows live under it — handing it to each module until each has its
-	# own entry is what keeps those rows reachable after the upgrade.
+	# earlier save. Every module read that one bare token before the store existed, so every
+	# module's rows live under it and stay reachable until each has its own entry.
 	var legacy: Variant = parsed.get(TOKEN_STORE_LEGACY_KEY)
 	if legacy is String:
 		return legacy
@@ -1557,10 +1471,8 @@ static func _token_store_read(text: String, p_module_name: String, report: bool)
 ## writing rather than treat the result as always-new.
 static func token_store_write(text: String, p_module_name: String, token: String) -> String:
 	# The reserved key is only unclaimable because module names are identifiers, and
-	# module_name is a plain String nothing validates. A client that set it to the
-	# reserved key would turn its own token into the one handed to every module without
-	# an entry — the leak the key exists to bound — so the write is refused and the store
-	# comes back as it was.
+	# module_name is a plain String nothing validates. A client that set it to the reserved
+	# key would turn its own token into the one handed to every module without an entry.
 	if p_module_name == TOKEN_STORE_LEGACY_KEY:
 		push_error(
 			"SpacetimeDBClient: module_name '%s' is reserved by the token store; "
@@ -1574,9 +1486,9 @@ static func token_store_write(text: String, p_module_name: String, token: String
 		if not trimmed.begins_with("{"):
 			store[TOKEN_STORE_LEGACY_KEY] = trimmed
 		else:
-			# Same guard as token_store_read: no parse attempt on an absent file. Quiet
-			# on a corrupt store — the read that preceded this write already reported it,
-			# and a client that never reads (one_time_token) is overwriting it anyway.
+			# Same guard as token_store_read: no parse attempt on an absent file. Quiet on
+			# a corrupt store — the read before this write already reported it, and a
+			# client that never reads (one_time_token) is overwriting it anyway.
 			var parsed: Variant = _token_store_parse(trimmed, false)
 			if parsed != null:
 				for key: String in parsed:
@@ -1618,9 +1530,9 @@ func _setup_threading() -> void:
 		use_threading = false
 	if not use_threading:
 		return
-	# Reused, not replaced, because this also runs on a re-entry into the tree: the
-	# packet queue can already hold bytes that arrived before the previous worker was
-	# joined, and a fresh mutex would leave them behind a lock nothing else takes.
+	# Reused, not replaced, because this also runs on a re-entry into the tree: the packet
+	# queue can already hold bytes from before the previous worker was joined, and a fresh
+	# mutex would leave them behind a lock nothing else takes.
 	if _packet_mutex == null:
 		_packet_mutex = Mutex.new()
 	if _packet_semaphore == null:
@@ -1629,12 +1541,10 @@ func _setup_threading() -> void:
 		_result_mutex = Mutex.new()
 	deserializer_worker = Thread.new()
 	deserializer_worker.start(_thread_loop)
-	# Those queued bytes have no post waiting for them — the one that was pending was
-	# consumed by the worker on its way out — so the new worker would sit on the
-	# semaphore until the next packet happened to arrive. (The reverse trade is that a
-	# reused semaphore can carry counts the previous worker never spent, so a new one
-	# may take a few empty wakes; the loop handles an empty queue by looping, and losing
-	# queued bytes would be the worse half of the trade.)
+	# Those queued bytes have no post waiting for them — the pending one was consumed by
+	# the worker on its way out — so the new worker would sit on the semaphore until the
+	# next packet arrived. The reverse trade is a few empty wakes from counts the previous
+	# worker never spent, which the loop handles by looping.
 	_packet_mutex.lock()
 	var has_pending: bool = not _packet_queue.is_empty()
 	_packet_mutex.unlock()
@@ -1673,11 +1583,9 @@ func _thread_loop() -> void:
 		_packet_mutex.unlock()
 
 		# Fresh session (reconnect bumped the epoch): clear the parse state the prior
-		# session left. No bytes are carried between packets — the parser drops a short
-		# packet where it reads it — and the parse loop clears the error at every
-		# message, so this is belt and braces rather than the load-bearing step it was
-		# when a partial message was retained across packets.
-		# _deserializer is worker-thread-only, so this needs no lock.
+		# session left. Belt and braces today — no bytes are carried between packets and
+		# the parse loop clears the error at every message. _deserializer is
+		# worker-thread-only, so this needs no lock.
 		if batch_epoch != last_epoch:
 			_deserializer.reset_stream_state()
 			last_epoch = batch_epoch
@@ -1710,11 +1618,9 @@ func _process_results_asynchronously() -> void:
 	if use_threading and not _result_mutex:
 		return
 
-	# Refill the held batch only when the previous one is fully drained. While a
-	# batch is in flight (cursor < size) no lock is taken at all — newly parsed
-	# messages stay in _result_queue and are picked up in arrival order once the
-	# batch finishes, so a multi-frame backlog drains via an advancing cursor,
-	# never re-sliced (O(1)/frame vs O(remaining) copy/frame).
+	# Refill the held batch only when the previous one is fully drained. While a batch is
+	# in flight no lock is taken at all — newly parsed messages stay in _result_queue and
+	# are picked up in arrival order once the batch finishes.
 	if _drain_cursor >= _drain_batch.size():
 		if use_threading:
 			_result_mutex.lock()
@@ -1741,11 +1647,9 @@ func _process_results_asynchronously() -> void:
 	# single message exceeds the whole budget.
 	var start_us: int = Time.get_ticks_usec()
 	var processed: int = 0
-	# The cursor bound is not redundant with `remaining`: _handle_parsed_message runs
-	# game code, and a listener that ends the session (disconnect_db from a row
-	# callback, say) drops the dead session's traffic — including this very batch —
-	# out from under the loop. Without this check the next iteration indexes an
-	# emptied array and the frame dies on an out-of-bounds read.
+	# The cursor bound is not redundant with `remaining`: _handle_parsed_message runs game
+	# code, and a listener that ends the session drops the dead session's traffic —
+	# including this very batch — out from under the loop.
 	while (
 		_drain_cursor < _drain_batch.size()
 		and not _should_stop_drain(
@@ -1797,17 +1701,15 @@ func _auto_tune_budget(pending: int) -> void:
 ## engine.
 ##
 ## The signal the tuner reads is [method Engine.get_frames_per_second] — the RENDERED
-## frame rate — so the target has to be a rendered rate too. It used to fall back to
-## the physics tick rate, which is a different loop: a game that caps itself at 30 fps
-## while physics runs at the default 60 read as permanently below target, so the budget
-## collapsed to its floor and stayed there (measured: 4000us to the 1000us floor within
-## twelve ticks) even though nothing was struggling. A cap is the rate the game asked
-## for, so it is the rate to defend.
+## frame rate — so the target has to be a rendered rate too. Comparing it against the
+## physics tick rate reads a game capped at 30 fps with physics at 60 as permanently below
+## target, collapsing the budget to its floor with nothing struggling (measured: 4000us to
+## the 1000us floor within twelve ticks). A cap is the rate the game asked for, so it is
+## the rate to defend.
 ##
-## The physics rate remains the last resort, which keeps the old behaviour for an
-## uncapped game — there, a render rate below the physics rate really is the frame loop
-## falling behind, and handing time back to it is the point of the controller. A game
-## capped by vsync rather than [member Engine.max_fps] should set
+## The physics rate remains the last resort, for an uncapped game — there a render rate
+## below the physics rate really is the frame loop falling behind. A game capped by vsync
+## rather than [member Engine.max_fps] should set
 ## [member SpacetimeDBConnectionOptions.auto_tune_target_fps] explicitly.
 ##
 ## Note the remaining blind spot, which no target can fix: a cap far below the physics
@@ -1820,13 +1722,11 @@ func _auto_tune_budget(pending: int) -> void:
 static func resolve_target_fps(configured: int, max_fps: int, physics_tps: int, measured_fps: float) -> int:
 	if configured > 0:
 		return configured
-	# The cap counts as the target only once the game is actually reaching it. A cap is
+	# The cap counts as the target only once the game is actually reaching it: a cap is
 	# what the game PERMITS, not what it achieves, and capping above what the hardware
-	# delivers is a common idiom ("cap at the refresh rate, we will never hit it") — so
-	# adopting an unreached cap would compare 60 against 240 and pin the budget at the
-	# floor, which is the very failure this resolution exists to remove, mirrored. Cold
-	# start reads 0 fps and falls through; the controller holds on a 0 reading anyway,
-	# so the first real frame arms the target a tick later.
+	# delivers is a common idiom, so an unreached cap would compare 60 against 240 and pin
+	# the budget at the floor. Cold start reads 0 fps and falls through; the controller
+	# holds on a 0 reading anyway, so the first real frame arms the target a tick later.
 	if max_fps > 0 and measured_fps >= max_fps * 0.9:
 		return max_fps
 	return physics_tps
@@ -1888,10 +1788,9 @@ static func _resolve_drain_config(
 ## resolves on assignment so a knob the SDK cannot use is reported at the call that set it
 ## rather than only at a drop hours later.
 ##
-## Both report. A configuration the SDK refuses is therefore named once when it is set and
-## once per drop for as long as it stays that way, which is the intended trade: a wrong knob
-## that keeps costing the cycle its pacing keeps saying so. Not once per ATTEMPT — the
-## direct [method _schedule_next_reconnect_attempt] callers inside a live cycle do not
+## Both report, so a configuration the SDK refuses is named once when it is set and once
+## per drop for as long as it stays that way. Not once per ATTEMPT — the direct
+## [method _schedule_next_reconnect_attempt] callers inside a live cycle do not
 ## re-resolve.
 func _resolve_reconnect_pacing(options: SpacetimeDBConnectionOptions) -> void:
 	if options == null:
@@ -1902,11 +1801,9 @@ func _resolve_reconnect_pacing(options: SpacetimeDBConnectionOptions) -> void:
 		"reconnect_initial_delay",
 	)
 	# A cap BELOW the starting delay is left alone, unlike the min/max pair
-	# [method _resolve_drain_config] squares up. Those two bound one quantity, so an
-	# inverted pair there is an empty range; these two are different quantities — where the
-	# backoff starts, and how long it may ever get — and a caller who writes a cap under the
-	# starting delay has said something coherent ("never wait more than this"). Honouring it
-	# costs nothing, because the floor below is what keeps even a tiny cap a real wait.
+	# [method _resolve_drain_config] squares up: those two bound one quantity, while these
+	# are different quantities, and "never wait more than this" is coherent. The floor
+	# below is what keeps even a tiny cap a real wait.
 	_reconnect_max_delay = _resolve_reconnect_delay(
 		options.reconnect_max_delay,
 		DEFAULT_RECONNECT_MAX_DELAY,
@@ -1921,19 +1818,18 @@ func _resolve_reconnect_pacing(options: SpacetimeDBConnectionOptions) -> void:
 
 ## [param value] if it is a delay the reconnect cycle can be paced by, else a usable one.
 ##
-## Clamped at the top, refused at the bottom, for the reason the socket limits split the
-## same way ([method SpacetimeDBConnection.resolve_buffer_size]): above
-## [constant MAX_RECONNECT_DELAY_SECONDS] the intent is unambiguous — a longer wait, and the
-## ceiling is also what keeps the computed backoff finite — while below
-## [constant MIN_RECONNECT_DELAY_SECONDS] it is not. A sub-frame delay is not a shorter
-## wait: the backoff runs on a [SceneTreeTimer], so anything under a frame is no wait at all,
-## and the cycle opens a connection per frame until the attempt budget runs out (with the
-## documented [code]max_reconnect_attempts = 0[/code], never). Instant retry is not what this
-## knob offers — that is the stall path, which sets [member _reconnect_immediate] once — so
-## an unusable value falls back to the default rather than being read as a request for it.
+## Clamped at the top, refused at the bottom, the way the socket limits split
+## ([method SpacetimeDBConnection.resolve_buffer_size]): above
+## [constant MAX_RECONNECT_DELAY_SECONDS] the intent is unambiguous — a longer wait, and
+## the ceiling is what keeps the computed backoff finite — while below
+## [constant MIN_RECONNECT_DELAY_SECONDS] it is not. The backoff runs on a
+## [SceneTreeTimer], so a sub-frame delay is no wait at all and the cycle opens a
+## connection per frame until the attempt budget runs out. Instant retry is the stall
+## path's job ([member _reconnect_immediate]), not this knob's, so an unusable value falls
+## back to the default.
 ##
-## Negative and NaN land in the same branch, both deliberately: a negative delay computes a
-## zero backoff, and NaN fails every comparison, which is exactly the value that makes
+## Negative and NaN land in the same branch deliberately: a negative delay computes a zero
+## backoff, and NaN fails every comparison, which makes
 ## [method SceneTree.create_timer] time out on the next frame.
 static func _resolve_reconnect_delay(value: float, fallback: float, setting: String) -> float:
 	if value > MAX_RECONNECT_DELAY_SECONDS:
@@ -1962,11 +1858,10 @@ static func _resolve_reconnect_delay(value: float, fallback: float, setting: Str
 ## [constant DEFAULT_BACKOFF_MULTIPLIER].
 ##
 ## Below 1.0 the delay SHRINKS with each failed attempt, which is not a backoff: 0.0 pins
-## every attempt after the first at zero, a negative one alternates between zero and a
-## growing delay (the sign flips with the exponent), and a fraction converges on zero after
-## a handful of attempts. All three end at the same per-frame storm the floor in
-## [method _resolve_reconnect_delay] exists to prevent, so a multiplier that cannot
-## escalate is refused rather than clamped. NaN fails both comparisons and lands here too.
+## every attempt after the first at zero, a negative one alternates as the sign flips with
+## the exponent, and a fraction converges on zero. All three reach the per-frame storm the
+## floor in [method _resolve_reconnect_delay] exists to prevent, so a multiplier that
+## cannot escalate is refused rather than clamped. NaN lands here too.
 static func _resolve_backoff_multiplier(value: float) -> float:
 	if value > MAX_BACKOFF_MULTIPLIER:
 		push_error(
@@ -1992,13 +1887,12 @@ static func _resolve_backoff_multiplier(value: float) -> float:
 
 ## [param value] clamped into the documented 0.0–1.0 jitter range.
 ##
-## Both ends are clamped rather than refused because both have an unambiguous reading, and
-## both are wrong in a way the caller cannot see: above 1.0 the random offset can exceed the
-## delay it is subtracted from, so attempts land on zero at random; below 0.0 it is ADDED,
-## so the backoff runs past [member SpacetimeDBConnectionOptions.reconnect_max_delay]
-## (measured 32.4 s against a 30 s cap). NaN takes the same branch as a negative one and
-## disables jitter, which is the only reading that leaves a usable delay — an unclamped NaN
-## makes every backoff NaN, and a NaN wait fires on the next frame.
+## Both ends are clamped rather than refused because both have an unambiguous reading:
+## above 1.0 the random offset can exceed the delay it is subtracted from, so attempts land
+## on zero at random; below 0.0 it is ADDED, so the backoff runs past
+## [member SpacetimeDBConnectionOptions.reconnect_max_delay] (measured 32.4 s against a
+## 30 s cap). NaN takes the negative branch and disables jitter — the only reading that
+## leaves a usable delay, since a NaN backoff fires on the next frame.
 static func _resolve_jitter_fraction(value: float) -> float:
 	if value > 1.0:
 		push_error(
@@ -2082,9 +1976,6 @@ func _decompress_and_parse(raw_bytes: PackedByteArray) -> PackedByteArray:
 	elif compression == 2:
 		payload = DataDecompressor.decompress_packet(payload)
 		if payload.is_empty():
-			# Gzip failures used to come back as whatever had inflated before the
-			# break; they return empty now, same as Brotli, so they get the same
-			# one-line "this frame is gone" report rather than a silent no-op parse.
 			# The cause is not asserted here: the decompressor already named it, and
 			# some of these frames decompressed fine and were refused for what came
 			# after the member.
@@ -2110,10 +2001,8 @@ func _parse_packet_and_get_resource(bsatn_bytes: PackedByteArray) -> Array[Space
 			_deserializer.get_last_error(),
 		)
 	# Whatever parsed is still delivered. A packet carries several complete server
-	# messages and the failure is at one of them: the ones read before it are whole,
-	# ordered, and indistinguishable from the same messages arriving in their own
-	# packet. Dropping them would discard uncorrupted transaction updates on top of
-	# the ones the error already cost.
+	# messages and the failure is at one of them; the ones read before it are whole and
+	# ordered, so dropping them would discard uncorrupted updates on top of the loss.
 	return result
 
 
@@ -2231,13 +2120,12 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				"  Table: '%s' inserts=%d deletes=%d"
 				% [t.table_name, t.inserts.size(), t.deletes.size()]
 			)
-		# Same session boundary as _handle_transaction_update, and the one that bites
-		# hardest: connect_db() wipes the mirror and only THEN re-arms
-		# _received_initial_subscription, so a listener that restarts the session from a
-		# snapshot row leaves this block announcing the dead session's initialization —
-		# and consuming the flag the new session needed, so database_initialized never
-		# fires again and anything awaiting it (RowReceiver does) never resumes. The
-		# handle below belongs to the dead session too; the restart already ended it.
+		# Same session boundary as _handle_transaction_update. connect_db() wipes the
+		# mirror and only THEN re-arms _received_initial_subscription, so a listener that
+		# restarts the session from a snapshot row would leave this block announcing the
+		# dead session's initialization and consuming the flag the new session needed —
+		# database_initialized would never fire again, wedging anything awaiting it
+		# (RowReceiver does). The handle below belongs to the dead session too.
 		var session: int = _local_db.session_generation()
 		_local_db.apply_database_subscription_applied(message)
 		if _local_db.session_generation() != session:
@@ -2253,10 +2141,9 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			sub.applied.emit()
 	elif message is SubscriptionErrorMessage:
 		printerr("SpacetimeDBClient: Subscription error: %s" % message.error_message)
-		# The error IS the response to that subscribe — without this the send stayed
-		# pending and its in_flight never came back down. The id is optional on this
-		# message; when the server omits it the send is only released by the next
-		# disconnect (or MAX_PENDING eviction).
+		# The error IS the response to that subscribe, so it has to retire the send. The id
+		# is optional on this message; when the server omits it the send is only released
+		# by the next disconnect (or MAX_PENDING eviction).
 		if message.has_request_id():
 			_stats.record_response(message.request_id)
 		if message.has_query_id():
@@ -2275,9 +2162,9 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				sub.error_message = message.error_message
 				sub.end.emit()
 				# Already-applied subscription: prune exactly its rows. The server sends no
-				# dropped rows on an error, so LocalDatabase reconstructs them from per-query
-				# membership and decrements their refcounts — rows still held by another
-				# subscription survive. No disconnect/rebuild needed, regardless of auto_reconnect.
+				# dropped rows on an error, so LocalDatabase reconstructs them from
+				# per-query membership and decrements their refcounts — rows another
+				# subscription still holds survive.
 				_local_db.prune_query(qid)
 				print_log(
 					"SpacetimeDBClient: SubscriptionError on applied query_id %d; pruned its rows."
@@ -2286,10 +2173,10 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 	elif message is UnsubscribeAppliedMessage:
 		var qid: int = message.query_id.id
 		if not message.tables.is_empty():
-			# Same session boundary as _handle_transaction_update: a callback here can
-			# wipe the mirror, and the tables left would then be applied into the next
-			# session's — every one of them a delete for a row it does not hold, which
-			# warns and re-creates membership for a query that no longer exists.
+			# Same session boundary as _handle_transaction_update: a callback here can wipe
+			# the mirror, and the remaining tables would then apply into the next
+			# session's as deletes for rows it does not hold, re-creating membership for a
+			# query that no longer exists.
 			var gen: int = _local_db.session_generation()
 			for table_update: TableUpdateData in message.tables:
 				_local_db.apply_table_update(table_update, qid)
@@ -2312,28 +2199,26 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 		print_log("SpacetimeDBClient: Unsubscribe applied for query_id %d." % qid)
 	elif message is IdentityTokenMessage:
 		print_log("SpacetimeDBClient: Received Identity Token.")
-		# Guard FIRST — a late IdentityToken from a socket the user already tore
-		# down (disconnect_db mid-handshake) must be a full no-op. In particular it
-		# must not restore _token, which disconnect_db deliberately wiped to force a
-		# fresh token on the next connect. Legit reconnect is unaffected: STATE_OPEN
-		# sets _is_connected before any packet is delivered, so is_connected_db() is
-		# true by the time this token is processed.
+		# Guard FIRST — a late IdentityToken from a socket the user already tore down
+		# (disconnect_db mid-handshake) must be a full no-op, and must not restore _token,
+		# which disconnect_db wiped to force a fresh one on the next connect. A legit
+		# reconnect is unaffected: STATE_OPEN sets _is_connected before any packet is
+		# delivered.
 		if _connection == null or not _connection.is_connected_db():
 			print_log("SpacetimeDBClient: IdentityToken for a closed connection — ignoring.")
 			return
 		_identity = message.identity
 		if not _token and message.token:
-			# Checked like every other token source: this one is kept and spliced into
-			# the handshake header of the NEXT reconnect, so a control character in it
-			# would inject headers into a later request rather than this one.
+			# Checked like every other token source: this one is spliced into the handshake
+			# header of the NEXT reconnect, so a control character in it injects headers
+			# into a later request.
 			var token_reason: String = SpacetimeDBConnection.token_reject_reason(message.token)
 			if token_reason.is_empty():
 				_token = message.token
 			else:
-				# Reported, not just logged: this session keeps working on the socket the
-				# server already accepted, but _token stays unset, so the reconnect that
-				# needs it will bail. The game has to hear that now, while it can still
-				# fetch a usable token, rather than at the first drop.
+				# Reported, not just logged: this session keeps working, but _token stays
+				# unset and the reconnect that needs it will bail. The game has to hear
+				# that while it can still fetch a usable token.
 				push_error(
 					"SpacetimeDBClient: refusing the token from the IdentityToken message — %s."
 					% token_reason
@@ -2381,10 +2266,10 @@ func _decode_reducer_error(err_bytes: PackedByteArray) -> String:
 
 func _handle_transaction_update(update_sets: TransactionUpdateMessage) -> void:
 	# A row callback can end this session and start another (disconnect_db() then
-	# connect_db(), which wipes the mirror synchronously). The query sets after that
-	# one belong to the session the caller threw away: applied into the fresh mirror
-	# they are rows no unsubscribe or delete can ever remove. LocalDatabase abandons a
-	# wiped batch of its own; this is the loop one level above it.
+	# connect_db() wipes the mirror synchronously). The query sets after that one belong to
+	# the session the caller threw away, and applied into the fresh mirror they are rows no
+	# unsubscribe or delete can remove. LocalDatabase abandons a wiped batch of its own;
+	# this is the loop one level above it.
 	var gen: int = _local_db.session_generation()
 	for dataset: DatabaseUpdateData in update_sets.query_sets:
 		_local_db.apply_database_update(dataset)
@@ -2401,20 +2286,18 @@ func _handle_transaction_update(update_sets: TransactionUpdateMessage) -> void:
 
 func _on_connection_disconnected() -> void:
 	# Only unintentional closes reach here: disconnect_db() closes via
-	# disconnect_from_server(), which clears the connection flags so the connection
-	# layer stays silent (no signal to this handler). So there is no intentional
-	# case to special-case.
+	# disconnect_from_server(), which clears the connection flags so the connection layer
+	# emits nothing.
 	_response_wait_aborted.emit()
 	# Stamp in-flight calls DISCONNECTED now (not later in _prepare_for_reconnect,
 	# after the backoff) so an awaiter that resumes next frame gets DISCONNECTED
 	# instead of self-stamping TIMEOUT. The request ids won't survive the reconnect.
 	_fail_pending_calls_disconnected()
 
-	# A graceful server close (normal WS code) that lands during a reconnect
-	# attempt routes here, not through _on_connection_error (which only fires on
-	# code -1). Without this branch _start_reconnection() early-returns on the
-	# RECONNECTING state and the machine wedges — no timer, no reconnect_failed.
-	# Mirror _on_connection_error / _on_connection_stalled: advance the attempt.
+	# A graceful server close (normal WS code) during a reconnect attempt routes here, not
+	# through _on_connection_error (code -1 only). Without this branch
+	# _start_reconnection() early-returns on the RECONNECTING state and the machine wedges
+	# — no timer, no reconnect_failed.
 	if _reconnect_state == _ReconnectState.RECONNECTING:
 		print_log(
 			"SpacetimeDBClient: Reconnect attempt %d closed by server, scheduling next."
@@ -2470,12 +2353,11 @@ func _start_reconnection(immediate: bool = false) -> void:
 	if _reconnect_state == _ReconnectState.RECONNECTING:
 		return
 
-	# Re-resolved per cycle, not only when the options object was assigned. Two of the
-	# knobs on that object are read LIVE every time the cycle consults them
-	# (auto_reconnect just above, reconnect_on_app_resume in _on_app_resumed), so a
-	# snapshot taken at assignment made "assign the options, then set a field on them" —
-	# an idiom this repo's own tests use — silently run the cycle on the defaults while
-	# honouring the fields still read live. Once per drop, not once per attempt, so a
+	# Re-resolved per cycle, not only when the options object was assigned. Two knobs on
+	# that object are read LIVE whenever the cycle consults them (auto_reconnect just
+	# above, reconnect_on_app_resume in _on_app_resumed), so a snapshot taken at assignment
+	# would make "assign the options, then set a field on them" run the cycle on the
+	# defaults while honouring the live fields. Once per drop, not per attempt, so a
 	# refused knob is reported at a bounded rate.
 	_resolve_reconnect_pacing(connection_options)
 
@@ -2501,12 +2383,11 @@ func _start_reconnection(immediate: bool = false) -> void:
 			var sub: SpacetimeDBSubscription = pending_subscriptions[sub_id]
 			if not sub.queries.is_empty() and not _unsubscribing_query_ids.has(sub_id):
 				_saved_subscriptions.append(sub)
-	# Suspended here rather than in _prepare_for_reconnect, because here is where it
-	# became true: from the moment the socket died no rows arrive for these queries. The
-	# loop runs over the saved set unconditionally, so the re-drop case above — which
-	# keeps the interrupted cycle's set — re-suspends handles that cycle had already
-	# re-attached. mark_suspended() is a no-op on an ended handle and idempotent on a
-	# suspended one, so both other cases pass through it harmlessly.
+	# Suspended here rather than in _prepare_for_reconnect, because here is where it became
+	# true: from the moment the socket died no rows arrive for these queries. The loop runs
+	# over the saved set unconditionally, so the re-drop case above re-suspends handles the
+	# interrupted cycle had re-attached. mark_suspended() is a no-op on an ended handle and
+	# idempotent on a suspended one.
 	for sub: SpacetimeDBSubscription in _saved_subscriptions:
 		sub.mark_suspended()
 	print_log(
@@ -2524,9 +2405,9 @@ func _schedule_next_reconnect_attempt() -> void:
 		print_log("SpacetimeDBClient: All %d reconnect attempts exhausted." % max_attempts)
 		_reconnect_state = _ReconnectState.IDLE
 		_reconnect_attempt = 0
-		# Nothing will restore these now, so they end rather than staying suspended —
-		# a handle that reads neither active nor ended for the rest of the session is
-		# the one shape a caller cannot act on.
+		# Nothing will restore these now, so they end rather than staying suspended — a
+		# handle that reads neither active nor ended is the one shape a caller cannot act
+		# on.
 		_end_saved_subscriptions()
 		reconnect_failed.emit()
 		_emit_disconnected()
@@ -2552,10 +2433,8 @@ func _schedule_next_reconnect_attempt() -> void:
 		return
 
 	# Wall clock (ignore_time_scale), like every other timer in the SDK: a backoff is a
-	# statement about the network, not about game time, and a game frozen with
-	# Engine.time_scale = 0 (the usual pause idiom) would otherwise never retry — the
-	# same stalled-backoff failure reconnect_on_app_resume exists for, from a different
-	# cause. Slow motion would stretch it just as wrongly.
+	# statement about the network, not about game time, so Engine.time_scale = 0 (the usual
+	# pause idiom) must not stop the retry and slow motion must not stretch it.
 	_reconnect_timer = tree.create_timer(backoff, true, false, true)
 	if _reconnect_timer:
 		_reconnect_timer.timeout.connect(_attempt_reconnect, CONNECT_ONE_SHOT)
@@ -2608,14 +2487,11 @@ func _calculate_backoff(attempt: int) -> float:
 
 	var jitter_range: float = base_delay * _reconnect_jitter_fraction
 	var jitter_offset: float = randf() * jitter_range
-	# The floor belongs on the PRODUCT, not only on the knobs it is computed from. Every
-	# input can pass its own resolver and the result still land under a frame: the
-	# documented full jitter (1.0) makes the offset uniform over the whole delay, and a
-	# flat multiplier (1.0) means the delay never climbs away from wherever it started —
-	# measured with initial = the minimum, multiplier 1.0, jitter 1.0, a mean of 49.5 ms
-	# and 17% of attempts under a frame, i.e. the same storm at a third of the rate. The
-	# instant-retry path does not come through here: the stall case sets its backoff to
-	# zero directly (see _reconnect_immediate).
+	# The floor belongs on the PRODUCT, not only on the knobs it is computed from: every
+	# input can pass its own resolver and the result still land under a frame. Measured with
+	# initial = the minimum, multiplier 1.0 and full jitter 1.0 — a mean of 49.5 ms and 17%
+	# of attempts under a frame. The instant-retry path does not come through here; the
+	# stall case sets its backoff to zero directly (see _reconnect_immediate).
 	return maxf(MIN_RECONNECT_DELAY_SECONDS, base_delay - jitter_offset)
 
 
@@ -2656,8 +2532,7 @@ func _attempt_reconnect() -> void:
 # (which does) and know the queues are already settled.
 #
 # Both session boundaries need this — the automatic one in _prepare_for_reconnect and the
-# manual one in connect_db. They used to disagree about it, and the manual path drained
-# the old session's messages into the new session's mirror.
+# manual one in connect_db.
 func _drop_dead_session_traffic() -> void:
 	if use_threading and _packet_mutex:
 		_packet_mutex.lock()
@@ -2671,16 +2546,12 @@ func _drop_dead_session_traffic() -> void:
 		_result_queue.clear()
 		_result_mutex.unlock()
 	else:
-		# Same boundary, without a worker to enforce it. Threadless is not an exotic setup
-		# — _setup_threading disables threading on a build with no thread support, so every
-		# threadless web export lands here.
-		#
-		# The queued results were parsed out of the dying session and would otherwise be
-		# drained into the fresh mirror, which is exactly what the worker's epoch check
-		# prevents on the threaded side. The deserializer reset beside it is belt and
-		# braces — the parse loop clears its error at every message, so nothing observes
-		# a stale one — but the worker does it on an epoch change and this path had no
-		# equivalent at all, which is the asymmetry that let the bug above live here.
+		# Same boundary, without a worker to enforce it. Threadless is not exotic:
+		# _setup_threading disables threading on a build with no thread support, so every
+		# threadless web export lands here. The queued results were parsed out of the dying
+		# session and would otherwise drain into the fresh mirror, which is what the
+		# worker's epoch check prevents on the threaded side. The deserializer reset is
+		# belt and braces — the parse loop clears its error at every message.
 		_result_queue.clear()
 		if _deserializer:
 			_deserializer.reset_stream_state()
@@ -2706,15 +2577,13 @@ func _prepare_for_reconnect() -> void:
 
 	_drop_dead_session_traffic()
 
-	# The cache wipe goes LAST, because it is the step here most likely to be observed
-	# from game code (the subscription `end` signals above are the other one that runs
-	# any): clear_local_db reports every cached row as deleted, and a listener that
-	# reads client state (or calls back in) has to see the finished reconnect-prep state,
-	# not a half-reset one. Reporting the rows is the point — the resubscribe only
-	# re-delivers rows that still exist, so a row deleted server-side while the
-	# client was away would otherwise leave the mirror with nothing to tell a
-	# consumer keyed by primary key, which would hold what it spawned for that row
-	# for the rest of the session. Rows that do come back arrive as inserts again.
+	# The cache wipe goes LAST, because it is the step most likely to be observed from game
+	# code: clear_local_db reports every cached row as deleted, and a listener that reads
+	# client state (or calls back in) has to see the finished reconnect-prep state.
+	# Reporting the rows is the point — the resubscribe only re-delivers rows that still
+	# exist, so a row deleted server-side while the client was away would otherwise leave a
+	# consumer keyed by primary key holding what it spawned for that row for the rest of
+	# the session. Rows that do come back arrive as inserts again.
 	if _local_db:
 		_local_db.clear_local_db()
 
@@ -2746,9 +2615,8 @@ func _take_live_subscriptions() -> Array[SpacetimeDBSubscription]:
 func _end_all_subscriptions() -> void:
 	var ending: Array[SpacetimeDBSubscription] = _take_live_subscriptions()
 	# A cycle that was still saving handles for a reconnect that will now never happen.
-	# Ended first, so a listener reached by the loop below sees a settled client rather
-	# than one still carrying subscriptions it means to end. It also means the loop below
-	# finds those handles already ended, which is what keeps `end` to one per handle for
+	# Ended first, so a listener reached by the loop below sees a settled client, and so
+	# the loop finds those handles already ended — which keeps `end` to one per handle for
 	# the ones this call reaches twice.
 	_end_saved_subscriptions()
 	for sub: SpacetimeDBSubscription in ending:
@@ -2844,21 +2712,19 @@ func _suspend_reconnection() -> void:
 func _resubscribe_saved_queries() -> void:
 	_resubscribe_epoch += 1
 	var epoch: int = _resubscribe_epoch
-	# Snapshot so a re-entrant _start_reconnection rebuilding _saved_subscriptions
-	# (on a drop mid-resubscribe) can't disturb this loop (mutation-during-iteration).
-	# Ended handles are dropped from the snapshot rather than skipped inside the loop:
-	# they are the ones the caller unsubscribed while suspended, and the cycle completes
-	# on a count of settles, so one that will never be sent has to be out of the total
-	# too or the cycle only ever finishes on its watchdog.
+	# Snapshot so a re-entrant _start_reconnection rebuilding _saved_subscriptions (on a
+	# drop mid-resubscribe) can't disturb this loop. Ended handles — the ones the caller
+	# unsubscribed while suspended — are dropped from the snapshot rather than skipped
+	# inside the loop: the cycle completes on a count of settles, so one that will never be
+	# sent has to be out of the total or the cycle only finishes on its watchdog.
 	var restoring: Array[SpacetimeDBSubscription] = []
 	for saved: SpacetimeDBSubscription in _saved_subscriptions:
 		if not saved.ended:
 			restoring.append(saved)
 	var total_sets: int = restoring.size()
-	# A one-int box the settle callbacks below share and bump. `Array[int]` rather than a
-	# packed array for one reason only — `_on_resubscribe_watchdog` takes that type — and
-	# not for the usual one: a PackedInt32Array boxes just as well (measured on 4.8.dev,
-	# two lambda bumps land as [2]), because packed arrays are passed by reference too.
+	# A one-int box the settle callbacks below share and bump. `Array[int]` only because
+	# `_on_resubscribe_watchdog` takes that type: a PackedInt32Array boxes just as well
+	# (measured on 4.8.dev), since packed arrays are passed by reference too.
 	var applied_count: Array[int] = [0] # gdlint: ignore[S6]
 
 	if total_sets == 0:
@@ -2870,10 +2736,9 @@ func _resubscribe_saved_queries() -> void:
 	var send_failures: int = 0
 	var first_failure: Error = OK
 	for sub: SpacetimeDBSubscription in restoring:
-		# Re-checked per item, not trusted from the snapshot: the failure branch below
-		# emits `end`, which is game code, and a handler is free to unsubscribe a sibling
-		# still waiting its turn in this very loop (or disconnect outright, which ends the
-		# lot). Counted as settled rather than skipped, or the cycle would only ever
+		# Re-checked per item, not trusted from the snapshot: the failure branch below emits
+		# `end`, and a handler is free to unsubscribe a sibling still waiting its turn in
+		# this loop. Counted as settled rather than skipped, or the cycle would only
 		# complete on its watchdog.
 		if sub.ended:
 			applied_count[0] += 1
@@ -2887,11 +2752,10 @@ func _resubscribe_saved_queries() -> void:
 			send_failures += 1
 			if first_failure == OK:
 				first_failure = sub.error
-			# Signalled, unlike the same failure on a first subscribe, which is reported
-			# by the returned handle before any caller can have connected to it. This one
-			# the game has held since before the drop, so `end` is the only way it hears
-			# that a subscription it still believes in is over. mark_ended() inside the
-			# send path already moved the state; this is the notification.
+			# Signalled, unlike the same failure on a first subscribe, where the returned
+			# handle carries it. The game has held this one since before the drop, so `end`
+			# is the only way it hears that the subscription is over. mark_ended() inside
+			# the send path already moved the state; this is the notification.
 			sub.end.emit()
 			applied_count[0] += 1
 			if applied_count[0] >= total_sets:
@@ -2923,13 +2787,10 @@ func _resubscribe_saved_queries() -> void:
 			% [send_failures, total_sets, error_string(first_failure)]
 		)
 
-	# Watchdog: a server that accepts a Subscribe but never settles one set would
-	# otherwise hang the cycle (reconnected never fires, saved set never clears).
-	# Force-complete after a timeout. Epoch-guarded via _finish_resubscribe, so a
-	# cycle that already settled or was superseded by a fresh reconnect is a no-op.
-	# Routed through a bound method-ref (not a lambda) so the timeout Callable carries
-	# Godot's freed-instance check — if the client is freed before the timer fires,
-	# the call safely no-ops instead of invoking on a dangling self.
+	# Watchdog: a server that accepts a Subscribe but never settles one set would otherwise
+	# hang the cycle. Epoch-guarded via _finish_resubscribe, so a settled or superseded
+	# cycle is a no-op. Routed through a bound method-ref, not a lambda, so the Callable
+	# carries Godot's freed-instance check for a client freed before the timer fires.
 	var tree: SceneTree = get_tree()
 	if tree:
 		# Wall clock — see the reconnect timer above.

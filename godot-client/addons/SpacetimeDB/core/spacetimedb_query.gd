@@ -93,13 +93,11 @@ func where_lte(field: String, value: Variant) -> SpacetimeDBQuery:
 ## [code](field = v1 OR field = v2 ...)[/code]. Empty [param values] is a no-op.
 ##
 ## Not [code]IN (...)[/code]: SpacetimeDB's SQL has no such operator. Its expression
-## parser — the same one behind both a subscription and a one-off query — accepts
-## comparisons ([code]=[/code], [code]!=[/code], [code]<[/code], [code]<=[/code],
-## [code]>[/code], [code]>=[/code]) joined by [code]AND[/code] / [code]OR[/code], and
-## rejects everything else, so an emitted [code]IN[/code] came back as an unsupported
-## expression and failed the whole query set. The OR group means the same thing and
-## parses. Its practical ceiling is the server's expression-recursion guard (1600), so
-## keep lists well under that.
+## parser accepts comparisons ([code]=[/code], [code]!=[/code], [code]<[/code],
+## [code]<=[/code], [code]>[/code], [code]>=[/code]) joined by [code]AND[/code] /
+## [code]OR[/code] and rejects everything else, so an emitted [code]IN[/code] fails the
+## whole query set as an unsupported expression. The OR group means the same thing and
+## parses; its practical ceiling is the server's expression-recursion guard (1600).
 func where_in(field: String, values: Array) -> SpacetimeDBQuery:
 	if values.is_empty():
 		push_error("SpacetimeDBQuery.where_in: empty value list for field '%s'." % field)

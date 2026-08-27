@@ -288,14 +288,14 @@ func _sanitize_uri() -> void:
 ## Checks a finished codegen run and, only if it produced a complete and loadable set of
 ## bindings, prunes the files it replaced.
 ##
-## [method SpacetimeCodegen.generate_bindings] is best-effort: a write that fails (a
-## read-only checkout, a file the OS has locked, no space) or a module whose schema does
-## not parse is reported and the run carries on, so the returned list can name only part
-## of the bindings. Cleanup deletes every generated file the list does NOT name, so
-## handing it a partial list turns "some files are stale" into "the previous run's output
-## for those files is gone, along with the `.uid` sidecars every scene reference resolves
-## through". Nothing is pruned unless the run was complete: stale bindings still load, and
-## the next successful run replaces them.
+## [method SpacetimeCodegen.generate_bindings] is best-effort: a failed write (a read-only
+## checkout, a file the OS has locked, no space) or a module whose schema does not parse is
+## reported and the run carries on, so the returned list can name only part of the
+## bindings. Cleanup deletes every generated file the list does NOT name, so a partial list
+## turns "some files are stale" into "the previous run's output for those files is gone,
+## along with the `.uid` sidecars every scene reference resolves through". Nothing is
+## pruned unless the run was complete: stale bindings still load, and the next successful
+## run replaces them.
 ##
 ## Takes [param dir_path] rather than reading [constant BINDINGS_SCHEMA_PATH] so a test
 ## can point the destructive half at a temp directory.
@@ -320,12 +320,11 @@ static func finalize_bindings(
 		)
 		return false
 
-	# The flag above is only ever set by code that RAN. A GDScript runtime fault unwinds
-	# the function it happens in and hands its caller that function's default, so a run
-	# that died inside generate_bindings' own frame arrives here with every flag exactly as
-	# the last stage left it — indistinguishable from a clean run, and this is the function
-	# that deletes files. Reaching its own tail is the only thing the run can say for
-	# itself that a fault cannot fake.
+	# The flag above is only ever set by code that RAN. A GDScript runtime fault unwinds the
+	# function it happens in and hands its caller that function's default, so a run that
+	# died inside generate_bindings' own frame arrives here indistinguishable from a clean
+	# one — and this is the function that deletes files. Reaching its own tail is the one
+	# thing a run can say for itself that a fault cannot fake.
 	if not codegen.run_reached_return:
 		print_err(
 			"Code generation stopped before it finished (see the errors above). The existing "
@@ -407,11 +406,10 @@ static func _check_uid_collisions(dir_path: String) -> void:
 ## Fails the run when a generated script declares the same member twice.
 ##
 ## Two schema names that differ only by a trailing underscore — a reducer `set` (which
-## escapes to `set_`, because `Object.set` is taken) alongside a reducer literally named
-## `set_` — land on one GDScript identifier. Godot refuses to load that script, and
-## since the binding is one class per module, the whole module goes with it. The engine's
-## message names the identifier but neither of the two schema names, and it only appears
-## at load, far from the codegen run that caused it. Reported here instead, with the file.
+## escapes to `set_`, because `Object.set` is taken) alongside a reducer named `set_` —
+## land on one GDScript identifier. Godot refuses to load that script, taking the whole
+## module with it, and its message names the identifier but neither schema name, at load
+## rather than at the codegen run that caused it. Reported here instead, with the file.
 ##
 ## Deliberately fails the codegen rather than renaming one side: any automatic
 ## disambiguation picks a winner silently, and which of `set` / `set_` gets the mangled
@@ -463,17 +461,17 @@ static func _check_member_collisions(generated_files: PackedStringArray) -> bool
 ## Every generated class name is the module prefix plus a name the module author chose,
 ## and the suffixes the generator adds (`Table`, `UniqueIndex`, `BTreeIndex`, and the
 ## `Types` / `ModuleDb` / `ModuleClient` / `ModuleReducers` / `ModuleProcedures` facades)
-## are ordinary spellings a module type may already end in. So a module carrying both a
-## table `score` and a type `ScoreTable` emits `class_name <M>ScoreTable` twice, and Godot
-## refuses whichever of the two it registers second — "Class "X" hides a global script
-## class" — so that script does not load at all. Measured: the row type behind a column,
-## or the db facade the generated client assigns to `db`, silently gone.
+## are ordinary spellings a module type may end in. A module carrying both a table `score`
+## and a type `ScoreTable` emits `class_name <M>ScoreTable` twice, and Godot refuses
+## whichever it registers second — "Class "X" hides a global script class" — so that
+## script does not load at all. Measured: the row type behind a column, or the db facade
+## the generated client assigns to `db`, silently gone.
 ##
 ## The file-name half is quieter still. Paths are built with [method String.to_snake_case]
 ## and class names with [method String.to_pascal_case], and neither is injective across an
 ## acronym run: types `AABB` and `Aabb` both land on `<module>_aabb.gd`, so the second
-## overwrites the first and one declared type has no bindings anywhere. Nothing errors,
-## the run reports success, and [method _cleanup_unused_classes] then prunes the previous,
+## overwrites the first and one declared type has no bindings anywhere. Nothing errors, the
+## run reports success, and [method _cleanup_unused_classes] then prunes the previous,
 ## working bindings.
 ##
 ## Deliberately fails the run rather than mangling a name, for the same reason
@@ -603,15 +601,14 @@ static func _global_classes_outside(dir_path: String) -> Dictionary[String, Stri
 ## A SINGLETON autoload's registered name is a global identifier of its own, so a class
 ## that reuses it is refused with "hides an autoload singleton" — and an autoload need not
 ## declare a `class_name`, so [method _global_classes_outside] cannot see it. Reachable: a
-## module alias `save` plus a type `System` spells `SaveSystem`, which is the canonical
-## name for a save autoload. The bindings directory is excluded for the same reason it is
-## there: the generated autoload is registered from inside it.
+## module alias `save` plus a type `System` spells `SaveSystem`. The bindings directory is
+## excluded because the generated autoload is registered from inside it.
 ##
 ## The leading `*` on the setting's value is the singleton flag, NOT "enabled": the
 ## analyzer refuses a name only when [code]has_autoload(name)[/code] AND that autoload's
-## [code]is_singleton[/code] ([code]gdscript_analyzer.cpp[/code]), and `is_singleton` is
-## set by exactly that character ([code]project_settings.cpp[/code]). A plain autoload
-## boots as a node and claims no name, so a class may reuse it — measured, accepted.
+## [code]is_singleton[/code] ([code]gdscript_analyzer.cpp[/code]), which that character
+## sets ([code]project_settings.cpp[/code]). A plain autoload claims no name, so a class
+## may reuse it — measured, accepted.
 static func _autoload_names_outside(dir_path: String) -> Dictionary[String, String]:
 	var out: Dictionary[String, String] = { }
 	var inside: String = "%s/" % dir_path.rstrip("/") # Same normalisation as above.

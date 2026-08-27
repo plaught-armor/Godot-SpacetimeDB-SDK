@@ -77,15 +77,14 @@ var generation_incomplete: bool = false
 
 ## Set by a generation stage at EVERY return it takes deliberately, cleared by its caller
 ## immediately before the call. Not "the stage succeeded" — a stage that gave up and
-## reported why sets it too; what it proves is that the stage reached a `return` of its
-## own rather than being unwound. A GDScript runtime fault unwinds only the function it
-## happens in and hands the caller that function's default, so a stage that faulted is
-## otherwise indistinguishable from one that legitimately produced nothing — and
-## "produced nothing" is exactly what makes the pruning pass delete a module's bindings.
+## reported why sets it too; what it proves is that the stage reached a `return` of its own
+## rather than being unwound. A GDScript runtime fault unwinds only the function it happens
+## in and hands the caller that function's default, so a faulted stage is otherwise
+## indistinguishable from one that produced nothing — which is what makes the pruning pass
+## delete a module's bindings.
 ##
 ## Every consumer resets it immediately before the call it checks, so one variable covers
-## the nested stages (the inner call's result is checked before the outer stage sets its
-## own). A consumer added later MUST reset it the same way.
+## the nested stages. A consumer added later MUST reset it the same way.
 var _stage_reached_return: bool = false
 
 ## Set at the tail of [method generate_bindings], cleared at its head. The per-stage
@@ -191,16 +190,15 @@ static func _native_names(base_class: StringName) -> Dictionary:
 
 ## Escapes a GENERATED MEMBER name — method or variable — that a native class already
 ## defines. Godot refuses to load such a script ("overrides a method from native class"
-## for a method, `Member "x" redefined` for a variable), so a single colliding name
-## makes the whole binding unusable, taking every other table and reducer in the module
-## with it. [method _safe_name] catches none of these: it only knows GDScript reserved
-## words, and these names mostly are not (`set`, `notification`, `script`,
-## `resource_name`, ...). They are all legal Rust identifiers, so a module can really
-## export them. This function covers the ENGINE half of that; the schema-name callers
-## below layer on the two halves it cannot see — the SDK base classes
+## for a method, `Member "x" redefined` for a variable), so one colliding name makes the
+## whole binding unusable, taking every other table and reducer in the module with it.
+## [method _safe_name] catches none of these: it only knows GDScript reserved words, and
+## these names mostly are not (`set`, `notification`, `script`, ...) while all being legal
+## Rust identifiers. This function covers the ENGINE half; the schema-name callers below
+## layer on the two halves it cannot see — the SDK base classes
 ## ([method _column_taken_names]) and the names codegen itself emits
-## ([member _CODEGEN_OWN_NAMES], [member _DB_FACADE_OWN_NAMES]). Every way in known
-## today, and which layer catches it:
+## ([member _CODEGEN_OWN_NAMES], [member _DB_FACADE_OWN_NAMES]). Every way in known today,
+## and which layer catches it:
 ## [codeblock]
 ## enum variant `class`     -> func get_class()      Object.get_class      engine
 ## reducer/procedure `set`  -> func set(...)         Object.set            engine
@@ -265,18 +263,14 @@ static var _CODEGEN_OWN_NAMES: PackedStringArray = [
 	"_emit_deleted",
 ]
 
-## Every name a COLUMN must avoid, cached. A column name is spelled in two different
-## classes at once, so it has to clear both: as an `@export var` on the row type
-## (`_ModuleTableType`, a Resource) and — when the column carries an index — as the
-## accessor variable on the table wrapper (`_ModuleTable`, a RefCounted). The two must
-## end up with the SAME spelling, because the index stores it as `_field_name` and looks
-## the row property up by it; escaping one and not the other points the index at a
-## property that does not exist.
+## Every name a COLUMN must avoid, cached. A column name is spelled in two classes at
+## once, so it has to clear both: as an `@export var` on the row type (`_ModuleTableType`,
+## a Resource) and — when the column carries an index — as the accessor variable on the
+## table wrapper (`_ModuleTable`, a RefCounted). Both must end up with the SAME spelling,
+## because the index stores it as `_field_name` and looks the row property up by it.
 ##
-## The SDK bases matter as much as the engine ones here: `count` and `iter` are ordinary
-## column names and ordinary `_ModuleTable` methods, and Godot rejects
-## `The member "count" already exists in parent class _ModuleTable` exactly as it rejects
-## a native override.
+## The SDK bases matter as much as the engine ones: `count` and `iter` are ordinary column
+## names and ordinary `_ModuleTable` methods, and Godot rejects the override just as hard.
 static var _column_taken_cache: Dictionary = { }
 
 
@@ -360,19 +354,17 @@ static var _MEMBER_KEYWORDS: PackedStringArray = [
 
 ## Every top-level member a generated script declares, in emission order.
 ##
-## The escapes above each guarantee the name they produce is free on the BASE class;
-## none of them can see a SIBLING that escaped to the same string. A module with a
-## reducer `set` and a reducer `set_` sends both through [method _safe_call_name] and
-## gets `set_` twice — as does a column pair `count` / `count_`, or a table pair
-## `table_names` / `table_names_`. Godot then refuses to load that script
-## ("already exists in this class"), which kills every table and reducer in the module,
-## and the parse error names neither of the two schema names that caused it.
+## The escapes above each guarantee the name they produce is free on the BASE class; none
+## can see a SIBLING that escaped to the same string. A module with a reducer `set` and a
+## reducer `set_` gets `set_` twice, as does a column pair `count` / `count_`. Godot then
+## refuses to load that script ("already exists in this class"), killing every table and
+## reducer in the module, and names neither of the two schema names that caused it.
 ## [method find_duplicate_members] turns that into a codegen-time error instead.
 ##
-## Reads the emitted text rather than re-deriving names from the schema, so it covers
-## every escape path — including ones added later — without a second list to keep in
-## sync. Only column 0 counts: an indented `var` is a local, and a member declared
-## inside a nested `class` block lives in that class's own namespace.
+## Reads the emitted text rather than re-deriving names from the schema, so it covers every
+## escape path without a second list to keep in sync. Only column 0 counts: an indented
+## `var` is a local, and a member inside a nested `class` block lives in that class's own
+## namespace.
 static func _declared_members(source: String) -> PackedStringArray:
 	var names: PackedStringArray = []
 	for raw_line: String in source.split("\n"):
@@ -429,19 +421,17 @@ static func find_duplicate_members(source: String) -> PackedStringArray:
 ## [code]Enum.Variant[/code], in first-seen order.
 ##
 ## The top-level scan above cannot see these: an enum's variants live in that enum's own
-## namespace, so they are emitted indented and are free to reuse a top-level name. They
-## are not free to repeat each other — Godot answers with
-## [code]Parse Error: Name "X" was already in this enum[/code], and since every plain
-## enum a module declares is emitted into the one [code]<Module>Types[/code] file, that
-## error takes the module's whole type facade with it. Reachable because variant names
-## are pascal-cased on the way in, which cannot tell `foo_bar` from `fooBar`.
+## namespace, so they are emitted indented and may reuse a top-level name. They may not
+## repeat each other — Godot answers [code]Name "X" was already in this enum[/code], and
+## since every plain enum is emitted into the one [code]<Module>Types[/code] file, that
+## takes the module's whole type facade with it. Reachable because variant names are
+## pascal-cased on the way in, which cannot tell `foo_bar` from `fooBar`.
 ##
 ## Reads the emitted text for the same reason [method find_duplicate_members] does, and
-## reads only the two block shapes this generator emits: `enum Name {` at column 0, one
-## indented variant per line, `}` at column 0. An inline `enum K { A, A }`, a variant
-## block interrupted by a column-0 line, or an enum nested in a `class` would be missed —
-## none is emitted, and an emitter that starts producing one has to teach this scan.
-## A variant name ends at the comma, or at the ` = ` an explicit value would add.
+## only the two block shapes this generator emits: `enum Name {` at column 0, one indented
+## variant per line, `}` at column 0. An inline `enum K { A, A }` or an enum nested in a
+## `class` would be missed — neither is emitted, and an emitter that starts producing one
+## has to teach this scan. A variant name ends at the comma or at the ` = `.
 static func find_duplicate_enum_variants(source: String) -> PackedStringArray:
 	var duplicates: PackedStringArray = []
 	var enum_name: String = ""
@@ -472,16 +462,14 @@ static func find_duplicate_enum_variants(source: String) -> PackedStringArray:
 ## The global class name [param source] declares, or [code]""[/code] when it declares
 ## none.
 ##
-## Read back from the emitted text for the same reason [method find_duplicate_members]
-## is: a row type, a table wrapper, an index accessor and each module facade build their
-## class name at a different site, from a different part of the schema, and only the
-## output knows all of them at once. Every one of those names is
-## [code]<ModulePrefix> + something the module author chose[/code], so two of them can
-## land on one string — a module type named `ScoreTable` spells the same class as the
-## table `score`, and `AABB` and `Aabb` both pascal-case to `Aabb`. Godot registers one
-## and refuses the other with "hides a global script class", i.e. the loser does not load
-## at all. [method SpacetimePlugin._check_class_collisions] turns that into a codegen-time
-## error instead.
+## Read back from the emitted text for the same reason [method find_duplicate_members] is:
+## a row type, a table wrapper, an index accessor and each module facade build their class
+## name at a different site, and only the output knows all of them at once. Every one is
+## [code]<ModulePrefix> + something the module author chose[/code], so two can land on one
+## string — a module type named `ScoreTable` spells the same class as the table `score`,
+## and `AABB` and `Aabb` both pascal-case to `Aabb`. Godot registers one and refuses the
+## other with "hides a global script class". [method SpacetimePlugin._check_class_collisions]
+## turns that into a codegen-time error instead.
 static func declared_class_name(source: String) -> String:
 	for line: String in source.split("\n"):
 		if not line.begins_with("class_name"):
@@ -604,17 +592,16 @@ static func _with_arraylike_components(
 ## Whether [param candidate] is the name of a Variant builtin ([code]Color[/code],
 ## [code]Signal[/code], [code]Array[/code], [code]Transform3D[/code], …).
 ##
-## [method ClassDB.class_exists] knows engine CLASSES and nothing else, so it answers
-## false for all of these — and Godot refuses them just as hard, with its own wording
-## ("cannot have the same name as a builtin type" for a member, "hides a built-in type"
-## for a class). Derived from [method @GlobalScope.type_string] rather than a hand list,
-## so a Variant type added in a later engine build needs no edit here.
+## [method ClassDB.class_exists] knows engine CLASSES and nothing else, so it answers false
+## for all of these — and Godot refuses them just as hard ("cannot have the same name as a
+## builtin type" for a member, "hides a built-in type" for a class). Derived from
+## [method @GlobalScope.type_string] rather than a hand list, so a Variant type added in a
+## later engine build needs no edit here.
 ##
-## Mirrors the parser's own table, which is built the same way and skips exactly two
-## entries ([code]gdscript_parser.cpp[/code]): [code]Nil[/code], which is free to use and
-## measured accepted as both a class name and a member, and [code]Object[/code], which is
-## refused — but as a native CLASS, so the [ClassDB] check beside every caller of this one
-## already covers it with the wording Godot actually uses.
+## Mirrors the parser's own table ([code]gdscript_parser.cpp[/code]), which skips two
+## entries: [code]Nil[/code], measured accepted as both a class name and a member, and
+## [code]Object[/code], refused as a native CLASS and so already covered by the [ClassDB]
+## check beside every caller of this one.
 static func is_builtin_type_name(candidate: String) -> bool:
 	for type_id: int in TYPE_MAX:
 		if type_id == TYPE_NIL or type_id == TYPE_OBJECT:
@@ -689,15 +676,13 @@ func generate_bindings() -> PackedStringArray:
 	sorted_module_names.sort()
 
 	# Every class a module emits — and the autoload property that reaches it — is named
-	# after the module key put through to_pascal_case, so the key has to survive that as
-	# a GDScript identifier. A SpacetimeDB database name may start with a digit
-	# (parse_database_name accepts [a-z0-9] with single interior hyphens, so `2048` is
-	# legal), and `2048`.to_pascal_case() is `2048`: measured, that generated 19 scripts
-	# named `class_name 2048Something`, none of which parse, and an autoload declaring
-	# `var 2048`. The run reported success, so cleanup then pruned the previous working
-	# bindings. Checked before ANY file is written — a partial run would leave the
-	# autoload rewritten without the module, which is the one generated file the project
-	# boots through.
+	# after the module key put through to_pascal_case, so the key has to survive that as a
+	# GDScript identifier. A SpacetimeDB database name may start with a digit (`2048` is
+	# legal), and `2048`.to_pascal_case() is `2048`: measured, 19 scripts named
+	# `class_name 2048Something`, none parsing, plus an autoload declaring `var 2048`, and a
+	# run that reported success so cleanup pruned the previous working bindings. Checked
+	# before ANY file is written: a partial run leaves the autoload rewritten without the
+	# module, and the autoload is the one generated file the project boots through.
 	var bad_names: PackedStringArray = []
 	for module_name: String in sorted_module_names:
 		if not SpacetimeSchemaParser.module_class_prefix(module_name).is_valid_identifier():
@@ -742,11 +727,10 @@ func generate_bindings() -> PackedStringArray:
 			generation_incomplete = true
 
 	# The autoload declares and PRELOADS a client per module, so it is only writable once
-	# every module in the run has files for it to name. A module that aborted wrote none —
-	# and if it is a module the project has never generated, an autoload naming it is a
-	# preload of a file that does not exist, i.e. a project that no longer boots. The
-	# previous autoload still matches the previous bindings, which are exactly what a run
-	# in this state leaves in place.
+	# every module in the run has files for it to name. For a module the project has never
+	# generated, an autoload naming it is a preload of a file that does not exist, i.e. a
+	# project that no longer boots. The previous autoload still matches the previous
+	# bindings, which is what a run in this state leaves in place.
 	if generation_incomplete:
 		SpacetimePlugin.print_err(
 			(
@@ -888,11 +872,11 @@ func _generate_module_bindings(module_name: String) -> PackedStringArray:
 	var json: Variant = JSON.parse_string(
 		_plugin_config.module_configs[module_name].unparsed_module_schema
 	)
-	# A body that is not a JSON object reaches here whenever something other than the
-	# module answered with 200 — a proxy or gateway error page, a truncated response.
-	# parse_schema takes a Dictionary, so handing it the null went down as a GDScript
-	# type fault: the function unwound to its default return, this module contributed
-	# no files, and the run carried on to prune every binding it had.
+	# A body that is not a JSON object reaches here whenever something other than the module
+	# answered with 200 — a proxy error page, a truncated response. parse_schema takes a
+	# Dictionary, so handing it the null is a GDScript type fault: the function unwinds to
+	# its default, the module contributes no files, and the run prunes every binding it
+	# had.
 	if not (json is Dictionary):
 		SpacetimePlugin.print_err(
 			(
@@ -906,12 +890,12 @@ func _generate_module_bindings(module_name: String) -> PackedStringArray:
 		_stage_reached_return = true
 		return []
 	var project_enums: Dictionary = _scan_project_enums()
-	# Untyped on purpose: a GDScript runtime fault inside parse_schema unwinds that
-	# function and hands back its default, `null`. A `: SpacetimeParsedSchema` annotation
-	# turns the null into a SECOND fault here, which unwinds this function too — and an
-	# unwound _generate_module_bindings returns an empty file list without ever setting
-	# generation_incomplete, so the run reported success and cleanup deleted every binding
-	# this module owns (measured: 18 files, from a schema with one unnamed column).
+	# Untyped on purpose: a GDScript runtime fault inside parse_schema unwinds that function
+	# and hands back its default, `null`. A `: SpacetimeParsedSchema` annotation turns that
+	# null into a SECOND fault here, unwinding this function too — and an unwound
+	# _generate_module_bindings returns an empty file list without setting
+	# generation_incomplete, so cleanup deletes every binding this module owns (measured:
+	# 18 files, from a schema with one unnamed column).
 	var parsed: Variant = SpacetimeSchemaParser.parse_schema(json, module_name, project_enums)
 	_plugin_config.module_configs[module_name].unparsed_module_schema = ""
 	if not (parsed is SpacetimeParsedSchema):
@@ -931,15 +915,14 @@ func _generate_module_bindings(module_name: String) -> PackedStringArray:
 		generation_incomplete = true
 		_stage_reached_return = true
 		return []
-	# A parse that reported a problem and carried on describes only PART of the module:
-	# a table whose row type did not resolve, an index column out of range and a view with
-	# an unsupported return type are all skipped, not fatal. Generating from that emits
-	# fewer files than the module has, and cleanup then deletes the bindings for whatever
-	# went missing — measured, a single out-of-range product_type_ref took the table
-	# wrapper and its index accessor with it. Abort BEFORE the first file is written: half
-	# the module regenerated against the other half's stale files is a db facade whose
-	# table members no longer match the wrappers beside it, which is a worse state than the
-	# last good run, and refusing the prune alone would not undo it.
+	# A parse that reported a problem and carried on describes only PART of the module —
+	# an unresolved row type, an out-of-range index column and an unsupported view return
+	# type are all skipped, not fatal. Generating from that emits fewer files than the
+	# module has, and cleanup then deletes the bindings for whatever went missing —
+	# measured, a single out-of-range product_type_ref took the table wrapper and its index
+	# accessor with it. Abort BEFORE the first file is written: half a module regenerated against the other
+	# half's stale files is a db facade whose table members no longer match the wrappers
+	# beside it, and refusing the prune alone would not undo it.
 	if schema.incomplete:
 		SpacetimePlugin.print_err(
 			(
@@ -1008,15 +991,13 @@ func _generate_module_bindings(module_name: String) -> PackedStringArray:
 ## generated class and the file it is written to, so the second write silently replaces the
 ## first.
 ##
-## Namespaces are what make this reachable: a submodule's table carries its namespace to
-## stay unique (`lib.lib_data` -> `lib_lib_data`) and its types take it in PascalCase
-## (`lib`'s `Point` -> `LibPoint`), so a root def spelled exactly that way lands on top of
-## it. finalize_bindings' class and path gates catch the same pairs, but only once a file
-## is already on disk.
+## Namespaces make this reachable: a submodule's table carries its namespace to stay unique
+## (`lib.lib_data` -> `lib_lib_data`) and its types take it in PascalCase (`lib`'s `Point`
+## -> `LibPoint`), so a root def spelled that way lands on top of it. finalize_bindings'
+## class and path gates catch the same pairs, but only once a file is on disk.
 ##
-## The skips mirror the generating loops exactly — a def that is never written cannot
-## collide with one that is, and refusing a module over a name nothing emits would refuse
-## a module the server is happy to serve.
+## The skips mirror the generating loops exactly: a def that is never written cannot
+## collide with one that is.
 func _has_duplicate_generated_identifiers(module_name: String, schema: SpacetimeParsedSchema) -> bool:
 	var duplicated: bool = false
 	var table_identifiers: Dictionary[String, String] = { }
@@ -1040,14 +1021,12 @@ func _has_duplicate_generated_identifiers(module_name: String, schema: Spacetime
 			continue
 		table_identifiers[identifier] = wire_name
 
-	# Keyed by the FILE stem rather than the type name: two names that differ only in case
-	# or underscoring (`LibPoint` beside `lib`'s `Point`) are two class names but one path,
-	# and the write that loses is silent.
+	# Keyed by the FILE stem rather than the type name: two names differing only in case or
+	# underscoring are two class names but one path, and the write that loses is silent.
 	#
-	# Reported only when a submodule brought one of the two names in. A pair a single
-	# module declares on its own (`AABB` and `Aabb`) is the older hazard the class and path
-	# gates in finalize_bindings already own, and claiming it here would move where that is
-	# reported for modules that have nothing to do with namespaces.
+	# Reported only when a submodule brought one of the two names in. A pair a single module
+	# declares on its own (`AABB` and `Aabb`) belongs to the class and path gates in
+	# finalize_bindings.
 	var type_stems: Dictionary[String, Dictionary] = { }
 	for type_def: Dictionary in schema.types:
 		if type_def.has("gd_native"):
@@ -1094,14 +1073,12 @@ func _generate_gdscript_from_schema(module_name: String, schema: SpacetimeParsed
 
 	# The four module-level files are built FIRST, before anything is written, because
 	# building them is what detects a name two defs would both claim. Reporting that after
-	# the per-type and per-table writes had already run would leave the module half
-	# rewritten — and `generation_incomplete` cannot undo a write, it only stops the
-	# pruning pass and the autoload rewrite that come after. Neither builder reads anything
-	# this function writes; both are pure functions of the parsed schema.
+	# the per-type and per-table writes would leave the module half rewritten, and
+	# `generation_incomplete` cannot undo a write — it only stops the pruning pass and the
+	# autoload rewrite. Neither builder reads anything this function writes.
 	# Snapshot the plugin's error TALLY, not `generation_incomplete`: that flag is per RUN,
-	# so once an earlier module set it, a boolean "was it already set" reads false forever
-	# after and this module's own collisions stop stopping it. Counting errors is how
-	# SpacetimeSchemaParser.parse_schema answers the same question.
+	# so once an earlier module set it a boolean check reads false forever after. Counting
+	# errors is how SpacetimeSchemaParser.parse_schema answers the same question.
 	var errors_before: int = SpacetimePlugin.error_count
 	var db_content: String = _generate_db_gdscript(module_name, schema)
 	var reducers_content: String = _generate_reducers_gdscript(module_name, schema)
@@ -1418,16 +1395,16 @@ func _generate_table_gdscript(
 	# against _table_scalar_fields (also _safe_name'd) to route the typed finders. The
 	# PascalCase class-name part is unaffected by keywords (keywords are lowercase).
 	# [param emit_indexes] is false for an event table, which gets no index accessors
-	# whatever indexes the schema declares on it. Its rows are ephemeral: LocalDatabase
-	# fires on_insert for each and stores nothing, so count() and iter() stay empty and no
-	# delete is ever reported. An index cache is kept current by exactly those
-	# insert/update/delete callbacks, so over an event table it only ever grows — measured
-	# on a two-column event table, 40 batches of 3 rows left 120 rows in one btree bucket
-	# while count() read 0, and filter() answered with rows the table itself says do not
-	# exist. The official Rust codegen omits them for the same reason ("no resident rows
-	# means these would always be empty", crates/codegen/src/rust.rs). Without an index
-	# member the typed finders below fall back to find_by/first_by, which read the (empty)
-	# mirror — empty, but consistent with count()/iter().
+	# whatever indexes the schema declares on it. Its rows are ephemeral — LocalDatabase
+	# fires on_insert and stores nothing, so count() and iter() stay empty and no delete is
+	# ever reported — and an index cache is kept current by exactly those
+	# insert/update/delete callbacks, so over an event table it only grows: measured, 40
+	# batches of 3 rows left 120 rows in one btree bucket while count() read 0 and filter()
+	# answered with rows the table itself says do not exist. The official Rust codegen omits
+	# them for the same reason ("no resident rows means these would always be empty",
+	# crates/codegen/src/rust.rs).
+	# Without an index member the typed finders fall back to find_by/first_by, which read
+	# the empty mirror — consistent with count()/iter().
 	var unique_index_fields: Dictionary[String, String] = { }
 	var btree_index_fields: Dictionary[String, String] = { }
 	if emit_indexes:
@@ -1576,12 +1553,10 @@ func _generate_table_gdscript(
 ## Fields of a table struct that get typed finders, as [[safe_name, gd_type], ...].
 ## Restricted to value-comparable built-in types — find_by does an `==` match, so a
 ## generated Resource field (reference equality, never matches a fresh value), a native
-## vector/color, or a nested array would all produce a finder that can't work. This
-## also excludes a ScheduleAt column (a Resource for the same reason) and (deliberately)
-## enum columns: every enum — even a unit-variant one —
-## codegens as a `RustEnum` Resource (the tag lives in `.value`), so it is a Resource
-## field too and an `==` finder on it would never match. Don't add enum finders here
-## without first making find_by compare by the enum tag.
+## vector/color, or a nested array would produce a finder that cannot work. That also
+## excludes a ScheduleAt column and, deliberately, enum columns: every enum codegens as a
+## `RustEnum` Resource with the tag in `.value`. Don't add enum finders here without first
+## making find_by compare by the enum tag.
 func _table_scalar_fields(schema: SpacetimeParsedSchema, type_def: Dictionary) -> Array:
 	# GDScript built-ins with value `==` semantics. PackedByteArray covers identity /
 	# connection_id / uuid / wide ints; int covers timestamp/duration micros.
@@ -1722,14 +1697,13 @@ func _generate_struct_gdscript(schema: SpacetimeParsedSchema, type_def: Dictiona
 	# One row type can back several tables — two `#[table]` attributes on a struct, or a
 	# view returning a table's row type — and those tables need not agree about the primary
 	# key. A procedural view has one only when the module declared it, so `thing` can be
-	# keyed by `id` while a view over the same rows has no key at all, and keying the view
-	# by `id` anyway collapses two view rows that share it into one. PRIMARY_KEY is per row
-	# type and cannot say that, so a disagreement is spelled out per table instead (an empty
-	# value = that table has no primary key). LocalDatabase prefers this map when present.
-	# The key comes from the TABLE entries, never from the type: `table_names` here is what
-	# survived the private-table filter, and `type_def.primary_key_name` is whatever table
-	# wrote it last — a public view sharing a row type with a hidden private table would
-	# otherwise be keyed by the hidden table's column and collapse rows that share it.
+	# keyed by `id` while a view over the same rows has none, and keying the view by `id`
+	# anyway collapses two view rows into one. PRIMARY_KEY is per row type and cannot say
+	# that, so a disagreement is spelled out per table (an empty value = no primary key)
+	# and LocalDatabase prefers this map when present. The key comes from the TABLE
+	# entries, never from the type: `type_def.primary_key_name` is whatever table wrote it
+	# last, so a public view sharing a row type with a hidden private table would be keyed
+	# by the hidden table's column.
 	var pk_by_table: Dictionary[String, String] = _primary_key_by_table(
 			schema, PackedStringArray(table_names))
 	var agreed_pk: String = _agreed_primary_key(pk_by_table)
@@ -2288,11 +2262,11 @@ func _generate_procedures_gdscript(_module_name: String, schema: SpacetimeParsed
 	)
 
 
-## The autoload is the one generated file that names every module, and it is the file the
-## project boots through — so both spellings it uses have to be the ones the per-module
-## run actually emitted. Both come from [method SpacetimeSchemaParser.module_class_prefix], never from the raw
+## The autoload is the one generated file that names every module, and the file the project
+## boots through, so both spellings it uses have to be the ones the per-module run emitted.
+## Both come from [method SpacetimeSchemaParser.module_class_prefix], never from the raw
 ## key: `String.to_snake_case` on the key is not the same as on the prefix (`a-b` gives
-## `a_b`, the prefix `AB` gives `ab`), and that mismatch preloaded a file no run wrote.
+## `a_b`, the prefix `AB` gives `ab`), and that mismatch preloads a file no run wrote.
 func _generate_autoload_gdscript(modules: PackedStringArray) -> String:
 	var out: PackedStringArray = [
 		(AUTOGENERATED_COMMENT +
