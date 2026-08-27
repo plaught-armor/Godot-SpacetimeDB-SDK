@@ -2,7 +2,15 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
-## [Unreleased]
+## [2.8.0] - 2026-08-27
+
+> **Upgrading:** one behaviour changed; no signature did. A `SpacetimeDBSubscription`
+> handle now survives an auto-reconnect, so a transient drop no longer emits `end` — the
+> handle suspends and resumes, and `end` now means the subscription really ended. Code
+> that watched `end` to notice a drop should listen to the client's `reconnecting` signal
+> instead, and code that took a fresh handle in response to `reconnected` should keep the
+> one it already holds: subscribing again duplicates the query set server-side. See "A
+> subscription handle now survives an auto-reconnect" below.
 
 ### Fixed
 - **The SDK did not run in an exported game at all.** Two runtime scripts —
