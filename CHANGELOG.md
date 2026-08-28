@@ -2,44 +2,19 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
-## [Unreleased]
-
-### Changed
-- **An idle-timeout close now says what stopped.** From the SpacetimeDB release that
-  follows 2.8.3, a server that has received nothing from a client for the length of its
-  idle timeout closes with a handshake carrying the reason `idle timeout` under code 1001,
-  instead of tearing the connection down; on every released server up to 2.8.3 the same
-  timeout arrives here as an abnormal close with nothing to read. The SDK already read
-  `WebSocketPeer.get_close_reason()`, but a close it had no diagnostic for was only logged
-  under `debug_mode`, which is off by default — so the one close that names its own cause
-  said nothing.
-
-  `SpacetimeDBConnection.close_diagnostic()` now takes that reason alongside the code and
-  explains this one: the socket was healthy and the frame loop was not. Godot answers the
-  server's keep-alive ping from inside `poll()`, so only a frame loop that stopped for the
-  length of the timeout can produce it — a backgrounded app (throttled on Web, suspended
-  on mobile) or a main thread blocked that long — and the heartbeat setting, the first
-  knob a reader reaches for, does not enter into it. It is pushed as a warning rather than
-  an error, because it reports a client that stopped running rather than one that is set
-  up wrong, and a backgrounded app stops legitimately every time it loses focus. The
-  reason is load-bearing, not decoration: a module that exited closes with 1001 as well,
-  and stays on the quiet path rather than being answered with a paragraph about a frame
-  loop that was never the problem.
-
-  `close_diagnostic()` is a public static, so a caller using it directly must pass the
-  close reason as a third argument. `tests/test_idle_timeout_close.gd` (11 assertions)
-  covers the classification, both halves of the key, and that the 1009 branch still wins
-  its own case.
-
 ## [2.8.0] - 2026-08-27
 
-> **Upgrading:** one behaviour changed; no signature did. A `SpacetimeDBSubscription`
-> handle now survives an auto-reconnect, so a transient drop no longer emits `end` — the
-> handle suspends and resumes, and `end` now means the subscription really ended. Code
-> that watched `end` to notice a drop should listen to the client's `reconnecting` signal
-> instead, and code that took a fresh handle in response to `reconnected` should keep the
-> one it already holds: subscribing again duplicates the query set server-side. See "A
-> subscription handle now survives an auto-reconnect" below.
+> **Upgrading:** one behaviour changed, and one static took a parameter. A
+> `SpacetimeDBSubscription` handle now survives an auto-reconnect, so a transient drop no
+> longer emits `end` — the handle suspends and resumes, and `end` now means the
+> subscription really ended. Code that watched `end` to notice a drop should listen to the
+> client's `reconnecting` signal instead, and code that took a fresh handle in response to
+> `reconnected` should keep the one it already holds: subscribing again duplicates the
+> query set server-side. See "A subscription handle now survives an auto-reconnect" below.
+>
+> Separately, `SpacetimeDBConnection.close_diagnostic()` takes the close reason as a third
+> argument. Nothing in the SDK's own surface calls it — a game that does must pass
+> `WebSocketPeer.get_close_reason()` along with the code.
 
 ### Fixed
 - **The SDK did not run in an exported game at all.** Two runtime scripts —
@@ -111,6 +86,31 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   `tests/test_subscription_survives_reconnect.gd` (41 assertions) covers the restore, the
   cancelled restore, the mid-loop cancellation, the failed re-send, and the
   exhausted-attempts and terminal-disconnect paths.
+- **An idle-timeout close now says what stopped.** From the SpacetimeDB release that
+  follows 2.8.3, a server that has received nothing from a client for the length of its
+  idle timeout closes with a handshake carrying the reason `idle timeout` under code 1001,
+  instead of tearing the connection down; on every released server up to 2.8.3 the same
+  timeout arrives here as an abnormal close with nothing to read. The SDK already read
+  `WebSocketPeer.get_close_reason()`, but a close it had no diagnostic for was only logged
+  under `debug_mode`, which is off by default — so the one close that names its own cause
+  said nothing.
+
+  `SpacetimeDBConnection.close_diagnostic()` now takes that reason alongside the code and
+  explains this one: the socket was healthy and the frame loop was not. Godot answers the
+  server's keep-alive ping from inside `poll()`, so only a frame loop that stopped for the
+  length of the timeout can produce it — a backgrounded app (throttled on Web, suspended
+  on mobile) or a main thread blocked that long — and the heartbeat setting, the first
+  knob a reader reaches for, does not enter into it. It is pushed as a warning rather than
+  an error, because it reports a client that stopped running rather than one that is set
+  up wrong, and a backgrounded app stops legitimately every time it loses focus. The
+  reason is load-bearing, not decoration: a module that exited closes with 1001 as well,
+  and stays on the quiet path rather than being answered with a paragraph about a frame
+  loop that was never the problem.
+
+  `close_diagnostic()` is a public static, so a caller using it directly must pass the
+  close reason as a third argument. `tests/test_idle_timeout_close.gd` (11 assertions)
+  covers the classification, both halves of the key, and that the 1009 branch still wins
+  its own case.
 - Verified the SDK end-to-end against **SpacetimeDB 2.8.3**; the tested range is
   now `2.2.0`–`2.8.3`. No code change was needed. The schema is still v10
   (`?version=11` is rejected: "unknown variant `11`, expected `9` or `10`") and the
