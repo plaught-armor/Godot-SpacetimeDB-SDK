@@ -28,18 +28,19 @@ func _initialize() -> void:
 	# closure must stay on the quiet path, or every clean disconnect pushes an error.
 	f += _check(
 		"1006 carries no diagnostic",
-		SpacetimeDBConnection.close_diagnostic(1006, TWO_MIB),
+		SpacetimeDBConnection.close_diagnostic(1006, TWO_MIB, ""),
 		"",
 	)
 	f += _check(
 		"1000 carries no diagnostic",
-		SpacetimeDBConnection.close_diagnostic(1000, TWO_MIB),
+		SpacetimeDBConnection.close_diagnostic(1000, TWO_MIB, ""),
 		"",
 	)
 
 	var hint: String = SpacetimeDBConnection.close_diagnostic(
 		SpacetimeDBConnection.CLOSE_MESSAGE_TOO_BIG,
 		TWO_MIB,
+		"Message too big",
 	)
 	f += _check("1009 carries one", hint.is_empty(), false)
 
@@ -50,7 +51,7 @@ func _initialize() -> void:
 		"a raised buffer is reported as raised",
 		(
 			SpacetimeDBConnection
-			.close_diagnostic(SpacetimeDBConnection.CLOSE_MESSAGE_TOO_BIG, TWO_MIB * 8)
+			.close_diagnostic(SpacetimeDBConnection.CLOSE_MESSAGE_TOO_BIG, TWO_MIB * 8, "")
 			.contains(str(TWO_MIB * 8))
 		),
 		true,

@@ -84,6 +84,23 @@ const BSATN_PROTOCOL_V3 = "v3.bsatn.spacetimedb"
 ## — see [method dropped_message_diagnostic].
 const CLOSE_MESSAGE_TOO_BIG: int = 1009
 
+## The close code a SpacetimeDB server sends when it ends a connection on its own terms
+## rather than in answer to something the client did wrong. The reason tells those cases
+## apart: [constant CLOSE_REASON_IDLE_TIMEOUT] is the one this SDK explains, and any other
+## wording (a module that exited, for instance) stays on the quiet path.
+const CLOSE_GOING_AWAY: int = 1001
+
+## The close-frame reason paired with [constant CLOSE_GOING_AWAY] when the server received
+## nothing from this client for the length of its idle timeout (`idle_timeout`, 30 seconds
+## by default, and always longer than its 15-second ping interval).[br]
+## [br]
+## Matched verbatim against the server's own spelling
+## (`crates/client-api/src/routes/subscribe.rs`), so a server that words it differently
+## carries no diagnostic rather than the wrong one. Sent from the release that follows
+## 2.8.3; before that an idle timeout tore the connection down without a close handshake
+## and reached this SDK as an abnormal close (code -1) with nothing to read.
+const CLOSE_REASON_IDLE_TIMEOUT: String = "idle timeout"
+
 ## Default size of both WebSocket buffers, and what an unusable one falls back to.
 ## [SpacetimeDBConnectionOptions] declares its defaults from here so there is one number.
 const DEFAULT_BUFFER_SIZE: int = 1024 * 1024 * 2
@@ -421,19 +438,24 @@ func _physics_process(_delta: float) -> void:
 					)
 					connection_error.emit(code, "Abnormal closure: %s" % reason)
 			else:
-				# Some close codes are a configuration failure the game cannot work out
-				# from the number: they get pushed as errors, because debug_mode (which
-				# gates _print_log) is off by default and a silent close that repeats
-				# every reconnect is the worst way to learn about one. Reconnect is NOT
-				# suppressed for them — a 1009 raised by one oversized transaction
+				# Some closes carry a cause the game cannot work out from the number:
+				# they get pushed rather than logged, because debug_mode (which gates
+				# _print_log) is off by default and a silent close that repeats every
+				# reconnect is the worst way to learn about one. Reconnect is NOT
+				# suppressed for any of them — a 1009 raised by one oversized transaction
 				# update is survivable, and only the caller knows whether its
 				# subscription is the kind that will reproduce it.
-				var diagnostic: String = close_diagnostic(code, _inbound_buffer_size)
+				var diagnostic: String = close_diagnostic(code, _inbound_buffer_size, reason)
 				if diagnostic.is_empty():
 					_print_log(
 						"SpacetimeDBConnection: Connection closed (Code: %d, Reason: %s)"
 						% [code, reason]
 					)
+				elif code == CLOSE_GOING_AWAY:
+					# Warned rather than errored: an idle timeout reports that this client
+					# stopped running, not that anything about it is set up wrong, and a
+					# backgrounded app stops it legitimately every time it loses focus.
+					push_warning(diagnostic)
 				else:
 					push_error(diagnostic)
 				disconnected.emit() # Normal closure signal
@@ -953,11 +975,27 @@ func send_bytes(bytes: PackedByteArray) -> Error:
 	return err
 
 
-## The operator-facing explanation for a close code that a game cannot diagnose from
-## the code alone, or [code]""[/code] for one that needs no explanation. Pure, so
-## which codes carry a diagnostic is testable without a socket, and so the number the
-## game is actually running with appears in the text rather than the default.
-static func close_diagnostic(code: int, inbound_buffer_size: int) -> String:
+## The operator-facing explanation for a close a game cannot diagnose from the code
+## alone, or [code]""[/code] for one that needs no explanation. Pure, so which closes
+## carry a diagnostic is testable without a socket, and so the number the game is
+## actually running with appears in the text rather than the default.
+##
+## [param reason] is the server's own close-frame text, which two closes share a code
+## and differ only by; pass [method WebSocketPeer.get_close_reason] verbatim.
+static func close_diagnostic(code: int, inbound_buffer_size: int, reason: String) -> String:
+	if code == CLOSE_GOING_AWAY and reason == CLOSE_REASON_IDLE_TIMEOUT:
+		return (
+			"SpacetimeDBConnection: the server closed the socket with 1001 (idle "
+			+ "timeout) — it received nothing from this client for the length of its "
+			+ "idle timeout, 30 seconds by default. The socket was healthy; the frame "
+			+ "loop was not. Godot answers the server's keep-alive ping from inside "
+			+ "poll(), so only a frame loop that stopped for that long can produce this "
+			+ "— a backgrounded app (throttled on Web, suspended on mobile) or a main "
+			+ "thread blocked that long both look like it, and the heartbeat setting "
+			+ "does not enter into it. Auto-reconnect covers the drop, and "
+			+ "SpacetimeDBConnectionOptions.reconnect_on_app_resume pulls the waiting "
+			+ "attempt forward as soon as the app is foregrounded again."
+		)
 	if code != CLOSE_MESSAGE_TOO_BIG:
 		return ""
 	return (
