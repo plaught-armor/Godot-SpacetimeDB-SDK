@@ -54,7 +54,7 @@ static var _EMPTY_COLUMNS: Array = []
 ## Component count per column type that can hold a NaN — every entry of
 ## [constant BSATNDeserializer.NATIVE_ARRAYLIKE] built from floats (the i-suffixed
 ## vectors hold ints and are absent). Components read as floats through `v[i]`.
-## Used by [method _nan_equal]; a type absent here carries no float to compare.
+## Used by [method _nan_components_equal]; a type absent here carries no float to compare.
 const _NAN_CARRYING_COMPONENTS: Dictionary[int, int] = {
 	TYPE_VECTOR2: 2,
 	TYPE_VECTOR3: 3,
@@ -452,7 +452,15 @@ static func _values_equal(a: Variant, b: Variant) -> bool:
 		return true
 	if a == b:
 		return true
-	return _nan_equal(a, b, ta)
+	# The NaN gate, kept in step with the one in [method _rows_equal].
+	if ta == TYPE_INT:
+		return false
+	if ta == TYPE_FLOAT:
+		return is_nan(a) and is_nan(b)
+	var components: int = _NAN_CARRYING_COMPONENTS.get(ta, 0)
+	if components == 0:
+		return false
+	return _nan_components_equal(a, b, components)
 
 
 # Two values Variant `==` calls different are still the same row value when the only
@@ -466,14 +474,12 @@ static func _values_equal(a: Variant, b: Variant) -> bool:
 # `decorum::Total<f32>` (crates/sats/src/algebraic_value.rs), a total order in which NaN
 # equals itself.
 #
-# Reached only from the values-differ path of [method _values_equal] / [method _rows_equal],
-# so an equal row that carries no NaN pays nothing for it.
-static func _nan_equal(a: Variant, b: Variant, t: int) -> bool:
-	if t == TYPE_FLOAT:
-		return is_nan(a) and is_nan(b)
-	var components: int = _NAN_CARRYING_COMPONENTS.get(t, 0)
-	if components == 0:
-		return false
+# Covers the float-vector types only. [method _values_equal] and [method _rows_equal]
+# settle int and float columns inline and call this for [constant _NAN_CARRYING_COMPONENTS]
+# types alone: the gate runs on every differing column of every update, and a call there
+# per column cost ~100 ns on an update whose changed column is an int
+# (tests/bench_rows_equal.gd, differing case). An equal row pays nothing for any of it.
+static func _nan_components_equal(a: Variant, b: Variant, components: int) -> bool:
 	for i: int in components:
 		var ca: float = a[i]
 		var cb: float = b[i]
@@ -529,9 +535,19 @@ func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array[StringNa
 			# Nested rather than `and`-ed into the branch above: a compound condition
 			# materializes both operands per column even when the first short-circuits,
 			# once per column of every compared row (+17% on an all-primitive row,
-			# tests/bench_rows_equal.gd).
-			if not _nan_equal(av, bv, ta):
+			# tests/bench_rows_equal.gd). The NaN gate, kept in step with the one in
+			# [method _values_equal]; ordered int first, the commonest column.
+			if ta == TYPE_INT:
 				return false
+			if ta == TYPE_FLOAT:
+				if not (is_nan(av) and is_nan(bv)):
+					return false
+			else:
+				var components: int = _NAN_CARRYING_COMPONENTS.get(ta, 0)
+				if components == 0:
+					return false
+				if not _nan_components_equal(av, bv, components):
+					return false
 	return true
 
 
