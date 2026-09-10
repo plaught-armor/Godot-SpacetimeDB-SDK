@@ -2,6 +2,39 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Verified the SDK end-to-end against **SpacetimeDB 2.10.0**; the tested range is now
+  `2.2.0`–`2.10.0`, covering 2.9.0 and 2.10.0. No code change was needed. Nothing the
+  client parses changed: `crates/client-api-messages` is byte-identical from `v2.7.0`
+  through `v2.10.0`, the schema-definition crates (`crates/lib/src/db/raw_def`,
+  `crates/schema`) are untouched, `crates/sats` changes only its proptests, and the
+  WebSocket defaults (15 s ping, 30 s idle timeout, 32 MiB message limit, confirmed
+  reads on) are unchanged. Two server changes do reach a client:
+  - 2.9.0 closes an idle connection with a handshake carrying code 1001 and reason
+    `idle timeout` — the close 2.8.0 taught `close_diagnostic()` to explain before any
+    released server sent it. Now exercised live: a client whose main thread was blocked
+    for 35 s, and again for 45 s (past the server's 10 s close grace), read 1001 /
+    `idle timeout` on its first poll afterwards, and the SDK's warning fired both times.
+  - 2.10.0 omits the `exp` claim from a token with no expiry instead of writing
+    `"exp": null`. The SDK reads `exp` only in `JwtHelper.summarize()`, which lists the
+    claims that are present, so nothing depends on it. The recaptured
+    `wire_identity_token.bin` is 15 bytes shorter for exactly that reason and decodes
+    the same.
+
+  Bindings regenerated from a live 2.10.0 server are byte-identical to the committed
+  ones. Every other uncompressed wire fixture recaptured from 2.10.0 has the same byte
+  length as the 2.7.0 capture; the compressed snapshots shift a few bytes (gzip 7713 →
+  7712, brotli 6866 → 6876) and decode to the same 600-row snapshot. The `vsubmod`
+  schema recapture equals the committed capture under an order-insensitive comparison,
+  so the committed bytes were kept. Offline suite 126/126 files; live reconnect 18/18,
+  abnormal-drop reconnect 19/19, broadcast 4/4, index 27/27, Blackholio example smoke
+  8/8, wire-fixture decode 105/105 over the freshly captured bytes. Live suites re-run
+  with Rust modules built against the `2.10.0` bindings and the TypeScript module
+  against npm `spacetimedb@2.10.0`: types 6/6, behavior 15/15, enum-with-payload 1/1,
+  anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1, submodules 8/8.
+
 ## [2.8.0] - 2026-08-27
 
 > **Upgrading:** one behaviour changed, and one static took a parameter. A

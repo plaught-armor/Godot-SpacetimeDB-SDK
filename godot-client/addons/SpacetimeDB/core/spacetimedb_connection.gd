@@ -96,9 +96,9 @@ const CLOSE_GOING_AWAY: int = 1001
 ## [br]
 ## Matched verbatim against the server's own spelling
 ## (`crates/client-api/src/routes/subscribe.rs`), so a server that words it differently
-## carries no diagnostic rather than the wrong one. Sent from the release that follows
-## 2.8.3; before that an idle timeout tore the connection down without a close handshake
-## and reached this SDK as an abnormal close (code -1) with nothing to read.
+## carries no diagnostic rather than the wrong one. Sent from 2.9.0 on; before that an
+## idle timeout tore the connection down without a close handshake and reached this SDK
+## as an abnormal close (code -1) with nothing to read.
 const CLOSE_REASON_IDLE_TIMEOUT: String = "idle timeout"
 
 ## Default size of both WebSocket buffers, and what an unusable one falls back to.
@@ -134,7 +134,7 @@ const MIN_BUFFER_SIZE: int = 4096
 ## back as 0 (the silent drop), so "give it plenty" is the dangerous input here.[br]
 ## [br]
 ## The ceiling is the server's own message limit (`WebSocketConfig::max_message_size` in
-## `crates/client-api`), which no legal SpacetimeDB message exceeds as of 2.8.3 — check
+## `crates/client-api`), which no legal SpacetimeDB message exceeds as of 2.10.0 — check
 ## that before raising this. A value over the ceiling is CLAMPED rather than defaulted,
 ## since a caller asking for more wants as much as possible.[br]
 ## [br]

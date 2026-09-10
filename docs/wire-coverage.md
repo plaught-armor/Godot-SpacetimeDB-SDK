@@ -209,13 +209,18 @@ the broadcast check — because each needs a situation the capture cannot stage.
 failed run of either deletes its fixture rather than leaving a plausible-looking
 one behind.
 
-Captured against SpacetimeDB **2.7.0**, and re-captured against **2.8.2** and
-**2.8.3** to confirm they still describe the server: every uncompressed fixture
-came back the same byte length each time, differing only where a capture must
-differ — identities, connection ids, request ids and timestamps — so the
-committed 2.7.0 bytes were kept rather than churned. The two compressed snapshots
-do change length (gzip 7713 → 7698 → 7733 bytes, brotli 6866 → 6878 → 6873),
-which is the compressor tracking those same varying bytes, not a framing change;
-all of them still decode to the same 600-row snapshot. Note the `spacetime` CLI
+Captured against SpacetimeDB **2.7.0**, and re-captured against **2.8.2**,
+**2.8.3** and **2.10.0** to confirm they still describe the server: every
+uncompressed fixture came back the same byte length each time, differing only where
+a capture must differ — identities, connection ids, request ids and timestamps — so
+the committed 2.7.0 bytes were kept rather than churned. The one exception is
+`wire_identity_token.bin` on 2.10.0, at 429 bytes instead of 444: from 2.10.0 a
+token with no expiry omits its `exp` claim rather than carrying `"exp": null`
+(`crates/auth/src/identity.rs`), which shortens the base64 JWT by 15 characters.
+That change is inside the token string, not the framing — the 2.10.0 bytes pass the
+same decode tests. The two compressed snapshots do change length (gzip 7713 → 7698
+→ 7733 → 7712 bytes, brotli 6866 → 6878 → 6873 → 6876), which is the compressor
+tracking those same varying bytes, not a framing change; all of them still decode
+to the same 600-row snapshot. Note the `spacetime` CLI
 reports its own version, which may lag the server binary it launches — check the
 server log line `spacetimedb-standalone version:` for the truth.

@@ -1,13 +1,13 @@
 # A 1001 close carrying "idle timeout" has to say what stopped, not just that a socket
 # closed.
 #
-# From the SpacetimeDB release that follows 2.8.3, a server that receives nothing from a
-# client for the length of its idle timeout closes with a handshake rather than tearing
-# the connection down, and the close frame carries the reason (`subscribe.rs`, `CloseFrame
-# { code: CloseCode::Away, reason: "idle timeout" }`). Godot keeps that text on the peer
-# until the next connect (`wsl_peer.cpp` clears `close_reason` only in reset), so it is
-# readable at STATE_CLOSED. Older servers cannot reach this path at all: an idle timeout
-# there arrives as an abnormal close with nothing to read.
+# From SpacetimeDB 2.9.0 on, a server that receives nothing from a client for the length
+# of its idle timeout closes with a handshake rather than tearing the connection down, and
+# the close frame carries the reason (`subscribe.rs`, `CloseFrame { code: CloseCode::Away,
+# reason: "idle timeout" }`). Godot keeps that text on the peer until the next connect
+# (`wsl_peer.cpp` clears `close_reason` only in reset), so it is readable at STATE_CLOSED.
+# Older servers cannot reach this path at all: an idle timeout there arrives as an
+# abnormal close with nothing to read.
 #
 # The code alone is not enough — a module that exited closes with 1001 as well — so the
 # diagnostic is keyed on the code AND the reason.
