@@ -35,6 +35,23 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   against npm `spacetimedb@2.10.0`: types 6/6, behavior 15/15, enum-with-payload 1/1,
   anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1, submodules 8/8.
 
+### Performance
+- **An update stops paying for a NaN check its changed column cannot need.** The
+  NaN-column fix in 2.7.0 made row comparison call a helper for every column whose
+  value changed, including int, string and bool columns that can never hold NaN.
+  Every real update ends on such a column, so the whole update stream paid for it:
+  the primitive-row update in `bench_apply_profile` rose about 10% between 2.6.0 and
+  2.8.0. The check is now gated by column type inline — an int column is unequal with
+  no call, a float column tests `is_nan` in place, and only the float-vector types
+  call the helper. NaN rows compare exactly as before (`test_nan_column_equality.gd`
+  65/65, and each gate arm broken on purpose fails it). `_rows_equal` on a row whose
+  changed column is an int measured 1035 → 896 ns/call, a float 849 → 788;
+  primitive-row update 2631 → 2428 ns/row, nested-row 3720 → 3598 (N=100k,
+  best-of-7, median of 5 runs). The real-workload replay does not move measurably:
+  the saving is under 1% of what a replay row costs end to end.
+  `bench_rows_equal.gd` now also times a row with one changed column. It timed only
+  equal rows, which never reach the check, and that is how the slowdown went unseen.
+
 ## [2.8.0] - 2026-08-27
 
 > **Upgrading:** one behaviour changed, and one static took a parameter. A

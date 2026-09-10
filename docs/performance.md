@@ -97,14 +97,14 @@ All measured, and test-verified against a green suite:
 
 ## Measured apply-path baseline
 
-`LocalDatabase.apply_table_update`, saturated (N=100k, best-of-7),
-`tests/bench_apply_profile.gd`:
+`LocalDatabase.apply_table_update`, saturated (N=100k, best-of-7, median of 5 runs,
+re-measured 2026-09-10), `tests/bench_apply_profile.gd`:
 
 | wave | prim row (6 primitive fields) | entity row (nested object field) |
 |---|---|---|
-| insert | ~570 ns/row | ~550 ns/row |
-| update (detect) | ~2410 ns/row | ~3830 ns/row |
-| delete | ~650 ns/row | ~750 ns/row |
+| insert | ~620 ns/row | ~590 ns/row |
+| update (detect) | ~2430 ns/row | ~3600 ns/row |
+| delete | ~755 ns/row | ~760 ns/row |
 
 The bench prints these per-row numbers directly. It previously printed only
 `update+setup` / `delete+setup` totals, and the doc quoted a subtraction the reader
@@ -148,12 +148,21 @@ applied: the per-`Script` BSATN_TYPES column list is memoized (it was rebuilt vi
 compares primitive columns inline instead of paying a `_values_equal` call per
 column. Together those took the nested row from ~4340 to ~3830 ns/row.
 
+A row that really changed ends its walk on the values-differ path, and that path
+carries the NaN check: `NAN == NAN` is false, so a float or float-vector column needs
+one to compare equal to itself. The check is gated by column type inline — an int
+column returns unequal with no call, a float column tests `is_nan` in place, and only
+the float-vector types call `_nan_components_equal`. The ungated form called it for
+every differing column. `tests/bench_rows_equal.gd`, differing case, is what shows it:
+an int change measured 1035 → 896 ns/call gated, a float change 849 → 788. The equal
+case never reaches that path, which is why timing only the equal case missed it.
+
 **Headroom** (tick-invariant — see tick-rate analysis above): sustained pure
-main-thread apply tops out at ~**1.75M inserts/sec**, ~**0.41M updates/sec** on an
-all-primitive row (~**0.26M/sec** on a nested one), ~**1.55M deletes/sec** (1 sec ÷
+main-thread apply tops out at ~**1.6M inserts/sec**, ~**0.41M updates/sec** on an
+all-primitive row (~**0.28M/sec** on a nested one), ~**1.3M deletes/sec** (1 sec ÷
 per-row cost). The AIMD drain budget caps the per-tick slice below a full tick, so
 exceeding these becomes latency (backlog drained over more ticks), not a dropped
-frame. Expressed per 60 Hz tick that's ~29k inserts or ~7k updates before one tick's
+frame. Expressed per 60 Hz tick that's ~27k inserts or ~7k updates before one tick's
 worth of arrivals can't drain in one tick — but the rows/sec figure is the portable
 one.
 

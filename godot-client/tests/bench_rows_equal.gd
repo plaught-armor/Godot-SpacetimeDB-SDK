@@ -7,8 +7,11 @@
 # code the day row equality became value-based (d3c8db2) and understated the lever
 # by ~3x. Measure the shipping function, never a copy of it.
 #
-# Both row shapes are the equal case (full walk, no early exit): the worst case
-# for _rows_equal and the case a real update wave hits on every unchanged column.
+# Each row shape is timed twice. The equal case (full walk, no early exit) is the
+# worst case for _rows_equal and what a real update wave hits on every unchanged
+# column. The differing case is what every real update ends on: the changed column
+# takes the values-differ path, where the NaN gate sits. Timing only the equal case
+# hid a ~100 ns/row regression on that path for a month.
 extends SceneTree
 
 const N: int = 300000
@@ -132,5 +135,36 @@ func _initialize() -> void:
 		_entity(),
 		_entity(),
 		[&"entity_id", &"position", &"mass"] as Array[StringName],
+	)
+
+	# _rows_equal returns on the first column that really differs, so the changed column
+	# is the last one compared wherever it is declared (the float case's `d` is 5th of 6).
+	print("differing case (one changed column), N=%d best-of-%d" % [N, TRIALS])
+	var prim_int: PrimRow = _prim()
+	prim_int.e = 100
+	_report(
+		"prim   int column differs   ",
+		db,
+		_prim(),
+		prim_int,
+		[&"id", &"a", &"b", &"c", &"d", &"e"] as Array[StringName],
+	)
+	var prim_float: PrimRow = _prim()
+	prim_float.d = 3.5
+	_report(
+		"prim   float column differs ",
+		db,
+		_prim(),
+		prim_float,
+		[&"id", &"a", &"b", &"c", &"d", &"e"] as Array[StringName],
+	)
+	var moved: EntityRow = _entity()
+	moved.position.x = 5.0
+	_report(
+		"entity nested float differs ",
+		db,
+		_entity(),
+		moved,
+		[&"entity_id", &"mass", &"position"] as Array[StringName],
 	)
 	quit()
