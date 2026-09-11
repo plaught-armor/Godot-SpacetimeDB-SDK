@@ -182,16 +182,19 @@ rotated each round; medians of 4 rounds. All three decoded identical rows.
 | replay parse-only (`profile_deser`) | 69.8k rows/s | 69.8k rows/s | 91.2k rows/s | +31% |
 | replay parse+apply (`profile_deser`) | 50.1k rows/s | 50.5k rows/s | 65.3k rows/s | +30% |
 | row parse (`bench_e2e_receive`) | 4.50 µs/row | 4.41 µs/row | 2.75 µs/row | −39% |
+| populate, generic / specialized (`bench_specialized_parser`)¹ | 2.61 / 1.37 µs/row | 2.62 / 1.34 µs/row | 1.95 / 0.98 µs/row | −25% / −29% |
 | apply insert, prim / entity | 605 / 586 ns | 594 / 594 ns | 474 / 480 ns | −22% / −18% |
 | apply update, prim / entity | 2679 / 4348 ns | 2597 / 4249 ns | 2162 / 3530 ns | −19% / −19% |
 | apply delete, prim / entity | 733 / 764 ns | 720 / 714 ns | 577 / 562 ns | −21% / −26% |
 | `_rows_equal`, prim equal / int column differs | 1039 / 1028 ns | 997 / 994 ns | 908 / 902 ns | −13% / −12% |
 
+¹ A separate run the same day, medians of 5 rounds.
+
 - **The debug template runs at editor speed.** The gap is GDScript's debug-build checks,
   not the editor's tools code. A debug export is no better stand-in for a player's build
   than the editor is.
 - **Parse gains the most.** Row parse drops 39%, apply about 20%. Parse still dominates
-  receive: 82% of `bench_e2e_receive`'s total on the release template, 86% in the editor.
+  receive: 81% of `bench_e2e_receive`'s total on the release template, 86% in the editor.
 - **Editor numbers are conservative for a shipped game.** The headroom figures and backlog
   triggers on this page come from editor runs, so a release export reaches each trigger
   later, not sooner.
@@ -199,11 +202,19 @@ rotated each round; medians of 4 rounds. All three decoded identical rows.
   rest of this page replays at about 84k rows/s parse-only, between the official 4.7
   editor (69.8k) and the release template (91.2k). This comparison does not separate the
   version change from build options.
-- **A per-row saving does not transfer across binaries.** The specialized parser's saving
-  measured on the editor, 2.80 µs/row, exceeds the whole row-parse stage on the release
-  template, 2.75 µs/row. `bench_e2e_receive` therefore prints only a ceiling, the speedup
-  if row parse cost nothing. Measure the real saving with `bench_specialized_parser` on
-  the binary in question.
+- **A per-row saving goes stale and does not transfer across binaries.**
+  `bench_e2e_receive` used to subtract a fixed 2.80 µs/row, the specialized parser's
+  saving as measured in June. That exceeds the whole row-parse stage on the release
+  template, 2.75 µs/row. The same saving now measures 1.24 µs/row on the 4.7 editor and
+  0.97 on the release template. `bench_e2e_receive` therefore prints only a ceiling, the
+  speedup if row parse cost nothing. Measure the saving with `bench_specialized_parser`
+  on the binary in question.
+- **A specialized parser would make receive about 1.4× faster on the release template.**
+  Estimated from the same binary's numbers: subtracting the 0.97 µs/row saving from
+  `bench_e2e_receive`'s 3.40 µs/row total leaves 2.43 (1.40×). On a 200k-row initial
+  snapshot that is about 680 → 485 ms. The ~195 ms saved is parse-thread time; apply
+  still runs on the main thread under the frame budget either way. The `INLINE`
+  variant, one bounds check per row, would reach 1.69×.
 
 ## Research verdicts (2026-06-20)
 

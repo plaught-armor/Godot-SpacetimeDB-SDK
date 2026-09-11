@@ -9,10 +9,11 @@
 #   3. DB APPLY   — LocalDatabase.apply_table_update insert (unaffected by parser)
 #
 # Then prints the ceiling on any row-parser win: the e2e speedup if row parse cost
-# nothing. It prints no projection, because a per-row saving does not transfer across
-# binaries — the specialized parser's editor-measured saving (2.80 us/row) exceeds the
-# whole row-parse stage on a 4.7 release template (2.75 us/row). Measure the real
-# saving with bench_specialized_parser on the same binary. See docs/performance.md.
+# nothing. It prints no projection, because a per-row saving goes stale and does not
+# transfer across binaries: the 2.80 us/row this bench once subtracted, measured in June,
+# exceeds the whole row-parse stage on a 4.7 release template (2.75 us/row), where
+# bench_specialized_parser now measures the saving at 0.97. Measure the saving with
+# bench_specialized_parser on the same binary. See docs/performance.md.
 #
 #   cd godot-client && <godot> --headless --path . \
 #       --script tests/bench_e2e_receive.gd
