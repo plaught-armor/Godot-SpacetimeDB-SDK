@@ -8,8 +8,11 @@
 #                   (this is the ONLY stage a specialized parser speeds up)
 #   3. DB APPLY   — LocalDatabase.apply_table_update insert (unaffected by parser)
 #
-# Then projects the e2e speedup from swapping generic->specialized row parse using
-# the per-row delta measured in bench_specialized_parser (generic 4.70 / spec 1.90).
+# Then prints the ceiling on any row-parser win: the e2e speedup if row parse cost
+# nothing. It prints no projection, because a per-row saving does not transfer across
+# binaries — the specialized parser's editor-measured saving (2.80 us/row) exceeds the
+# whole row-parse stage on a 4.7 release template (2.75 us/row). Measure the real
+# saving with bench_specialized_parser on the same binary. See docs/performance.md.
 #
 #   cd godot-client && <godot> --headless --path . \
 #       --script tests/bench_e2e_receive.gd
@@ -18,10 +21,6 @@ extends SceneTree
 const N: int = 100000
 const REPS: int = 5
 const ROW_BYTES: int = 16
-
-# Per-row populate cost from bench_specialized_parser (generic plan vs monomorphic).
-# Used only to PROJECT the e2e win — the parse stage here is measured live.
-const SPEC_SAVED_US_PER_ROW: float = 4.70 - 1.90
 
 var _d: BSATNDeserializer = BSATNDeserializer.new(SpacetimeDBSchema.new("blackholio"), false)
 var _db: LocalDatabase
@@ -73,9 +72,8 @@ func _initialize() -> void:
 		return
 
 	var total_us: int = deco_us + parse_us + apply_only_us
-	var saved_us: float = SPEC_SAVED_US_PER_ROW * float(N)
-	var new_total: float = float(total_us) - saved_us
-	var e2e_speedup: float = float(total_us) / new_total if new_total > 0 else 0.0
+	var rest_us: int = total_us - parse_us
+	var parse_ceiling: float = float(total_us) / float(rest_us) if rest_us > 0 else 0.0
 
 	print("rows=%d  raw=%dB  compressed=%dB (%.1f%%)" % [N, block.size(), compressed.size(), 100.0 * compressed.size() / block.size()])
 	print("stage           |   ms   | us/row | %% of e2e")
@@ -84,7 +82,7 @@ func _initialize() -> void:
 	print("3. db apply     | %6.1f | %6.3f | %5.1f%%" % [apply_only_us / 1000.0, float(apply_only_us) / N, 100.0 * apply_only_us / total_us])
 	print("   e2e total    | %6.1f | %6.3f |" % [total_us / 1000.0, float(total_us) / N])
 	print("")
-	print("projected: specialized parse saves %.0f us/rep -> e2e %.2fx (%.1f%% faster)" % [saved_us, e2e_speedup, 100.0 * (1.0 - new_total / total_us)])
+	print("ceiling: a zero-cost row parse makes e2e %.2fx faster; measure the real parser win with bench_specialized_parser on this binary" % [parse_ceiling])
 	print("(sink=%d)" % _sink)
 	quit(0)
 

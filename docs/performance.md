@@ -5,7 +5,10 @@ deliberately *not* taken yet — each with a measured number and a trigger thres
 so the call can be revisited from data rather than re-derived.
 
 > **Numbers are machine-relative.** All ns/op figures below were measured on one
-> dev machine (Godot 4.8.dev headless, release-ish build). Treat the **ratios and
+> dev machine (a custom Godot 4.8.dev editor build, headless), except the
+> [editor vs exported game](#editor-vs-exported-game) comparison. An exported release
+> build spends 12–39% less time than an editor on the same benches, so editor numbers
+> are conservative for a shipped game. Treat the **ratios and
 > shares** as the signal, not the absolute nanoseconds. Re-run the benches in
 > `godot-client/tests/bench_*.gd` on the target before acting on any threshold.
 
@@ -166,6 +169,42 @@ frame. Expressed per 60 Hz tick that's ~27k inserts or ~7k updates before one ti
 worth of arrivals can't drain in one tick — but the rows/sec figure is the portable
 one.
 
+## Editor vs exported game
+
+Every other number on this page comes from an editor binary, but a player runs an export
+template. Measured 2026-09-10 on one machine: the official Godot 4.7-stable editor
+against the 4.7-stable `linux_debug` and `linux_release` export templates. All three ran
+one exported pck (compressed binary tokens, as a shipped game uses), with the binary order
+rotated each round; medians of 4 rounds. All three decoded identical rows.
+
+| bench | editor | debug template | release template | release vs editor |
+|---|---|---|---|---|
+| replay parse-only (`profile_deser`) | 69.8k rows/s | 69.8k rows/s | 91.2k rows/s | +31% |
+| replay parse+apply (`profile_deser`) | 50.1k rows/s | 50.5k rows/s | 65.3k rows/s | +30% |
+| row parse (`bench_e2e_receive`) | 4.50 µs/row | 4.41 µs/row | 2.75 µs/row | −39% |
+| apply insert, prim / entity | 605 / 586 ns | 594 / 594 ns | 474 / 480 ns | −22% / −18% |
+| apply update, prim / entity | 2679 / 4348 ns | 2597 / 4249 ns | 2162 / 3530 ns | −19% / −19% |
+| apply delete, prim / entity | 733 / 764 ns | 720 / 714 ns | 577 / 562 ns | −21% / −26% |
+| `_rows_equal`, prim equal / int column differs | 1039 / 1028 ns | 997 / 994 ns | 908 / 902 ns | −13% / −12% |
+
+- **The debug template runs at editor speed.** The gap is GDScript's debug-build checks,
+  not the editor's tools code. A debug export is no better stand-in for a player's build
+  than the editor is.
+- **Parse gains the most.** Row parse drops 39%, apply about 20%. Parse still dominates
+  receive: 82% of `bench_e2e_receive`'s total on the release template, 86% in the editor.
+- **Editor numbers are conservative for a shipped game.** The headroom figures and backlog
+  triggers on this page come from editor runs, so a release export reaches each trigger
+  later, not sooner.
+- **Compare numbers only within one binary.** The custom 4.8.dev editor build behind the
+  rest of this page replays at about 84k rows/s parse-only, between the official 4.7
+  editor (69.8k) and the release template (91.2k). This comparison does not separate the
+  version change from build options.
+- **A per-row saving does not transfer across binaries.** The specialized parser's saving
+  measured on the editor, 2.80 µs/row, exceeds the whole row-parse stage on the release
+  template, 2.75 µs/row. `bench_e2e_receive` therefore prints only a ceiling, the speedup
+  if row parse cost nothing. Measure the real saving with `bench_specialized_parser` on
+  the binary in question.
+
 ## Research verdicts (2026-06-20)
 
 A deep-research pass (23 sources, 25 adversarially 3-vote-verified claims, official
@@ -273,7 +312,31 @@ $GB --headless --path . --script tests/bench_apply_profile.gd       # apply wave
 $GB --headless --path . --script tests/bench_apply_components.gd    # per-row cost attribution
 $GB --headless --path . --script tests/bench_rows_equal.gd          # _rows_equal vs codegen typed lever
 $GB --headless --path . --script tests/bench_tick_overhead.gd       # idle-tick overhead vs tick rate
+$GB --headless --path . --script tests/bench_e2e_receive.gd         # decompress / row parse / apply shares
+$GB --headless --path . --script benchmark/profile_deser.gd         # real replay, parse-only vs parse+apply
 ```
 
 Always re-bench on the target machine + Godot version before acting on a threshold;
 the absolute nanoseconds are not portable, the shares roughly are.
+
+### On an export template
+
+A release template ignores `--script` and `--main-loop`: a build without path-override
+support clears both in `main/main.cpp` before it picks a main loop. It still loads an
+`override.cfg` placed beside the executable, so select the bench there:
+
+1. In a scratch copy of `godot-client/`, give the bench script a `class_name` (the bench
+   scripts have none) and add an empty scene, then re-import.
+2. Export with a Linux preset. Add `*.bin` to the include filter, so the replay fixture
+   ships in the pck.
+3. Write an `override.cfg` beside the exported executable, then run the executable with
+   `--headless`:
+
+   ```
+   [application]
+   run/main_loop_type="BenchApplyProfile"
+   run/main_scene="res://empty.tscn"
+   ```
+
+4. For the editor run, put the same `override.cfg` in the project directory and run
+   without `--script`, so every binary takes the same code path.
