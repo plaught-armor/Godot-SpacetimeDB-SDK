@@ -21,3 +21,29 @@ static func create(p_id: int, p_score: int, p_owner: PackedByteArray) -> VbtreeT
 	result.score = p_score
 	result.owner = p_owner
 	return result
+
+
+## Whether two VbtreeThing values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VbtreeThing, p_rhs: VbtreeThing) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if p_lhs.score != p_rhs.score:
+		return false
+	if p_lhs.owner != p_rhs.owner:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VbtreeThing = p_other as VbtreeThing
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if self.score != p_rhs.score:
+		return false
+	if self.owner != p_rhs.owner:
+		return false
+	return true

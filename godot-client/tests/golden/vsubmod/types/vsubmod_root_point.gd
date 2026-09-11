@@ -14,3 +14,12 @@ static func create(p_x: int) -> VsubmodRootPoint:
 	var result: VsubmodRootPoint = VsubmodRootPoint.new()
 	result.x = p_x
 	return result
+
+
+## Whether two VsubmodRootPoint values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VsubmodRootPoint, p_rhs: VsubmodRootPoint) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.x != p_rhs.x:
+		return false
+	return true

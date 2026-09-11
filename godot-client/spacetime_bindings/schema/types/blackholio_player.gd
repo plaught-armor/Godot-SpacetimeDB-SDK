@@ -21,3 +21,29 @@ static func create(p_identity: PackedByteArray, p_player_id: int, p_name: String
 	result.player_id = p_player_id
 	result.name = p_name
 	return result
+
+
+## Whether two BlackholioPlayer values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: BlackholioPlayer, p_rhs: BlackholioPlayer) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.identity != p_rhs.identity:
+		return false
+	if p_lhs.player_id != p_rhs.player_id:
+		return false
+	if p_lhs.name != p_rhs.name:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: BlackholioPlayer = p_other as BlackholioPlayer
+	if p_rhs == null:
+		return false
+	if self.identity != p_rhs.identity:
+		return false
+	if self.player_id != p_rhs.player_id:
+		return false
+	if self.name != p_rhs.name:
+		return false
+	return true

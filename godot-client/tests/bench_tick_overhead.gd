@@ -34,8 +34,8 @@ func _initialize() -> void:
 	# LocalDatabase._rows_equal); re-run bench_apply_profile and update both these
 	# lines and docs/performance.md together whenever the apply path changes.
 	print("apply headroom is tick-INVARIANT (rows/sec of pure main-thread apply):")
-	print("  insert  ~570 ns/row -> ~1.75M rows/sec   (bench_apply_profile.gd, prim row)")
-	print("  update ~2410 ns/row -> ~0.41M rows/sec   (~3830 ns/row nested -> ~0.26M)")
-	print("  delete  ~650 ns/row -> ~1.54M rows/sec")
+	print("  insert  ~535 ns/row -> ~1.87M rows/sec   (bench_apply_profile.gd, prim row)")
+	print("  update ~2010 ns/row -> ~0.50M rows/sec   (generated row; ~2260 without a generated _row_eq -> ~0.44M)")
+	print("  delete  ~586 ns/row -> ~1.71M rows/sec")
 	print("  (AIMD caps the per-tick slice; flood -> latency, spread over ticks)")
 	quit()

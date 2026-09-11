@@ -27,3 +27,37 @@ static func create(p_entity_id: int, p_player_id: int, p_direction: BlackholioDb
 	result.speed = p_speed
 	result.last_split_time = p_last_split_time
 	return result
+
+
+## Whether two BlackholioCircle values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: BlackholioCircle, p_rhs: BlackholioCircle) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.entity_id != p_rhs.entity_id:
+		return false
+	if p_lhs.player_id != p_rhs.player_id:
+		return false
+	if not BlackholioDbVector2._eq(p_lhs.direction, p_rhs.direction):
+		return false
+	if p_lhs.speed != p_rhs.speed and not (is_nan(p_lhs.speed) and is_nan(p_rhs.speed)):
+		return false
+	if p_lhs.last_split_time != p_rhs.last_split_time:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: BlackholioCircle = p_other as BlackholioCircle
+	if p_rhs == null:
+		return false
+	if self.entity_id != p_rhs.entity_id:
+		return false
+	if self.player_id != p_rhs.player_id:
+		return false
+	if not BlackholioDbVector2._eq(self.direction, p_rhs.direction):
+		return false
+	if self.speed != p_rhs.speed and not (is_nan(self.speed) and is_nan(p_rhs.speed)):
+		return false
+	if self.last_split_time != p_rhs.last_split_time:
+		return false
+	return true

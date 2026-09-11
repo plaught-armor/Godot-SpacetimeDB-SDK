@@ -18,3 +18,25 @@ static func create(p_id: int, p_item: VsubmodAuthBazBazItem) -> VsubmodAuthBazBa
 	result.id = p_id
 	result.item = p_item
 	return result
+
+
+## Whether two VsubmodAuthBazBazItems values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VsubmodAuthBazBazItems, p_rhs: VsubmodAuthBazBazItems) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if not VsubmodAuthBazBazItem._eq(p_lhs.item, p_rhs.item):
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VsubmodAuthBazBazItems = p_other as VsubmodAuthBazBazItems
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if not VsubmodAuthBazBazItem._eq(self.item, p_rhs.item):
+		return false
+	return true

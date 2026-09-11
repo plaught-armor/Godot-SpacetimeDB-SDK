@@ -18,3 +18,25 @@ static func create(p_id: int, p_r: VsumResultI32String) -> VsumResRow:
 	result.id = p_id
 	result.r = p_r
 	return result
+
+
+## Whether two VsumResRow values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VsumResRow, p_rhs: VsumResRow) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if not LocalDatabase._values_equal(p_lhs.r, p_rhs.r):
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VsumResRow = p_other as VsumResRow
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if not LocalDatabase._values_equal(self.r, p_rhs.r):
+		return false
+	return true

@@ -18,3 +18,25 @@ static func create(p_id: int, p_v: int) -> Vtypes2SeqRow:
 	result.id = p_id
 	result.v = p_v
 	return result
+
+
+## Whether two Vtypes2SeqRow values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: Vtypes2SeqRow, p_rhs: Vtypes2SeqRow) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if p_lhs.v != p_rhs.v:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: Vtypes2SeqRow = p_other as Vtypes2SeqRow
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if self.v != p_rhs.v:
+		return false
+	return true

@@ -97,17 +97,25 @@ All measured, and test-verified against a green suite:
   empty sentinel, zero alloc. The duplicate **is** load-bearing when non-empty (a
   listener may unsubscribe mid-dispatch — verified: erasing during `for` shifts
   indices and silently skips a sibling). Kept exactly there.
+- **Typed row comparison** — codegen emits `_eq` / `_row_eq`, so update detection on a
+  generated row skips the generic column walk (~40% off an update; see "Update cost is
+  dominated by value equality").
 
 ## Measured apply-path baseline
 
 `LocalDatabase.apply_table_update`, saturated (N=100k, best-of-7, median of 5 runs,
-re-measured 2026-09-10), `tests/bench_apply_profile.gd`:
+re-measured 2026-09-11), `tests/bench_apply_profile.gd`:
 
-| wave | prim row (6 primitive fields) | entity row (nested object field) |
-|---|---|---|
-| insert | ~620 ns/row | ~590 ns/row |
-| update (detect) | ~2430 ns/row | ~3600 ns/row |
-| delete | ~755 ns/row | ~760 ns/row |
+| wave | prim row (6 primitive fields) | entity row (nested record field) | circle row (nested record + float) |
+|---|---|---|---|
+| insert | ~535 ns/row | ~545 ns/row | ~548 ns/row |
+| update (detect) | ~2260 ns/row | ~2010 ns/row | ~2100 ns/row |
+| delete | ~586 ns/row | ~613 ns/row | ~628 ns/row |
+
+The prim row is declared inside the bench, so it has no generated `_row_eq` and its update
+detection runs the generic walk. The entity and circle rows are generated bindings and run
+the typed comparison codegen emits (next section), which is why the nested rows now update
+faster than the flat one.
 
 The bench prints these per-row numbers directly. It previously printed only
 `update+setup` / `delete+setup` totals, and the doc quoted a subtraction the reader
@@ -131,25 +139,53 @@ one that describes production.
 
 ### Update cost is dominated by value equality
 
-`update (detect)` is 4–7× an insert because change detection compares every column
-**by value** — `_values_equal` descends into nested record columns rather than
-comparing Object identity. That is a correctness requirement, not overhead: every
-delivered row is a fresh `.new()` with no interning, so an identity compare reported
-structurally-equal rows as changed and fired spurious `row_updated` (fixed in
-`d3c8db2`). Measured price of that correctness, same row shapes either way
-(`tests/bench_rows_equal.gd`):
+`update (detect)` costs about 4× an insert because change detection compares every
+column **by value**: a nested record column compares by its own columns, not by Object
+identity. That is a correctness requirement, not overhead. Every delivered row is a
+fresh `.new()` with no interning, so an identity compare reported structurally-equal
+rows as changed and fired spurious `row_updated` (fixed in `d3c8db2`).
 
-| row shape | identity compare (old, wrong) | value compare (current) |
+Codegen emits that comparison typed to each row's own columns. Every generated record
+type gets a static `_eq`, and every generated row type overrides
+`_ModuleTableType._row_eq`, the call LocalDatabase makes to decide whether a re-delivered
+row changed and to match a row in a table without a primary key. The override reads each
+column directly with a check chosen for its type: `!=` for ints, strings and bytes, an
+inline `is_nan` test for floats, `_nan_components_equal` for float vectors, the nested
+record's own `_eq` for a record column, and `_values_equal` for Option, arrays and sum
+types. It answers exactly what the generic `LocalDatabase._rows_equal` walk answers;
+`tests/test_typed_row_equality.gd` holds the two together, NaN and null included. A row
+script without the override falls back to the walk. That includes bindings generated
+before the override existed.
+
+Per call, generated override against the walk (4.8.dev editor, N=300k, best-of-7, median
+of 5 runs, `tests/bench_rows_equal.gd`):
+
+| row shape | equal: walk / generated | one column differs: walk / generated |
 |---|---|---|
-| 6 primitive columns | ~790 ns/call | ~1270 ns/call |
-| nested `DbVector2` column | ~925 ns/call | ~2670 ns/call |
+| config (int, int) | 366 / 183 ns (2.0×) | 371 / 178 ns, last int (2.1×) |
+| player (bytes, int, String) | 542 / 221 ns (2.5×) | 609 / 215 ns, last String (2.8×) |
+| entity (int, DbVector2, int) | 1469 / 423 ns (3.5×) | 1170 / 367 ns, nested float (3.2×) |
+| circle (int, int, DbVector2, float, int) | 1725 / 490 ns (3.5×) | 1724 / 478 ns, last int (3.6×) |
 
-`_rows_equal` is therefore roughly **half** of a prim-row update and **~70%** of a
-nested-row update — it *is* where update time goes. Two cheap wins are already
-applied: the per-`Script` BSATN_TYPES column list is memoized (it was rebuilt via
-`get_script_constant_map().keys()` once per nested column per row), and `_rows_equal`
-compares primitive columns inline instead of paying a `_values_equal` call per
-column. Together those took the nested row from ~4340 to ~3830 ns/row.
+The gain grows with nested records, where the walk looks up every nested column. On the
+update wave (`tests/bench_apply_profile.gd`, same binary and method, main before the
+change against after):
+
+| row | before | after |
+|---|---|---|
+| entity (generated) | 3333 ns/row | 2012 ns/row (−40%) |
+| circle (generated) | 3436 ns/row | 2098 ns/row (−39%) |
+| prim (no override, falls back) | 2136 ns/row | 2261 ns/row (+6%) |
+
+The 4.7 release template shows the same shape: entity 3044 → 1679 (−45%), circle 3038 →
+1831 (−40%), prim 1770 → 1869 (+6%). The fallback costs a row without the override one
+extra call, ~95 ns per comparison, so a project that updates the SDK without regenerating
+its bindings updates about 6% slower until it regenerates. Detecting the override per table
+would avoid that, but it adds a branch to every update to protect stale bindings, and
+regenerating removes the cost and brings the gain.
+
+The walk itself keeps two earlier wins: the per-`Script` BSATN_TYPES column list is
+memoized, and primitive columns compare inline instead of through a `_values_equal` call.
 
 A row that really changed ends its walk on the values-differ path, and that path
 carries the NaN check: `NAN == NAN` is false, so a float or float-vector column needs
@@ -160,14 +196,16 @@ every differing column. `tests/bench_rows_equal.gd`, differing case, is what sho
 an int change measured 1035 → 896 ns/call gated, a float change 849 → 788. The equal
 case never reaches that path, which is why timing only the equal case missed it.
 
+The generated override applies the same gate inline, per column type.
+
 **Headroom** (tick-invariant — see tick-rate analysis above): sustained pure
-main-thread apply tops out at ~**1.6M inserts/sec**, ~**0.41M updates/sec** on an
-all-primitive row (~**0.28M/sec** on a nested one), ~**1.3M deletes/sec** (1 sec ÷
-per-row cost). The AIMD drain budget caps the per-tick slice below a full tick, so
-exceeding these becomes latency (backlog drained over more ticks), not a dropped
-frame. Expressed per 60 Hz tick that's ~27k inserts or ~7k updates before one tick's
-worth of arrivals can't drain in one tick — but the rows/sec figure is the portable
-one.
+main-thread apply tops out at ~**1.87M inserts/sec**, ~**0.50M updates/sec** on a
+generated row (~**0.44M/sec** on a row without a generated `_row_eq`), ~**1.71M
+deletes/sec** (1 sec ÷ per-row cost). The AIMD drain budget caps the per-tick slice below
+a full tick, so exceeding these becomes latency (backlog drained over more ticks), not a
+dropped frame. Expressed per 60 Hz tick that's ~31k inserts or ~8k updates before one
+tick's worth of arrivals can't drain in one tick — but the rows/sec figure is the
+portable one.
 
 ## Editor vs exported game
 
@@ -215,6 +253,20 @@ rotated each round; medians of 4 rounds. All three decoded identical rows.
   snapshot that is about 680 → 485 ms. The ~195 ms saved is parse-thread time; apply
   still runs on the main thread under the frame budget either way. The `INLINE`
   variant, one bounds check per row, would reach 1.69×.
+
+### After the generated `_row_eq` (2026-09-11)
+
+The update and `_rows_equal` rows above predate the typed comparison codegen now emits.
+Re-measured a day later, the 4.7 editor against the 4.7 release template (no debug
+template this time), one exported pck, binary order rotated, medians of 5 rounds. The prim
+row has no generated `_row_eq`, so it runs the generic walk through the fallback, one call
+slower than before the change.
+
+| bench | editor | release template | release vs editor |
+|---|---|---|---|
+| apply update, prim / entity / circle | 2700 / 2331 / 2370 ns | 1869 / 1679 / 1831 ns | −31% / −28% / −23% |
+| row compare, circle equal: walk / generated | 2018 / 507 ns | 1759 / 433 ns | −13% / −15% |
+| row compare, config equal: walk / generated | 403 / 195 ns | 363 / 171 ns | −10% / −12% |
 
 ## Research verdicts (2026-06-20)
 
@@ -274,30 +326,16 @@ trade can be re-weighed if a real workload crosses its trigger.
   (LocalDatabase doesn't know `client`). Folds naturally into #1 if that's ever done.
 - **Trigger**: same as #1 — only matters under flood, and shares the same fix.
 
-### 3. Codegen typed `_row_eq()` per generated row class — **OPEN** (was rejected; the rejection's premises are dead)
+### 3. Codegen typed `_row_eq()` per generated row class — **SHIPPED** (2026-09-11)
 
-- **What**: replace `_rows_equal`'s per-column `get()` + `_values_equal` walk with a
-  codegen-emitted typed `func _row_eq(o) -> bool: return id == o.id and ...`, expanding
-  nested record columns inline (`position.x == o.position.x and ...`) so value semantics
-  are preserved without recursion.
-- **Measured** (`bench_rows_equal.gd`, hot row pair, full-walk equal case): typed
-  comparator is **3.9× / ~735 ns faster** on a 6-primitive row and **5.9× / ~1325 ns
-  faster** on a nested one. Against the streaming apply path that is roughly 30% off a
-  prim-row update and 35% off a nested-row update.
-- **Why this was previously "rejected"**: the earlier verdict rested on two claims that
-  no longer hold. (1) "`_rows_equal` is not the bottleneck" — true when equality was an
-  identity compare; value equality made it the majority of update cost. (2) "the nested
-  `entity` row bails at field 2" — it no longer bails, it descends into the wrapper and
-  compares `x`/`y`. The old "1.63× in isolation" figure also came from a bench that
-  reimplemented `_rows_equal` locally and stopped matching the shipping function.
-- **Cost / risk**: codegen change + bindings regen + golden-test regen, on every schema
-  change, forever. The generated comparator must track `_values_equal` semantics exactly
-  (type mismatch ⇒ unequal, nested descent, Array elementwise) or change detection
-  silently diverges between generated and non-generated rows; `_row_hash` must stay
-  consistent with it. That coupling — not the speedup — is the reason this is still on
-  the backlog rather than done.
-- **Trigger**: an update-heavy table sustaining > ~5k updates/tick, or a profile showing
-  change detection on the main thread. Re-bench that table's real update volume first.
+- **Outcome**: generated rows update ~40% faster; details and numbers under "Update cost
+  is dominated by value equality". The coupling this entry warned about, generated
+  checks drifting from `_values_equal`, is held by `tests/test_typed_row_equality.gd`. It
+  compares the generated checks with the walk for every column shape codegen emits.
+- **Measured, not taken**: expanding a nested record column inline instead of calling the
+  record's `_eq` saved ~40 ns more on a ~450 ns circle comparison (~9%), at the price of
+  recursive codegen. Emitting `_row_eq` as a call into `_eq`, rather than repeating the
+  checks, cost ~200 ns per comparison and was dropped before shipping.
 
 ### 4. Typed-pk inner dicts — **NO-GO** (premise refuted by research)
 
@@ -321,7 +359,7 @@ cd godot-client
 GB=<path-to-godot-binary>
 $GB --headless --path . --script tests/bench_apply_profile.gd       # apply waves (insert/update/delete)
 $GB --headless --path . --script tests/bench_apply_components.gd    # per-row cost attribution
-$GB --headless --path . --script tests/bench_rows_equal.gd          # _rows_equal vs codegen typed lever
+$GB --headless --path . --script tests/bench_rows_equal.gd          # generated _row_eq vs the _rows_equal walk
 $GB --headless --path . --script tests/bench_tick_overhead.gd       # idle-tick overhead vs tick rate
 $GB --headless --path . --script tests/bench_e2e_receive.gd         # decompress / row parse / apply shares
 $GB --headless --path . --script benchmark/profile_deser.gd         # real replay, parse-only vs parse+apply

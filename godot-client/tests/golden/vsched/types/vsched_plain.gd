@@ -21,3 +21,29 @@ static func create(p_id: int, p_scheduled_at: int, p_label: String) -> VschedPla
 	result.scheduled_at = p_scheduled_at
 	result.label = p_label
 	return result
+
+
+## Whether two VschedPlain values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VschedPlain, p_rhs: VschedPlain) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if p_lhs.scheduled_at != p_rhs.scheduled_at:
+		return false
+	if p_lhs.label != p_rhs.label:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VschedPlain = p_other as VschedPlain
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if self.scheduled_at != p_rhs.scheduled_at:
+		return false
+	if self.label != p_rhs.label:
+		return false
+	return true

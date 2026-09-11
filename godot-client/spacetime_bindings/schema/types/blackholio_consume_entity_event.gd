@@ -17,3 +17,25 @@ static func create(p_consumed_entity_id: int, p_consumer_entity_id: int) -> Blac
 	result.consumed_entity_id = p_consumed_entity_id
 	result.consumer_entity_id = p_consumer_entity_id
 	return result
+
+
+## Whether two BlackholioConsumeEntityEvent values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: BlackholioConsumeEntityEvent, p_rhs: BlackholioConsumeEntityEvent) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.consumed_entity_id != p_rhs.consumed_entity_id:
+		return false
+	if p_lhs.consumer_entity_id != p_rhs.consumer_entity_id:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: BlackholioConsumeEntityEvent = p_other as BlackholioConsumeEntityEvent
+	if p_rhs == null:
+		return false
+	if self.consumed_entity_id != p_rhs.consumed_entity_id:
+		return false
+	if self.consumer_entity_id != p_rhs.consumer_entity_id:
+		return false
+	return true

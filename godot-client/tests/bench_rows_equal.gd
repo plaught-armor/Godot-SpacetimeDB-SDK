@@ -1,55 +1,21 @@
-# Sizes the "codegen a typed _row_eq() per generated row class" lever (see
-# docs/performance.md, optimization backlog #3) against the change-detection path
-# LocalDatabase actually runs.
+# Sizes value equality on the change-detection path LocalDatabase runs: the `_row_eq`
+# codegen emits on a generated row type, against the generic LocalDatabase._rows_equal
+# walk a row script without one falls back to (docs/performance.md, "Update cost is
+# dominated by value equality").
 #
-# It calls the REAL LocalDatabase._rows_equal — an earlier version of this bench
-# reimplemented it locally as `a.get(p) != b.get(p)`, which stopped matching the
-# code the day row equality became value-based (d3c8db2) and understated the lever
-# by ~3x. Measure the shipping function, never a copy of it.
+# Both sides are shipping code: the rows come from spacetime_bindings/ and the walk is
+# LocalDatabase's own. An earlier version timed a local reimplementation of _rows_equal,
+# which stopped matching the code the day row equality became value-based (d3c8db2) and
+# understated the cost by ~3x. Measure the shipping function, never a copy of it.
 #
-# Each row shape is timed twice. The equal case (full walk, no early exit) is the
-# worst case for _rows_equal and what a real update wave hits on every unchanged
-# column. The differing case is what every real update ends on: the changed column
-# takes the values-differ path, where the NaN gate sits. Timing only the equal case
-# hid a ~100 ns/row regression on that path for a month.
+# Each row shape is timed twice. The equal case (full walk, no early exit) is what an
+# unchanged re-delivery costs. The differing case is what every real update ends on: the
+# changed column takes the values-differ path, where the NaN test sits. Timing only the
+# equal case hid a ~100 ns/row regression on that path for a month.
 extends SceneTree
 
 const N: int = 300000
 const TRIALS: int = 7
-
-
-## All-primitive row — no nested column, so _rows_equal never recurses.
-class PrimRow:
-	extends _ModuleTableType
-	const PRIMARY_KEY: StringName = &"id"
-	@export var id: int
-	@export var a: int
-	@export var b: int
-	@export var c: float
-	@export var d: float
-	@export var e: int
-
-
-	## What a codegen-emitted comparator would look like: typed field reads, no
-	## per-column StringName lookup, no Variant dispatch, no recursion.
-	func _row_eq(o: PrimRow) -> bool:
-		return id == o.id and a == o.a and b == o.b and c == o.c and d == o.d and e == o.e
-
-
-## Nested-record row — _rows_equal descends into the wrapper's columns by value.
-class EntityRow:
-	extends _ModuleTableType
-	const PRIMARY_KEY: StringName = &"entity_id"
-	@export var entity_id: int
-	@export var position: BlackholioDbVector2
-	@export var mass: int
-
-
-	func _row_eq(o: EntityRow) -> bool:
-		return (
-			entity_id == o.entity_id and mass == o.mass
-			and position.x == o.position.x and position.y == o.position.y
-		)
 
 
 func _best(fn: Callable) -> int:
@@ -63,108 +29,86 @@ func _best(fn: Callable) -> int:
 	return best
 
 
-func _prim() -> PrimRow:
-	var r: PrimRow = PrimRow.new()
-	r.id = 7
-	r.a = 42
-	r.b = 84
-	r.c = 1.5
-	r.d = 2.5
-	r.e = 99
-	return r
+# The column list LocalDatabase._get_row_properties builds from a row script.
+static func _columns(row: _ModuleTableType) -> Array[StringName]:
+	var cols: Array[StringName] = []
+	var script: Script = row.get_script()
+	for prop: Dictionary in script.get_script_property_list():
+		if prop.usage & PROPERTY_USAGE_STORAGE:
+			cols.append(prop.name)
+	return cols
 
 
-func _entity() -> EntityRow:
-	var p: BlackholioDbVector2 = BlackholioDbVector2.new()
-	p.x = 1.0
-	p.y = 2.0
-	var r: EntityRow = EntityRow.new()
-	r.entity_id = 7
-	r.position = p
-	r.mass = 42
-	return r
-
-
-func _report(
-	label: String,
-	db: LocalDatabase,
-	x: _ModuleTableType,
-	y: _ModuleTableType,
-	props: Array[StringName],
-) -> void:
-	var dyn_us: int = _best(
+func _report(label: String, x: _ModuleTableType, y: _ModuleTableType) -> void:
+	var cols: Array[StringName] = _columns(x)
+	var walk_us: int = _best(
 		func() -> void:
 			var sink: int = 0
 			for i: int in N:
-				if db._rows_equal(x, y, props):
-					sink += 1
+				if LocalDatabase._rows_equal(x, y, cols):
+					sink += 1,
 	)
-	var typed_us: int = _best(
+	var gen_us: int = _best(
 		func() -> void:
 			var sink: int = 0
 			for i: int in N:
-				if x._row_eq(y):
-					sink += 1
+				if x._row_eq(y, cols):
+					sink += 1,
 	)
 	print(
-		"  %s: _rows_equal %.0f ns/call | typed _row_eq %.0f ns/call | %.2fx (%.0f ns saved)"
+		"  %s: _rows_equal walk %.0f ns/call | generated _row_eq %.0f ns/call | %.2fx (%.0f ns saved)"
 		% [
 			label,
-			dyn_us * 1000.0 / N,
-			typed_us * 1000.0 / N,
-			float(dyn_us) / float(typed_us),
-			(dyn_us - typed_us) * 1000.0 / N,
+			walk_us * 1000.0 / N,
+			gen_us * 1000.0 / N,
+			float(walk_us) / float(gen_us),
+			(walk_us - gen_us) * 1000.0 / N,
 		]
 	)
 
 
+static func _config() -> BlackholioConfig:
+	return BlackholioConfig.create(1, 1000)
+
+
+static func _player() -> BlackholioPlayer:
+	var identity: PackedByteArray = []
+	identity.resize(32)
+	identity.fill(7)
+	return BlackholioPlayer.create(identity, 3, "player")
+
+
+static func _entity() -> BlackholioEntity:
+	return BlackholioEntity.create(7, BlackholioDbVector2.create(1.0, 2.0), 42)
+
+
+static func _circle() -> BlackholioCircle:
+	return BlackholioCircle.create(7, 3, BlackholioDbVector2.create(0.6, 0.8), 1.25, 1700000000000)
+
+
 func _initialize() -> void:
-	var db: LocalDatabase = LocalDatabase.new(SpacetimeDBSchema.new("x"))
 	print("equal case (full walk), N=%d best-of-%d" % [N, TRIALS])
 	# Distinct instances, equal values — every delivered row is a fresh .new().
-	_report(
-		"prim   (6 primitive columns)",
-		db,
-		_prim(),
-		_prim(),
-		[&"id", &"a", &"b", &"c", &"d", &"e"] as Array[StringName],
-	)
-	_report(
-		"entity (nested DbVector2)   ",
-		db,
-		_entity(),
-		_entity(),
-		[&"entity_id", &"position", &"mass"] as Array[StringName],
-	)
+	_report("config (int, int)                 ", _config(), _config())
+	_report("player (bytes, int, String)       ", _player(), _player())
+	_report("entity (int, DbVector2, int)      ", _entity(), _entity())
+	_report("circle (int, int, DbVector2, f, i)", _circle(), _circle())
 
-	# _rows_equal returns on the first column that really differs, so the changed column
-	# is the last one compared wherever it is declared (the float case's `d` is 5th of 6).
+	# Both sides return on the first column that really differs, in declaration order.
 	print("differing case (one changed column), N=%d best-of-%d" % [N, TRIALS])
-	var prim_int: PrimRow = _prim()
-	prim_int.e = 100
-	_report(
-		"prim   int column differs   ",
-		db,
-		_prim(),
-		prim_int,
-		[&"id", &"a", &"b", &"c", &"d", &"e"] as Array[StringName],
-	)
-	var prim_float: PrimRow = _prim()
-	prim_float.d = 3.5
-	_report(
-		"prim   float column differs ",
-		db,
-		_prim(),
-		prim_float,
-		[&"id", &"a", &"b", &"c", &"d", &"e"] as Array[StringName],
-	)
-	var moved: EntityRow = _entity()
-	moved.position.x = 5.0
-	_report(
-		"entity nested float differs ",
-		db,
-		_entity(),
-		moved,
-		[&"entity_id", &"mass", &"position"] as Array[StringName],
-	)
+	var config: BlackholioConfig = _config()
+	config.world_size = 2000
+	_report("config last int differs           ", _config(), config)
+	var player: BlackholioPlayer = _player()
+	player.name = "renamed"
+	_report("player last String differs        ", _player(), player)
+	var entity: BlackholioEntity = _entity()
+	entity.position.x = 5.0
+	_report("entity nested float differs       ", _entity(), entity)
+	var circle: BlackholioCircle = _circle()
+	circle.speed = 2.5
+	_report("circle float differs              ", _circle(), circle)
+	var split: BlackholioCircle = _circle()
+	split.last_split_time += 1
+	_report("circle last int differs           ", _circle(), split)
 	quit()

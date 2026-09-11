@@ -14,3 +14,21 @@ static func create(p_text: String) -> VsumNote:
 	var result: VsumNote = VsumNote.new()
 	result.text = p_text
 	return result
+
+
+## Whether two VsumNote values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VsumNote, p_rhs: VsumNote) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.text != p_rhs.text:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VsumNote = p_other as VsumNote
+	if p_rhs == null:
+		return false
+	if self.text != p_rhs.text:
+		return false
+	return true

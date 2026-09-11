@@ -1,8 +1,11 @@
 # Saturated worst-case profile of LocalDatabase.apply_table_update — the main-thread
 # apply path. Splits the budget across insert / update(detect) / delete waves, for
-# both a nested-object row (BlackholioEntity, whose wrapper column _rows_equal
-# descends into by value) and an all-primitive row. Reveals where the apply budget goes
-# under load, so the next optimization target is measured, not guessed.
+# three rows. The all-primitive row is written here, so it carries no generated
+# `_row_eq` and its update detection runs the generic LocalDatabase._rows_equal walk.
+# BlackholioEntity (a nested record column) and BlackholioCircle (nested record plus a
+# float) are generated rows, so theirs runs the typed comparison codegen emits. Reveals
+# where the apply budget goes under load, so the next optimization target is measured,
+# not guessed.
 extends SceneTree
 
 const N: int = 100000
@@ -36,6 +39,12 @@ func _ent(id: int, mass: int) -> BlackholioEntity:
 	p.x = 1.0
 	p.y = 2.0
 	return BlackholioEntity.create(id, p, mass)
+
+
+# The changed column is `direction`, the nested record a moving circle rewrites.
+func _circ(id: int, salt: int) -> BlackholioCircle:
+	var d: BlackholioDbVector2 = BlackholioDbVector2.create(0.6, 0.8 - salt * 0.5)
+	return BlackholioCircle.create(id, id % 64, d, 1.25, 1700000000000)
 
 
 func _best(fn: Callable) -> int:
@@ -83,7 +92,7 @@ func _run(label: String, table: StringName, pk: StringName, props: Array[StringN
 			db.apply_table_update(_wave(table, first, empty))
 	)
 
-	# UPDATE wave (detect_updates): deletes=old, inserts=new same pks -> _rows_equal fires.
+	# UPDATE wave (detect_updates): deletes=old, inserts=new same pks -> _row_eq fires.
 	# Re-seed to a full table each rep, then apply the update.
 	var upd_us: int = _best(
 		func() -> void:
@@ -139,5 +148,12 @@ func _initialize() -> void:
 		&"entity_id",
 		[&"entity_id", &"position", &"mass"] as Array[StringName],
 		_ent,
+	)
+	_run(
+		"circle",
+		&"circle",
+		&"entity_id",
+		[&"entity_id", &"player_id", &"direction", &"speed", &"last_split_time"] as Array[StringName],
+		_circ,
 	)
 	quit()

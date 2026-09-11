@@ -23,3 +23,33 @@ static func create(p_scheduled_id: int, p_scheduled_at: ScheduleAt, p_consumed_e
 	result.consumed_entity_id = p_consumed_entity_id
 	result.consumer_entity_id = p_consumer_entity_id
 	return result
+
+
+## Whether two BlackholioConsumeEntityTimer values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: BlackholioConsumeEntityTimer, p_rhs: BlackholioConsumeEntityTimer) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.scheduled_id != p_rhs.scheduled_id:
+		return false
+	if not LocalDatabase._values_equal(p_lhs.scheduled_at, p_rhs.scheduled_at):
+		return false
+	if p_lhs.consumed_entity_id != p_rhs.consumed_entity_id:
+		return false
+	if p_lhs.consumer_entity_id != p_rhs.consumer_entity_id:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: BlackholioConsumeEntityTimer = p_other as BlackholioConsumeEntityTimer
+	if p_rhs == null:
+		return false
+	if self.scheduled_id != p_rhs.scheduled_id:
+		return false
+	if not LocalDatabase._values_equal(self.scheduled_at, p_rhs.scheduled_at):
+		return false
+	if self.consumed_entity_id != p_rhs.consumed_entity_id:
+		return false
+	if self.consumer_entity_id != p_rhs.consumer_entity_id:
+		return false
+	return true

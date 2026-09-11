@@ -18,3 +18,25 @@ static func create(p_id: int, p_point: VsubmodLibLibPoint) -> VsubmodLibLibData:
 	result.id = p_id
 	result.point = p_point
 	return result
+
+
+## Whether two VsubmodLibLibData values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VsubmodLibLibData, p_rhs: VsubmodLibLibData) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if not VsubmodLibLibPoint._eq(p_lhs.point, p_rhs.point):
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VsubmodLibLibData = p_other as VsubmodLibLibData
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if not VsubmodLibLibPoint._eq(self.point, p_rhs.point):
+		return false
+	return true

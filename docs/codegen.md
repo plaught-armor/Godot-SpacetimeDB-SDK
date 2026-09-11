@@ -129,8 +129,9 @@ loads:
 Three name sets are checked: what the engine base class already defines (asked of
 `ClassDB` and a probe instance, so it stays correct across engine versions), what the
 SDK's own base classes define (`_ModuleTable`, `_ModuleTableType` — `count`, `iter`,
-`find_by`, the row callbacks), and what the codegen itself emits (`create`,
-`BSATN_TYPES`, `PRIMARY_KEY`, `module_name`, `table_names`, the typed change signals).
+`find_by`, the row callbacks, `_row_eq`), and what the codegen itself emits (`create`,
+`_eq`, `BSATN_TYPES`, `PRIMARY_KEY`, `module_name`, `table_names`, the typed change
+signals).
 GDScript reserved words (`match`, `var`, `class`) are escaped the same way.
 
 Two things worth knowing:

@@ -476,8 +476,9 @@ static func _values_equal(a: Variant, b: Variant) -> bool:
 #
 # Covers the float-vector types only. [method _values_equal] and [method _rows_equal]
 # settle int and float columns inline and call this for [constant _NAN_CARRYING_COMPONENTS]
-# types alone: the gate runs on every differing column of every update, and a call there
-# per column cost ~100 ns on an update whose changed column is an int
+# types alone, and so does the `_eq` that codegen emits on every record type. The gate
+# runs on every differing column of every update, and a call there per column cost
+# ~100 ns on an update whose changed column is an int
 # (tests/bench_rows_equal.gd, differing case). An equal row pays nothing for any of it.
 static func _nan_components_equal(a: Variant, b: Variant, components: int) -> bool:
 	for i: int in components:
@@ -518,7 +519,12 @@ static func _value_hash(v: Variant) -> int:
 	return hash(v)
 
 
-func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array[StringName]) -> bool:
+# The generic column walk behind [method _ModuleTableType._row_eq]. A generated row type
+# overrides that method with a comparison typed to its own columns, which must answer
+# exactly what this answers (tests/test_typed_row_equality.gd holds the two together);
+# this walk remains for row scripts that carry no override, bindings generated before
+# there was one included.
+static func _rows_equal(a: _ModuleTableType, b: _ModuleTableType, props: Array[StringName]) -> bool:
 	for prop_name: StringName in props:
 		# Primitive columns (the majority of every row) compare inline — the per-field
 		# [method _values_equal] call is itself the dominant cost of an all-primitive row.
@@ -565,7 +571,8 @@ func _pk_less_find(counts: Dictionary, h: int, row: _ModuleTableType, props: Arr
 	if not counts.has(h):
 		return []
 	for entry: Array in counts[h]:
-		if _rows_equal(entry[0], row, props):
+		var cached: _ModuleTableType = entry[0]
+		if cached._row_eq(row, props):
 			return entry
 	return []
 
@@ -1037,7 +1044,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 						if listener.is_valid():
 							listener.call(inserted_row)
 				row_inserted.emit(table_name_lower, inserted_row)
-			elif props.is_empty() or not _rows_equal(prev_u, inserted_row, props):
+			elif props.is_empty() or not prev_u._row_eq(inserted_row, props):
 				table_dict[pk_value] = inserted_row
 				had_any_change = true
 				if has_update_listeners:
@@ -1074,7 +1081,7 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 						if listener.is_valid():
 							listener.call(inserted_row)
 				row_inserted.emit(table_name_lower, inserted_row)
-			elif props.is_empty() or not _rows_equal(prev_o, inserted_row, props):
+			elif props.is_empty() or not prev_o._row_eq(inserted_row, props):
 				table_dict[pk_value] = inserted_row
 				had_any_change = true
 				if has_update_listeners:

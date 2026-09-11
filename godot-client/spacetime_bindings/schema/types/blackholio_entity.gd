@@ -21,3 +21,29 @@ static func create(p_entity_id: int, p_position: BlackholioDbVector2, p_mass: in
 	result.position = p_position
 	result.mass = p_mass
 	return result
+
+
+## Whether two BlackholioEntity values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: BlackholioEntity, p_rhs: BlackholioEntity) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.entity_id != p_rhs.entity_id:
+		return false
+	if not BlackholioDbVector2._eq(p_lhs.position, p_rhs.position):
+		return false
+	if p_lhs.mass != p_rhs.mass:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: BlackholioEntity = p_other as BlackholioEntity
+	if p_rhs == null:
+		return false
+	if self.entity_id != p_rhs.entity_id:
+		return false
+	if not BlackholioDbVector2._eq(self.position, p_rhs.position):
+		return false
+	if self.mass != p_rhs.mass:
+		return false
+	return true
