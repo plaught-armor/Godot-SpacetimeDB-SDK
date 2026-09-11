@@ -17,3 +17,14 @@ static func create(p_x: float, p_y: float) -> BlackholioDbVector2:
 	result.x = p_x
 	result.y = p_y
 	return result
+
+
+## Whether two BlackholioDbVector2 values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: BlackholioDbVector2, p_rhs: BlackholioDbVector2) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.x != p_rhs.x and not (is_nan(p_lhs.x) and is_nan(p_rhs.x)):
+		return false
+	if p_lhs.y != p_rhs.y and not (is_nan(p_lhs.y) and is_nan(p_rhs.y)):
+		return false
+	return true

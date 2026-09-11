@@ -14,3 +14,21 @@ static func create(p_n: PackedByteArray) -> VtypesOneI128:
 	var result: VtypesOneI128 = VtypesOneI128.new()
 	result.n = p_n
 	return result
+
+
+## Whether two VtypesOneI128 values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VtypesOneI128, p_rhs: VtypesOneI128) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.n != p_rhs.n:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VtypesOneI128 = p_other as VtypesOneI128
+	if p_rhs == null:
+		return false
+	if self.n != p_rhs.n:
+		return false
+	return true

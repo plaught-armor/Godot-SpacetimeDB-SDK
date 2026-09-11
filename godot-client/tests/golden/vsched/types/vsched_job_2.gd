@@ -21,3 +21,29 @@ static func create(p_scheduled_id: int, p_fire_at: ScheduleAt, p_note: String) -
 	result.fire_at = p_fire_at
 	result.note = p_note
 	return result
+
+
+## Whether two VschedJob2 values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VschedJob2, p_rhs: VschedJob2) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.scheduled_id != p_rhs.scheduled_id:
+		return false
+	if not LocalDatabase._values_equal(p_lhs.fire_at, p_rhs.fire_at):
+		return false
+	if p_lhs.note != p_rhs.note:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VschedJob2 = p_other as VschedJob2
+	if p_rhs == null:
+		return false
+	if self.scheduled_id != p_rhs.scheduled_id:
+		return false
+	if not LocalDatabase._values_equal(self.fire_at, p_rhs.fire_at):
+		return false
+	if self.note != p_rhs.note:
+		return false
+	return true

@@ -14,3 +14,12 @@ static func create(p_n: int) -> VsubmodAuthBazBazInsert:
 	var result: VsubmodAuthBazBazInsert = VsubmodAuthBazBazInsert.new()
 	result.n = p_n
 	return result
+
+
+## Whether two VsubmodAuthBazBazInsert values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VsubmodAuthBazBazInsert, p_rhs: VsubmodAuthBazBazInsert) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.n != p_rhs.n:
+		return false
+	return true

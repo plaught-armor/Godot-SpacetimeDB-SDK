@@ -15,3 +15,21 @@ static func create(p_entity_id: int) -> BlackholioFood:
 	var result: BlackholioFood = BlackholioFood.new()
 	result.entity_id = p_entity_id
 	return result
+
+
+## Whether two BlackholioFood values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: BlackholioFood, p_rhs: BlackholioFood) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.entity_id != p_rhs.entity_id:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: BlackholioFood = p_other as BlackholioFood
+	if p_rhs == null:
+		return false
+	if self.entity_id != p_rhs.entity_id:
+		return false
+	return true

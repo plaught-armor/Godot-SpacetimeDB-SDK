@@ -70,7 +70,6 @@ func _initialize() -> void:
 	# column to _values_equal (perf). The two paths must never diverge, so lock
 	# them together over the same fixtures: a future refactor that drops the
 	# typeof check or mishandles a column type fails here, not in production.
-	var db: LocalDatabase = LocalDatabase.new(SpacetimeDBSchema.new("x"))
 	var cols: Array[StringName] = []
 	cols.assign(LocalDatabase._record_columns(a))
 	f += _check_b("column list is non-empty", cols.is_empty(), false)
@@ -79,10 +78,9 @@ func _initialize() -> void:
 		var rhs: BlackholioCircle = pair[1]
 		f += _check_b(
 			"_rows_equal agrees with _values_equal (%d vs %d)" % [lhs.entity_id, rhs.entity_id],
-			db._rows_equal(lhs, rhs, cols),
+			LocalDatabase._rows_equal(lhs, rhs, cols),
 			LocalDatabase._values_equal(lhs, rhs),
 		)
-	db.free()
 
 	if f == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])

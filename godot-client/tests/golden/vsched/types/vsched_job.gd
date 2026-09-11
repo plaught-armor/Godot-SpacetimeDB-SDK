@@ -21,3 +21,29 @@ static func create(p_scheduled_id: int, p_scheduled_at: ScheduleAt, p_payload: S
 	result.scheduled_at = p_scheduled_at
 	result.payload = p_payload
 	return result
+
+
+## Whether two VschedJob values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VschedJob, p_rhs: VschedJob) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.scheduled_id != p_rhs.scheduled_id:
+		return false
+	if not LocalDatabase._values_equal(p_lhs.scheduled_at, p_rhs.scheduled_at):
+		return false
+	if p_lhs.payload != p_rhs.payload:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VschedJob = p_other as VschedJob
+	if p_rhs == null:
+		return false
+	if self.scheduled_id != p_rhs.scheduled_id:
+		return false
+	if not LocalDatabase._values_equal(self.scheduled_at, p_rhs.scheduled_at):
+		return false
+	if self.payload != p_rhs.payload:
+		return false
+	return true

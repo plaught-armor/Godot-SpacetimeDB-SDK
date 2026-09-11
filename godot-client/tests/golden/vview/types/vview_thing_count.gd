@@ -14,3 +14,21 @@ static func create(p_count_: int) -> VviewThingCount:
 	var result: VviewThingCount = VviewThingCount.new()
 	result.count_ = p_count_
 	return result
+
+
+## Whether two VviewThingCount values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VviewThingCount, p_rhs: VviewThingCount) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.count_ != p_rhs.count_:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VviewThingCount = p_other as VviewThingCount
+	if p_rhs == null:
+		return false
+	if self.count_ != p_rhs.count_:
+		return false
+	return true

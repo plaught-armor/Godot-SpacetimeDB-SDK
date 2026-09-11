@@ -17,3 +17,25 @@ static func create(p_scheduled_id: int, p_scheduled_at: ScheduleAt) -> Blackholi
 	result.scheduled_id = p_scheduled_id
 	result.scheduled_at = p_scheduled_at
 	return result
+
+
+## Whether two BlackholioMoveAllPlayersTimer values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: BlackholioMoveAllPlayersTimer, p_rhs: BlackholioMoveAllPlayersTimer) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.scheduled_id != p_rhs.scheduled_id:
+		return false
+	if not LocalDatabase._values_equal(p_lhs.scheduled_at, p_rhs.scheduled_at):
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: BlackholioMoveAllPlayersTimer = p_other as BlackholioMoveAllPlayersTimer
+	if p_rhs == null:
+		return false
+	if self.scheduled_id != p_rhs.scheduled_id:
+		return false
+	if not LocalDatabase._values_equal(self.scheduled_at, p_rhs.scheduled_at):
+		return false
+	return true

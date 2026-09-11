@@ -14,3 +14,12 @@ static func create(p_label: String) -> VsubmodAuthBazBazItem:
 	var result: VsubmodAuthBazBazItem = VsubmodAuthBazBazItem.new()
 	result.label = p_label
 	return result
+
+
+## Whether two VsubmodAuthBazBazItem values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VsubmodAuthBazBazItem, p_rhs: VsubmodAuthBazBazItem) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.label != p_rhs.label:
+		return false
+	return true

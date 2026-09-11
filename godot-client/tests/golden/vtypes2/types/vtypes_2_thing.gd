@@ -18,3 +18,25 @@ static func create(p_id: int, p_label: String) -> Vtypes2Thing:
 	result.id = p_id
 	result.label = p_label
 	return result
+
+
+## Whether two Vtypes2Thing values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: Vtypes2Thing, p_rhs: Vtypes2Thing) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if p_lhs.label != p_rhs.label:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: Vtypes2Thing = p_other as Vtypes2Thing
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if self.label != p_rhs.label:
+		return false
+	return true

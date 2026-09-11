@@ -20,3 +20,29 @@ static func create(p_scheduled_id: int, p_scheduled_at: ScheduleAt, p_player_id:
 	result.scheduled_at = p_scheduled_at
 	result.player_id = p_player_id
 	return result
+
+
+## Whether two BlackholioCircleRecombineTimer values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: BlackholioCircleRecombineTimer, p_rhs: BlackholioCircleRecombineTimer) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.scheduled_id != p_rhs.scheduled_id:
+		return false
+	if not LocalDatabase._values_equal(p_lhs.scheduled_at, p_rhs.scheduled_at):
+		return false
+	if p_lhs.player_id != p_rhs.player_id:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: BlackholioCircleRecombineTimer = p_other as BlackholioCircleRecombineTimer
+	if p_rhs == null:
+		return false
+	if self.scheduled_id != p_rhs.scheduled_id:
+		return false
+	if not LocalDatabase._values_equal(self.scheduled_at, p_rhs.scheduled_at):
+		return false
+	if self.player_id != p_rhs.player_id:
+		return false
+	return true

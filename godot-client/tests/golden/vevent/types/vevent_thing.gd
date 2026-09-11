@@ -18,3 +18,25 @@ static func create(p_id: int, p_score: int) -> VeventThing:
 	result.id = p_id
 	result.score = p_score
 	return result
+
+
+## Whether two VeventThing values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VeventThing, p_rhs: VeventThing) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if p_lhs.score != p_rhs.score:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VeventThing = p_other as VeventThing
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if self.score != p_rhs.score:
+		return false
+	return true

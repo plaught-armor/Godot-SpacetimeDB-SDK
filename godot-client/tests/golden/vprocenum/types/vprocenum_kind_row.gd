@@ -30,3 +30,41 @@ static func create(p_id: int, p_kind: VprocenumKind, p_script_: String, p_count_
 	result.resource_name_ = p_resource_name_
 	result.create_ = p_create_
 	return result
+
+
+## Whether two VprocenumKindRow values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VprocenumKindRow, p_rhs: VprocenumKindRow) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if not LocalDatabase._values_equal(p_lhs.kind, p_rhs.kind):
+		return false
+	if p_lhs.script_ != p_rhs.script_:
+		return false
+	if p_lhs.count_ != p_rhs.count_:
+		return false
+	if p_lhs.resource_name_ != p_rhs.resource_name_:
+		return false
+	if p_lhs.create_ != p_rhs.create_:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VprocenumKindRow = p_other as VprocenumKindRow
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if not LocalDatabase._values_equal(self.kind, p_rhs.kind):
+		return false
+	if self.script_ != p_rhs.script_:
+		return false
+	if self.count_ != p_rhs.count_:
+		return false
+	if self.resource_name_ != p_rhs.resource_name_:
+		return false
+	if self.create_ != p_rhs.create_:
+		return false
+	return true

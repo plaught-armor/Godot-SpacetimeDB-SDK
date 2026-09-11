@@ -27,3 +27,37 @@ static func create(p_func_: int, p_signal_: int, p_class_: int, p_trait_: int, p
 	result.trait_ = p_trait_
 	result.namespace_ = p_namespace_
 	return result
+
+
+## Whether two VreservedThing values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VreservedThing, p_rhs: VreservedThing) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.func_ != p_rhs.func_:
+		return false
+	if p_lhs.signal_ != p_rhs.signal_:
+		return false
+	if p_lhs.class_ != p_rhs.class_:
+		return false
+	if p_lhs.trait_ != p_rhs.trait_:
+		return false
+	if p_lhs.namespace_ != p_rhs.namespace_:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VreservedThing = p_other as VreservedThing
+	if p_rhs == null:
+		return false
+	if self.func_ != p_rhs.func_:
+		return false
+	if self.signal_ != p_rhs.signal_:
+		return false
+	if self.class_ != p_rhs.class_:
+		return false
+	if self.trait_ != p_rhs.trait_:
+		return false
+	if self.namespace_ != p_rhs.namespace_:
+		return false
+	return true

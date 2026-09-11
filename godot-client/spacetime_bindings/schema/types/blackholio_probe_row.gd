@@ -45,3 +45,61 @@ static func create(p_id: int, p_maybe_text: Option, p_maybe_count: Option, p_kin
 	result.words = p_words
 	result.points = p_points
 	return result
+
+
+## Whether two BlackholioProbeRow values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: BlackholioProbeRow, p_rhs: BlackholioProbeRow) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if not LocalDatabase._values_equal(p_lhs.maybe_text, p_rhs.maybe_text):
+		return false
+	if not LocalDatabase._values_equal(p_lhs.maybe_count, p_rhs.maybe_count):
+		return false
+	if not LocalDatabase._values_equal(p_lhs.kind, p_rhs.kind):
+		return false
+	if p_lhs.wide_unsigned != p_rhs.wide_unsigned:
+		return false
+	if p_lhs.widest_unsigned != p_rhs.widest_unsigned:
+		return false
+	if p_lhs.wide_signed != p_rhs.wide_signed:
+		return false
+	if p_lhs.who != p_rhs.who:
+		return false
+	if not LocalDatabase._values_equal(p_lhs.numbers, p_rhs.numbers):
+		return false
+	if not LocalDatabase._values_equal(p_lhs.words, p_rhs.words):
+		return false
+	if not LocalDatabase._values_equal(p_lhs.points, p_rhs.points):
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: BlackholioProbeRow = p_other as BlackholioProbeRow
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if not LocalDatabase._values_equal(self.maybe_text, p_rhs.maybe_text):
+		return false
+	if not LocalDatabase._values_equal(self.maybe_count, p_rhs.maybe_count):
+		return false
+	if not LocalDatabase._values_equal(self.kind, p_rhs.kind):
+		return false
+	if self.wide_unsigned != p_rhs.wide_unsigned:
+		return false
+	if self.widest_unsigned != p_rhs.widest_unsigned:
+		return false
+	if self.wide_signed != p_rhs.wide_signed:
+		return false
+	if self.who != p_rhs.who:
+		return false
+	if not LocalDatabase._values_equal(self.numbers, p_rhs.numbers):
+		return false
+	if not LocalDatabase._values_equal(self.words, p_rhs.words):
+		return false
+	if not LocalDatabase._values_equal(self.points, p_rhs.points):
+		return false
+	return true

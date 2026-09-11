@@ -18,3 +18,25 @@ static func create(p_id: int, p_shape: VsumShape) -> VsumShapeRow:
 	result.id = p_id
 	result.shape = p_shape
 	return result
+
+
+## Whether two VsumShapeRow values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VsumShapeRow, p_rhs: VsumShapeRow) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.id != p_rhs.id:
+		return false
+	if not LocalDatabase._values_equal(p_lhs.shape, p_rhs.shape):
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: VsumShapeRow = p_other as VsumShapeRow
+	if p_rhs == null:
+		return false
+	if self.id != p_rhs.id:
+		return false
+	if not LocalDatabase._values_equal(self.shape, p_rhs.shape):
+		return false
+	return true

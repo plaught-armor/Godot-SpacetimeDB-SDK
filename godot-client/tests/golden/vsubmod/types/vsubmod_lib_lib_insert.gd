@@ -14,3 +14,12 @@ static func create(p_n: int) -> VsubmodLibLibInsert:
 	var result: VsubmodLibLibInsert = VsubmodLibLibInsert.new()
 	result.n = p_n
 	return result
+
+
+## Whether two VsubmodLibLibInsert values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VsubmodLibLibInsert, p_rhs: VsubmodLibLibInsert) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.n != p_rhs.n:
+		return false
+	return true

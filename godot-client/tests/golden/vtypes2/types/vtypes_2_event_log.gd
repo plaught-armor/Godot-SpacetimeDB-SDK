@@ -14,3 +14,21 @@ static func create(p_msg: String) -> Vtypes2EventLog:
 	var result: Vtypes2EventLog = Vtypes2EventLog.new()
 	result.msg = p_msg
 	return result
+
+
+## Whether two Vtypes2EventLog values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: Vtypes2EventLog, p_rhs: Vtypes2EventLog) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.msg != p_rhs.msg:
+		return false
+	return true
+
+
+func _row_eq(p_other: _ModuleTableType, _p_columns: Array[StringName]) -> bool:
+	var p_rhs: Vtypes2EventLog = p_other as Vtypes2EventLog
+	if p_rhs == null:
+		return false
+	if self.msg != p_rhs.msg:
+		return false
+	return true

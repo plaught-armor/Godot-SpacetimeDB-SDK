@@ -17,3 +17,14 @@ static func create(p_a: String, p_b: String) -> VsubmodLibLibPoint:
 	result.a = p_a
 	result.b = p_b
 	return result
+
+
+## Whether two VsubmodLibLibPoint values are equal column by column, as LocalDatabase compares rows.
+static func _eq(p_lhs: VsubmodLibLibPoint, p_rhs: VsubmodLibLibPoint) -> bool:
+	if p_lhs == null or p_rhs == null:
+		return p_lhs == p_rhs
+	if p_lhs.a != p_rhs.a:
+		return false
+	if p_lhs.b != p_rhs.b:
+		return false
+	return true
