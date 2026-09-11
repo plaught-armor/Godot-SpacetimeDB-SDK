@@ -52,6 +52,16 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   `bench_rows_equal.gd` now also times a row with one changed column. It timed only
   equal rows, which never reach the check, and that is how the slowdown went unseen.
 
+### Docs
+- `docs/performance.md` now compares the editor with an exported game. On the Godot 4.7
+  release template the same benches spend 12–39% less time than in the 4.7 editor: the
+  real-workload replay runs 30% more rows/s, row parse takes 39% less time and apply
+  about 20% less. The debug template runs at editor speed. The page also records how to
+  run a bench on a release template, which ignores `--script`.
+- `bench_e2e_receive.gd` no longer projects the specialized-parser win from a saving
+  measured on the editor. That saving exceeded the whole row-parse stage on a release
+  template. The bench now prints a ceiling instead: the speedup if row parse cost nothing.
+
 ## [2.8.0] - 2026-08-27
 
 > **Upgrading:** one behaviour changed, and one static took a parameter. A
