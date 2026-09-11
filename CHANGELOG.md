@@ -58,9 +58,11 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   real-workload replay runs 30% more rows/s, row parse takes 39% less time and apply
   about 20% less. The debug template runs at editor speed. The page also records how to
   run a bench on a release template, which ignores `--script`.
-- `bench_e2e_receive.gd` no longer projects the specialized-parser win from a saving
-  measured on the editor. That saving exceeded the whole row-parse stage on a release
-  template. The bench now prints a ceiling instead: the speedup if row parse cost nothing.
+- `bench_e2e_receive.gd` no longer projects the specialized-parser win from a fixed
+  2.80 µs/row saving measured in June. That figure exceeded the whole row-parse stage on
+  a release template; `bench_specialized_parser` now measures the saving at 1.24 µs/row on
+  the 4.7 editor and 0.97 on the release template. The bench prints a ceiling instead:
+  the speedup if row parse cost nothing.
 
 ## [2.8.0] - 2026-08-27
 
