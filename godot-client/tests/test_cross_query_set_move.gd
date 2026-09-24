@@ -51,6 +51,8 @@ func _initialize() -> void:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:
 		printerr("%d/%d FAIL" % [f, _total])
+	if is_instance_valid(_db):
+		_db.free()
 	quit(f)
 
 
@@ -126,13 +128,13 @@ func _case_real_leave_still_deletes() -> int:
 	_reset_counts()
 	_tx([_qset(1, [], [_Row.make(1, 10)]), _qset(2, [_Row.make(2, 0)], [])])
 	var f: int = _check_i("leave: on_delete", _deleted, 1)
-	f += _check_i("leave: row gone", _db.get_all_rows(&"pk").filter(func(r): return r.id == 1).size(), 0)
+	f += _check_i("leave: row gone", int(_row(1) != null), 0)
 	return f
 
 
 func _case_single_set_passes_through() -> int:
-	var sets: Array = [_qset(1, [_Row.make(1, 11)], [_Row.make(1, 10)])]
-	var out: Array = SpacetimeDBClient._inserts_before_deletes(sets)
+	var sets: Array[DatabaseUpdateData] = [_qset(1, [_Row.make(1, 11)], [_Row.make(1, 10)])]
+	var out: Array[DatabaseUpdateData] = SpacetimeDBClient._inserts_before_deletes(sets)
 	_total += 1
 	if out == sets:
 		print("PASS  single set returned as is")
@@ -151,9 +153,9 @@ func _fresh() -> void:
 	_db._primary_key_cache[&"pk"] = &"id"
 	var props: Array[StringName] = [&"id", &"tag"]
 	_db._row_property_cache[&"pk"] = props
-	_db.subscribe_to_deletes(&"pk", func(_r): _deleted += 1)
-	_db.subscribe_to_updates(&"pk", func(_p, _r): _updated += 1)
-	_db.subscribe_to_inserts(&"pk", func(_r): _inserted += 1)
+	_db.subscribe_to_deletes(&"pk", _on_delete)
+	_db.subscribe_to_updates(&"pk", _on_update)
+	_db.subscribe_to_inserts(&"pk", _on_insert)
 
 
 func _reset_counts() -> void:
@@ -174,13 +176,25 @@ func _qset(query_id: int, ins: Array, del: Array) -> DatabaseUpdateData:
 
 
 ## One transaction, applied the way SpacetimeDBClient._handle_transaction_update does.
-func _tx(sets: Array) -> void:
+func _tx(sets: Array[DatabaseUpdateData]) -> void:
 	for dataset: DatabaseUpdateData in SpacetimeDBClient._inserts_before_deletes(sets):
 		_db.apply_database_update(dataset)
 
 
+func _on_delete(_row_deleted: _ModuleTableType) -> void:
+	_deleted += 1
+
+
+func _on_update(_old_row: _ModuleTableType, _new_row: _ModuleTableType) -> void:
+	_updated += 1
+
+
+func _on_insert(_row_inserted: _ModuleTableType) -> void:
+	_inserted += 1
+
+
 func _row(id: int) -> _Row:
-	for r in _db.get_all_rows(&"pk"):
+	for r: _Row in _db.get_all_rows(&"pk"):
 		if r.id == id:
 			return r
 	return null

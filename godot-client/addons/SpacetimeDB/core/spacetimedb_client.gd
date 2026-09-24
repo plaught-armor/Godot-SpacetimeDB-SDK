@@ -2292,25 +2292,25 @@ func _handle_transaction_update(update_sets: TransactionUpdateMessage) -> void:
 ## A lone query set keeps its delete+insert pairing, so it is passed through as is.
 ## Split, a set's own update of a row takes the same overlapping path, which ends
 ## in the same cached row and one on_update.
-static func _inserts_before_deletes(query_sets: Array) -> Array:
+static func _inserts_before_deletes(query_sets: Array[DatabaseUpdateData]) -> Array[DatabaseUpdateData]:
 	if query_sets.size() <= 1:
 		return query_sets
-	var insert_sets: Array = []
-	var delete_sets: Array = []
+	var insert_sets: Array[DatabaseUpdateData] = []
+	var delete_sets: Array[DatabaseUpdateData] = []
 	for dataset: DatabaseUpdateData in query_sets:
-		var inserts := DatabaseUpdateData.new()
-		var deletes := DatabaseUpdateData.new()
+		var inserts: DatabaseUpdateData = DatabaseUpdateData.new()
+		var deletes: DatabaseUpdateData = DatabaseUpdateData.new()
 		inserts.query_id = dataset.query_id
 		deletes.query_id = dataset.query_id
 		for table: TableUpdateData in dataset.tables:
 			if not table.inserts.is_empty():
-				var t := TableUpdateData.new()
+				var t: TableUpdateData = TableUpdateData.new()
 				t.table_name = table.table_name
 				t.is_event = table.is_event
 				t.inserts = table.inserts
 				inserts.tables.append(t)
 			if not table.deletes.is_empty():
-				var t := TableUpdateData.new()
+				var t: TableUpdateData = TableUpdateData.new()
 				t.table_name = table.table_name
 				t.is_event = table.is_event
 				t.deletes = table.deletes
