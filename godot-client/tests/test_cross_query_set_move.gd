@@ -5,10 +5,9 @@
 # an entity crossing between two subscribed cells as a delete in the old cell's set and an
 # insert in the new cell's set, both in one TransactionUpdate. Applied set by set, the
 # delete dropped the refcount to 0 (on_delete: the game despawned the entity) and the
-# insert brought it back (on_insert: respawned). SpacetimeDBClient._inserts_before_deletes
-# orders every set's inserts ahead of every set's deletes, so the insert lands on the
-# still-held row (refcount 1 -> 2, on_update) and the delete only releases the old set's
-# reference.
+# insert brought it back (on_insert: respawned). LocalDatabase.apply_transaction_update
+# merges every set's rows per table before applying, so the delete pairs with the insert
+# and the move is one on_update.
 #
 #   cd godot-client && <godot> --headless --path . \
 #       --script tests/test_cross_query_set_move.gd
@@ -45,7 +44,7 @@ func _initialize() -> void:
 	f += _case_in_set_update_beside_other_set()
 	f += _case_row_held_by_both_sets_updated()
 	f += _case_real_leave_still_deletes()
-	f += _case_single_set_passes_through()
+	f += _case_single_set_update()
 
 	if f == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -132,15 +131,16 @@ func _case_real_leave_still_deletes() -> int:
 	return f
 
 
-func _case_single_set_passes_through() -> int:
-	var sets: Array[DatabaseUpdateData] = [_qset(1, [_Row.make(1, 11)], [_Row.make(1, 10)])]
-	var out: Array[DatabaseUpdateData] = SpacetimeDBClient._inserts_before_deletes(sets)
-	_total += 1
-	if out == sets:
-		print("PASS  single set returned as is")
-		return 0
-	printerr("FAIL  single set was rebuilt")
-	return 1
+## An update inside a lone query set is still one on_update.
+func _case_single_set_update() -> int:
+	_fresh()
+	_tx([_qset(1, [_Row.make(1, 10)], [])])
+	_reset_counts()
+	_tx([_qset(1, [_Row.make(1, 11)], [_Row.make(1, 10)])])
+	var f: int = _check_i("single set: one on_update", _updated, 1)
+	f += _check_i("single set: no on_delete", _deleted, 0)
+	f += _check_i("single set: no on_insert", _inserted, 0)
+	return f
 
 
 func _fresh() -> void:
@@ -177,8 +177,9 @@ func _qset(query_id: int, ins: Array, del: Array) -> DatabaseUpdateData:
 
 ## One transaction, applied the way SpacetimeDBClient._handle_transaction_update does.
 func _tx(sets: Array[DatabaseUpdateData]) -> void:
-	for dataset: DatabaseUpdateData in SpacetimeDBClient._inserts_before_deletes(sets):
-		_db.apply_database_update(dataset)
+	var tx: TransactionUpdateMessage = TransactionUpdateMessage.new()
+	tx.query_sets = sets
+	_db.apply_transaction_update(tx)
 
 
 func _on_delete(_row_deleted: _ModuleTableType) -> void:

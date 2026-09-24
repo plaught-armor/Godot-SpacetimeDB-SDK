@@ -4,7 +4,7 @@
 ## extends this and exposes a typed [code]filter(col_val) -> Array[Row][/code]
 ## returning every row whose indexed column equals the given value. Backed by a
 ## multimap cache (one bucket of rows per distinct column value) kept in sync with
-## [LocalDatabase] via insert/update/delete listeners, so a lookup is O(1) on the
+## [LocalDatabase] via insert/update/delete hooks, so a lookup is O(1) on the
 ## value plus O(k) over the k matching rows, not a linear scan of the whole table.
 class_name _ModuleTableBTreeIndex
 extends Resource
@@ -107,30 +107,27 @@ func _first_row(col_val: Variant) -> _ModuleTableType:
 
 
 ## Wires [param cache] (a [code]Dictionary[value, Array[Row]][/code] multimap) to live
-## insert/update/delete callbacks on [param db] so each per-value bucket stays current
+## insert/update/delete hooks on [param db] so each per-value bucket stays current
 ## without manual polling. Mirrors [_ModuleTableUniqueIndex] but keeps a bucket of rows
 ## per key instead of a single row, and keeps [member _sorted_keys] aligned at the
 ## bucket create/empty edges. The callbacks read the multimap via [member _cache_ref]
 ## (set here), so they're named methods rather than capturing lambdas.
 func _connect_cache_to_db(cache: Dictionary, db: LocalDatabase) -> void:
 	_cache_ref = cache
-	db.subscribe_to_inserts(_table_name, _on_insert)
-	db.subscribe_to_updates(_table_name, _on_update)
-	db.subscribe_to_deletes(_table_name, _on_delete)
+	db.register_index_hooks(_table_name, _on_insert, _on_update, _on_delete)
 	db.register_index_invalidator(_clear_cache)
 
 
 ## Drops every cached bucket and the sorted-key mirror with it. Registered with
-## [method LocalDatabase.register_index_invalidator] because the delete listener above is
-## not reached by [method LocalDatabase.clear_all_tables], which empties the mirror in
-## silence — these buckets would otherwise keep answering [code]filter()[/code] and every
-## range query with rows that are gone.
+## [method LocalDatabase.register_index_invalidator] because neither wipe goes through the
+## hooks above — these buckets would otherwise keep answering [code]filter()[/code] and
+## every range query with rows that are gone.
 func _clear_cache() -> void:
 	_cache_ref.clear()
 	_sorted_keys.clear()
 
 
-## Insert listener — appends the row to its key's bucket, creating the bucket (and
+## Insert hook — appends the row to its key's bucket, creating the bucket (and
 ## registering the key in [member _sorted_keys]) on first sight of the value.
 func _on_insert(r: _ModuleTableType) -> void:
 	var col_val: Variant = r[_field_name]
@@ -140,7 +137,7 @@ func _on_insert(r: _ModuleTableType) -> void:
 	_cache_ref[col_val].append(r)
 
 
-## Update listener — moves the row between buckets when its key changed, else swaps
+## Update hook — moves the row between buckets when its key changed, else swaps
 ## the stale instance in place. Empties/creates buckets at the key edges.
 func _on_update(p: _ModuleTableType, r: _ModuleTableType) -> void:
 	var previous_col_val: Variant = p[_field_name]
@@ -168,7 +165,7 @@ func _on_update(p: _ModuleTableType, r: _ModuleTableType) -> void:
 		_key_added(col_val)
 
 
-## Delete listener — drops the row from its bucket, emptying the bucket (and
+## Delete hook — drops the row from its bucket, emptying the bucket (and
 ## unregistering the key) when it was the last row for that value.
 func _on_delete(r: _ModuleTableType) -> void:
 	var col_val: Variant = r[_field_name]

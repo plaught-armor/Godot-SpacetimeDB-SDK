@@ -252,11 +252,9 @@ func _test_client_transaction_loop_stops() -> int:
 	return f
 
 
-# The counters are two, on purpose. clear_all_tables() detaches the same containers, so
-# LocalDatabase still abandons the batch under it — but it says nothing about the socket,
-# so the CLIENT must keep walking a live transaction's remaining query sets. One counter
-# for both made a mid-session rebuild silently drop the rest of the transaction and never
-# emit transaction_update_received.
+# The counters are two, on purpose. clear_all_tables() empties the mirror but says nothing
+# about the socket, so the CLIENT must still finish a live transaction and announce it.
+# One counter for both made a mid-session rebuild never emit transaction_update_received.
 func _test_client_loop_survives_clear_all_tables() -> int:
 	var f: int = 0
 	_fresh()
@@ -284,10 +282,13 @@ func _test_client_loop_survives_clear_all_tables() -> int:
 	message.query_sets = [first, second]
 	client._handle_transaction_update(message)
 
+	# Both query sets were applied, as one message, before the callback wiped; the silent
+	# wipe then empties all of it, and pk 9's insert is not reported after it. What the
+	# client must still do is announce the transaction, below.
 	f += _check_i(
-		"the live session's second query set applied",
+		"the wipe emptied the whole applied message",
 		_db.get_all_rows(&"keyed").size(),
-		1,
+		0,
 	)
 	f += _check_i("the transaction was announced", announced[0], 1)
 	f += _check_b("rows and refcounts agree", _pk_consistent(&"keyed"), true)
@@ -360,9 +361,9 @@ func _test_pk_delete_pass_terminates() -> int:
 	return f
 
 
-# The tables of ONE message, below the client's loop: each iteration re-hoists its own
-# containers, so a mid-session clear_all_tables() leaves the rest of the message
-# applicable — dropping it would lose rows the server sent on a live connection.
+# The tables of ONE message, below the client: the message is applied whole before any
+# callback, so a mid-session clear_all_tables() from one of them empties every table of
+# it, consistently — rows and refcounts still agree.
 func _test_multi_table_message_survives_clear_all_tables() -> int:
 	var f: int = 0
 	_fresh()
@@ -380,10 +381,11 @@ func _test_multi_table_message_survives_clear_all_tables() -> int:
 	]
 	_db.apply_database_update(update)
 
+	# Both tables were applied before the callback wiped, so the wipe empties both.
 	f += _check_i(
-		"the second table of the live message applied",
+		"the wipe emptied the second table too",
 		_db.get_all_rows(&"flat").size(),
-		1,
+		0,
 	)
 	f += _check_b("rows and counts agree", _pk_less_consistent(&"flat"), true)
 	return f
@@ -406,11 +408,14 @@ func _test_pk_batch_abandoned() -> int:
 	f += _check_i("no row of the wiped batch is cached", _db.get_all_rows(&"keyed").size(), 0)
 	f += _check_i("pk 2 was not stranded", _cached_pks().size(), 0)
 	f += _check_b("rows and refcounts agree", _pk_consistent(&"keyed"), true)
-	# Two terminators: the wipe's own (pk 1 was cached when it ran, so it reported the
-	# delete and closed the table) and the abandoned batch's, which is emitted at the bail
-	# because the wipe cannot be relied on to have sent one — clear_all_tables reports
-	# nothing at all. A consumer flushes twice; the alternative starves it.
-	f += _check_i("the wipe reported pk 1 deleted", _deleted_pks.size(), 1)
+	# The whole batch was in the mirror when pk 1's insert callback wiped it (a message is
+	# applied before any callback), but only pk 1 had been announced: the wipe reports that
+	# one deleted and leaves pk 2 and 3 out, since a consumer never heard of them, and
+	# their inserts are withheld after it. Two terminators: the wipe's own and the batch's,
+	# which is emitted because the wipe cannot be relied on to have sent one —
+	# clear_all_tables reports nothing at all. A consumer flushes twice; the alternative
+	# starves it.
+	f += _check_i("the wipe reported only the announced row deleted", _deleted_pks.size(), 1)
 	f += _check_i("both the wipe and the batch terminated the table", _tx_completed, 2)
 
 	# What the stranded rows used to cost: the server deletes them and they stay.

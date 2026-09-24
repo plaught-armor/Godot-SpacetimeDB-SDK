@@ -45,7 +45,7 @@ static var _EMPTY_LISTENERS: Array = []
 ## fresh Array on every call, and [method _values_equal] needs that list once per nested
 ## column per row compared — uncached, it dominated nested-row change detection. Keyed by
 ## [Script] (process-lived, bounded by the generated record count); entries are read-only
-## (C2a). Reached only from the main-thread [method apply_table_update] path — NOT
+## (C2a). Reached only from the main-thread [method _apply_batch] path — NOT
 ## synchronized, so moving row equality or hashing onto the deserializer worker needs a
 ## mutex here or a per-thread cache.
 static var _record_columns_cache: Dictionary[Script, Array] = { }
@@ -55,6 +55,10 @@ static var _EMPTY_COLUMNS: Array = []
 ## [constant BSATNDeserializer.NATIVE_ARRAYLIKE] built from floats (the i-suffixed
 ## vectors hold ints and are absent). Components read as floats through `v[i]`.
 ## Used by [method _nan_components_equal]; a type absent here carries no float to compare.
+## Most messages one [method _apply_batch] applies from its queue before it gives up: a
+## callback that applies a message every time it runs would otherwise never let the queue
+## drain.
+const _MAX_QUEUED_MESSAGES: int = 4096
 const _NAN_CARRYING_COMPONENTS: Dictionary[int, int] = {
 	TYPE_VECTOR2: 2,
 	TYPE_VECTOR3: 3,
@@ -96,17 +100,12 @@ var _pk_less_counts: Dictionary[StringName, Dictionary] = { }
 ## precisely, since the server sends no dropped rows on an error, unlike unsubscribe.
 var _query_rows: Dictionary[int, Dictionary] = { }
 ## Bumped by every cache wipe — [method clear_local_db] and [method clear_all_tables]
-## both, since both detach the containers below. Every loop that dispatches callbacks
-## snapshots it first and abandons the rest of its work when it no longer matches, because
-## a wipe is reachable from INSIDE one of those callbacks: a listener that calls
-## [method SpacetimeDBClient.connect_db] wipes the mirror synchronously.
-##
-## Without that, the rest of the batch keeps applying into containers the dispatching loop
-## hoisted into locals — and a wipe empties the INNER containers of [member _tables] /
-## [member _pk_less_tables] (locals stay live) while clearing the OUTER maps of
-## [member _ref_counts] / [member _pk_less_counts] (locals detach). Measured: rows landed
-## with no refcount at all, the one state the refcount paths treat as impossible, so a
-## later delete reads 0 and skips and the row never leaves the cache.
+## both. A wipe is reachable from INSIDE a row callback (a listener that calls
+## [method SpacetimeDBClient.connect_db] wipes the mirror synchronously), so
+## [method _apply_batch] reads this before it calls game code and checks it after each
+## call. A wipe from a before-delete ends the message before anything of it is applied;
+## one from a later callback ends the inserts and updates still to be reported (see
+## [method _dispatch_plan]).
 var _generation: int = 0
 ## Bumped by [method clear_local_db] ONLY, i.e. by the wipe that marks a session
 ## boundary. [method clear_all_tables] detaches the same containers (so it bumps
@@ -118,6 +117,25 @@ var _session_generation: int = 0
 ## [method register_index_invalidator]. Fired by [method clear_all_tables], the one wipe
 ## that drops rows without reporting a delete for them.
 var _index_invalidators: Array[Callable] = []
+## The generated index caches' upkeep, per table: Array of [on_insert, on_update,
+## on_delete] registered through [method register_index_hooks]. Called while a message is
+## APPLIED, before any game callback runs, so an index read from a row callback already
+## reflects the whole message — the same guarantee the rows themselves carry.
+var _index_hooks_by_table: Dictionary[StringName, Array] = { }
+## Plans of every message whose callbacks are being reported right now, outermost first (a
+## callback can apply a message of its own). Their rows are already in the mirror, so a
+## wipe from one of those callbacks reads this to leave out what the message has not
+## announced yet — see [method _unannounced_rows].
+var _undispatched: Array[_TablePlan] = []
+## Instance ids of rows whose before-delete a message in phase 1 has fully reported, still
+## cached until phase 2 evicts them. A wipe from a later before-delete reports these rows
+## deleted without announcing them a second time.
+var _before_delete_sent: Dictionary[int, bool] = { }
+## Messages applied while another is being applied — from inside one of its callbacks —
+## as [code][updates, query_ids, session_generation][/code], run in order once it
+## finishes. See [method _apply_batch].
+var _queued_batches: Array[Array] = []
+var _applying: bool = false
 
 ## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -127,7 +145,8 @@ signal row_updated(table_name: StringName, old_row: _ModuleTableType, new_row: _
 signal row_before_delete(table_name: StringName, row: _ModuleTableType)
 ## Emitted after a row is deleted from a table.
 signal row_deleted(table_name: StringName, row: _ModuleTableType)
-## Emitted once after all inserts/deletes in a single [TableUpdateData] are processed.
+## Emitted once per table after a message's inserts, updates and deletes for it have all
+## been reported.
 signal row_transactions_completed(table_name: StringName)
 
 
@@ -167,7 +186,7 @@ func _listener_snapshot(by_table: Dictionary, key: StringName) -> Array:
 
 
 # --- Normalization helper (#2) ---
-# Single shared cache for both apply_table_update and access methods
+# Single shared cache for both the apply path and access methods
 func _normalize(table_name: StringName) -> StringName:
 	if _cached_normalized_table_names.has(table_name):
 		return _cached_normalized_table_names[table_name]
@@ -193,16 +212,36 @@ func _add_listener(by_table: Dictionary, key: StringName, callable: Callable) ->
 		listeners.append(callable)
 
 
-## Registers [param invalidator] to be called when a wipe empties this database without
-## reporting the rows it dropped.
-##
-## The generated index accessors keep their caches current through the ordinary
-## insert/update/delete listeners, which covers every wipe that reports
-## ([method clear_local_db]). [method clear_all_tables] empties the storage in silence, and
-## an index left holding the previous contents answers [code]find()[/code] /
-## [code]filter()[/code] with rows the mirror no longer has. A game listener in that
-## position is the documented cost of that method — an index is part of the mirror's own
-## read path, so it is invalidated here instead.
+## Registers the upkeep of one generated index cache on [param table_name]. The three
+## [Callable]s are called with the rows a message inserted, updated
+## ([code](old_row, new_row)[/code]) and deleted, while the message is applied and before
+## any row callback runs. They must only maintain the cache — never mutate this database.
+## Dead entries are pruned here, the same shape as [method _add_listener].
+func register_index_hooks(
+		table_name: StringName,
+		on_insert: Callable,
+		on_update: Callable,
+		on_delete: Callable,
+) -> void:
+	var key: StringName = _normalize(table_name)
+	if not _index_hooks_by_table.has(key):
+		_index_hooks_by_table[key] = []
+	var hooks: Array = _index_hooks_by_table[key]
+	for i: int in range(hooks.size() - 1, -1, -1):
+		if not (hooks[i][0] as Callable).is_valid():
+			hooks.remove_at(i)
+	for hook: Array in hooks:
+		if hook[0] == on_insert:
+			return
+	hooks.append([on_insert, on_update, on_delete])
+
+
+## Registers [param invalidator] to be called when a wipe empties this database. Both
+## wipes drop rows outside the apply path the index hooks ride on, so both empty the
+## index caches through this: [method clear_local_db] before it reports the rows it
+## dropped, [method clear_all_tables] without reporting them. An index left holding the
+## previous contents answers [code]find()[/code] / [code]filter()[/code] with rows the
+## mirror no longer has.
 ##
 ## Dead [Callable]s are pruned here, the same shape as [method _add_listener], and again at
 ## the top of [method clear_all_tables] — one of the two is the cold path whichever way an
@@ -249,13 +288,11 @@ func unsubscribe_from_updates(table_name: StringName, callable: Callable) -> voi
 
 
 ## Registers [param callable] to be called with the row about to be deleted for
-## [param table_name]. Fires before the row leaves the cache, so the callback can
-## still read it (and related rows) at their pre-delete state.
+## [param table_name]. Fires before the message that deletes it is applied at all, so the
+## callback reads the row, and every other table, at their state before that message.
 ##
-## Pairing with [method subscribe_to_deletes] is per row, not per batch: on a PK table a
-## row's before-delete is immediately followed by its delete, while on a PK-less table a
-## batch reports every before-delete first and then every delete. Each row still gets
-## exactly one of each, in the order the batch evicted them.
+## A message reports every before-delete, across all its tables, before any of its other
+## callbacks. Each evicted row still gets exactly one before-delete and, later, one delete.
 func subscribe_to_before_deletes(table_name: StringName, callable: Callable) -> void:
 	_add_listener(_before_delete_listeners_by_table, _normalize(table_name), callable)
 
@@ -626,15 +663,6 @@ func _qmem_add_repeat(qmem: Dictionary, pk: Variant, row: _ModuleTableType) -> v
 		qmem[pk] = [row, 2]
 
 
-## Points this query's existing reference at a newer row without taking another one.
-func _qmem_refresh(qmem: Dictionary, pk: Variant, row: _ModuleTableType) -> void:
-	var entry: Variant = qmem.get(pk)
-	if entry is Array:
-		entry[0] = row
-	elif entry != null:
-		qmem[pk] = row
-
-
 ## Hands one reference back; drops the entry when this query holds no more.
 func _qmem_release(qmem: Dictionary, pk: Variant) -> void:
 	var entry: Variant = qmem.get(pk)
@@ -668,20 +696,16 @@ func _query_table_pkless_mem(query_id: int, table: StringName) -> Dictionary:
 ## SubscriptionError for an already-applied subscription (the server sends no dropped
 ## rows on an error): decrements each row's refcount via the normal delete path and
 ## evicts only rows no other subscription holds — the same effect as an unsubscribe,
-## reconstructed from locally-tracked per-query membership.
+## reconstructed from locally-tracked per-query membership. Every table of the query goes
+## through one [method _apply_batch], so the prune is reported as one message (queued, when
+## called from inside a row callback).
 func prune_query(query_id: int) -> void:
 	if not _query_rows.has(query_id):
 		return
 	var tables: Dictionary = _query_rows[query_id]
-	var gen: int = _generation
-	# Direct key iteration (no .keys() alloc). apply_table_update below mutates the inner
-	# membership containers but never adds/removes a table key here, so this is safe.
+	# Built in full before anything applies: applying releases entries of this membership.
+	var drops: Array[TableUpdateData] = []
 	for table_name_lower: StringName in tables:
-		if _generation != gen:
-			# A delete callback wiped the mirror (a listener that reconnects). Every row
-			# this prune had left to drop is gone with it, and re-entering
-			# apply_table_update would rebuild membership for a query the wipe forgot.
-			return
 		var membership: Dictionary = tables[table_name_lower]
 		var drop: TableUpdateData = TableUpdateData.new()
 		drop.table_name = table_name_lower
@@ -702,8 +726,12 @@ func prune_query(query_id: int) -> void:
 				else:
 					drop.deletes.append(entry)
 		if not drop.deletes.is_empty():
-			apply_table_update(drop, query_id)
+			drops.append(drop)
+	# Erased first and the drops applied untracked: the membership is going away, and a
+	# drop queued behind another message (a prune from inside a row callback) would
+	# otherwise re-create it after this returns.
 	_query_rows.erase(query_id)
+	apply_table_updates(drops)
 
 
 ## The session-boundary wipe counter — see [member _session_generation]. A caller that
@@ -724,43 +752,771 @@ func forget_query(query_id: int) -> void:
 	_query_rows.erase(query_id)
 
 
-## Applies all table updates from a [SubscribeAppliedMessage] to the local store.
+## Applies the rows of a [SubscribeAppliedMessage] to the local store as one message.
 func apply_database_subscription_applied(db_update: SubscribeAppliedMessage) -> void:
 	if not db_update:
 		return
-	# The SESSION counter, not _generation: every iteration re-hoists its own containers
-	# through apply_table_update, so a mid-session clear_all_tables() leaves the rest of
-	# this message applicable. Only a session boundary makes the remainder dead traffic.
-	var session: int = _session_generation
-	for table_update: TableUpdateData in db_update.tables:
-		apply_table_update(table_update, db_update.query_set_id.id)
-		if _session_generation != session:
-			return # a listener ended the session; the remaining tables are its traffic
+	apply_table_updates(db_update.tables, db_update.query_set_id.id)
 
 
-## Applies all table updates from a [DatabaseUpdateData] to the local store.
+## Applies one query set's [DatabaseUpdateData] to the local store as one message.
 func apply_database_update(db_update: DatabaseUpdateData) -> void:
 	if not db_update:
 		return
-	# The SESSION counter — see [method apply_database_subscription_applied].
-	var session: int = _session_generation
-	for table_update: TableUpdateData in db_update.tables:
-		apply_table_update(table_update, db_update.query_id.id)
-		if _session_generation != session:
-			return # a listener ended the session; the remaining tables are its traffic
+	apply_table_updates(db_update.tables, db_update.query_id.id)
 
 
-## Closes out one table's batch: the [signal row_transactions_completed] terminator plus
-## its listeners, emitted only when [param dispatched] says this batch actually changed
-## something.
+## Applies every query set of a [TransactionUpdateMessage] to the local store as ONE
+## message, the way the official SDKs do: the sets' rows are merged per table before
+## anything is applied, so a row that leaves one set and enters another in the same
+## transaction (an entity crossing between two separately subscribed cells) is an update,
+## not a delete followed by an insert.
+func apply_transaction_update(tx_update: TransactionUpdateMessage) -> void:
+	if not tx_update:
+		return
+	var updates: Array[TableUpdateData] = []
+	var query_ids: PackedInt64Array = []
+	for dataset: DatabaseUpdateData in tx_update.query_sets:
+		var qid: int = dataset.query_id.id
+		for table_update: TableUpdateData in dataset.tables:
+			updates.append(table_update)
+			query_ids.append(qid)
+	_apply_batch(updates, query_ids)
+
+
+## Applies [param tables], all sent for [param query_id] (-1 records no query
+## membership), as one message.
+func apply_table_updates(tables: Array[TableUpdateData], query_id: int = -1) -> void:
+	var query_ids: PackedInt64Array = []
+	query_ids.resize(tables.size())
+	query_ids.fill(query_id)
+	_apply_batch(tables, query_ids)
+
+
+## Applies a single [TableUpdateData] as a message of its own. [param query_id] (>= 0)
+## records which subscription contributed each row, so a [method prune_query] can later
+## drop exactly that query's rows on a SubscriptionError.
+func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> void:
+	var updates: Array[TableUpdateData] = [table_update]
+	var query_ids: PackedInt64Array = [query_id]
+	_apply_batch(updates, query_ids)
+
+
+## One table's share of a message: every [TableUpdateData] the message carries for it with
+## the query each came from, the per-key counts a table with deletes is applied from, and
+## the events applying it produced. Built and consumed inside one [method _apply_batch].
+class _TablePlan:
+	extends RefCounted
+
+	var table: StringName
+	var pk_field: StringName
+	var is_event: bool = false
+	var has_inserts: bool = false
+	var has_deletes: bool = false
+	var updates: Array[TableUpdateData] = []
+	var query_ids: PackedInt64Array = []
+	## Keyed table with inserts AND deletes: pk -> deletes across the whole message not yet
+	## paired with an insert, and the running total of those.
+	var del_count: Dictionary = { }
+	var unpaired_deletes: int = 0
+	## pk -> deletes beyond the references the mirror holds for it. They release nothing;
+	## see [method _apply_pk_counted] for the inserts they pair with.
+	var void_deletes: Dictionary = { }
+	## Unkeyed table with deletes: row hash -> Array of [row, inserts, deletes, hash], and
+	## every such group in first-seen order. Groups are told apart by value, like the cache.
+	var groups: Dictionary = { }
+	var group_order: Array = []
+	## Cached rows this message will evict, read before anything is applied.
+	var before_delete: Array[_ModuleTableType] = []
+	## Typed, so the dispatch loops iterate without a per-row class check (an untyped
+	## Array read into a `_ModuleTableType` loop variable costs ~117 ns/row).
+	var inserted: Array[_ModuleTableType] = []
+	## Flattened [old, new, old, new, ...].
+	var updated: Array[_ModuleTableType] = []
+	var deleted: Array[_ModuleTableType] = []
+	## How many [member inserted] rows and [member updated] pairs have been reported so far.
+	var inserts_sent: int = 0
+	var updates_sent: int = 0
+
+
+## The whole apply path. A message is applied in three phases, matching the official
+## SDKs (C# PreApply / Apply / PostApply; Rust and TypeScript apply, then invoke):
+## [br]1. Plan: merge the message per table and read which cached rows it will evict, then
+## report those to [method subscribe_to_before_deletes] while the mirror is untouched.
+## [br]2. Apply: every table's rows, refcounts, query membership and index caches. No game
+## code runs here.
+## [br]3. Dispatch: insert, update and delete callbacks, then one transactions-completed,
+## per table.
+## [br][br]
+## So a callback always sees the message fully applied — a row inserted into another table
+## by the same transaction is already there — and never a half-applied one.
+## [br][br]
+## Messages are applied one at a time, as the official SDKs process them: one applied from
+## inside a callback of another is queued and applied when that one has finished, so no
+## message starts while another is between its phases.
+func _apply_batch(updates: Array[TableUpdateData], query_ids: PackedInt64Array) -> void:
+	if _applying:
+		_queued_batches.append([updates, query_ids, _session_generation])
+		return
+	_applying = true
+	_apply_message(updates, query_ids)
+	# Grows while it drains: a queued message's callbacks can queue more. One queued in a
+	# session that has since ended ([method clear_local_db] ran after it was queued) is
+	# dropped: applying it would strand the old session's rows in the new mirror.
+	var i: int = 0
+	while i < _queued_batches.size():
+		if i == _MAX_QUEUED_MESSAGES:
+			push_error(
+				(
+					"LocalDatabase: %d messages applied from inside row callbacks, and they "
+					+ "keep applying more. Dropping the remaining %d."
+				)
+				% [i, _queued_batches.size() - i]
+			)
+			break
+		var queued: Array = _queued_batches[i]
+		if queued[2] == _session_generation:
+			_apply_message(queued[0], queued[1])
+		i += 1
+	_queued_batches.clear()
+	_applying = false
+
+
+## One message, through the three phases of [method _apply_batch].
+func _apply_message(updates: Array[TableUpdateData], query_ids: PackedInt64Array) -> void:
+	var plans: Array[_TablePlan] = _plan_batch(updates, query_ids)
+	if plans.is_empty():
+		return
+	for plan: _TablePlan in plans:
+		if plan.has_deletes and not plan.is_event:
+			var predict: bool = _has_before_delete_consumers(plan.table)
+			if plan.pk_field.is_empty():
+				_count_pkless_plan(plan, predict)
+			elif plan.has_inserts:
+				_count_pk_plan(plan, predict)
+			elif predict:
+				_predict_pk_deletes(plan)
+	var gen: int = _generation
+	if not _fire_before_deletes(plans, gen):
+		return # a before-delete wiped the mirror; nothing of this message is left to apply
+	for plan: _TablePlan in plans:
+		_apply_plan(plan)
+		_update_indexes(plan)
+	var base: int = _undispatched.size()
+	_undispatched.append_array(plans)
+	var wiped: bool = false
+	for plan: _TablePlan in plans:
+		wiped = _dispatch_plan(plan, gen, wiped)
+	_undispatched.resize(base)
+
+
+## Groups [param updates] by table, in the order each table first appears. An update for a
+## table the schema does not know is reported and dropped.
+func _plan_batch(updates: Array[TableUpdateData], query_ids: PackedInt64Array) -> Array[_TablePlan]:
+	var plans: Array[_TablePlan] = []
+	var by_table: Dictionary = { }
+	for i: int in updates.size():
+		var table_update: TableUpdateData = updates[i]
+		var table_name_lower: StringName = _normalize(table_update.table_name)
+		if not _tables.has(table_name_lower):
+			printerr(
+				"LocalDatabase: Received update for unknown table '",
+				table_update.table_name,
+				"' (normalized: '",
+				table_name_lower,
+				"')",
+			)
+			continue
+		var plan: _TablePlan = by_table.get(table_name_lower)
+		if plan == null:
+			plan = _TablePlan.new()
+			plan.table = table_name_lower
+			plan.pk_field = _get_primary_key_field(table_name_lower)
+			by_table[table_name_lower] = plan
+			plans.append(plan)
+		plan.is_event = plan.is_event or table_update.is_event
+		plan.has_inserts = plan.has_inserts or not table_update.inserts.is_empty()
+		plan.has_deletes = plan.has_deletes or not table_update.deletes.is_empty()
+		plan.updates.append(table_update)
+		plan.query_ids.append(query_ids[i])
+	return plans
+
+
+## A HELD keyed row's refcount ([param old] > 0) after a message that inserted it
+## [param ins] times and deleted it [param del] times ([param del] <= [param old], see
+## [method _count_pk_plan]): every insert pairs with a delete first, so only the difference
+## moves it. Used to predict evictions, which only a held row can have.
+static func _pk_new_ref(old: int, ins: int, del: int) -> int:
+	return maxi(0, old + ins - del)
+
+
+## Whether anything hears a before-delete for [param table_name]. Reading which rows a
+## message will evict costs a lookup per deleted key, paid only when someone listens.
+func _has_before_delete_consumers(table_name_lower: StringName) -> bool:
+	return (
+		_before_delete_listeners_by_table.has(table_name_lower)
+		or not row_before_delete.get_connections().is_empty()
+	)
+
+
+## Counts a keyed table's deletes per pk across the whole message and hands each deleting
+## query its references back (membership is per delivery: a row leaving set A for set B
+## leaves A's membership here and joins B's in [method _apply_pk_counted]). When
+## [param predict], also reads which cached rows the message will evict. Null pks are
+## reported and skipped.
+func _count_pk_plan(plan: _TablePlan, predict: bool) -> void:
+	var pk_field: StringName = plan.pk_field
+	var del_count: Dictionary = plan.del_count
+	for i: int in plan.updates.size():
+		var qid: int = plan.query_ids[i]
+		var track_query: bool = qid >= 0
+		var qmem: Dictionary = _query_table_pk_mem(qid, plan.table) if track_query else { }
+		for row: _ModuleTableType in plan.updates[i].deletes:
+			var pk: Variant = row.get(pk_field)
+			if pk == null:
+				push_warning(
+					"LocalDatabase: Deleted row for table '%s' has null PK '%s'. Skipping."
+					% [plan.table, pk_field]
+				)
+				continue
+			del_count[pk] = del_count.get(pk, 0) + 1
+			plan.unpaired_deletes += 1
+			if track_query:
+				_qmem_release(qmem, pk)
+	# A delete can only release a reference the mirror holds. The surplus (the server's
+	# update encoding for a row this mirror never got) is set aside as void.
+	var ref_table: Dictionary = _ref_counts.get(plan.table, { })
+	for pk: Variant in del_count:
+		var held: int = ref_table.get(pk, 0)
+		var wanted: int = del_count[pk]
+		if wanted > held:
+			del_count[pk] = held
+			plan.void_deletes[pk] = wanted - held
+			plan.unpaired_deletes -= wanted - held
+	if predict:
+		_predict_pk_mixed(plan)
+
+
+## Which cached rows a message that inserts and deletes will take to zero, from the net
+## count per pk. Only paid when something listens for before-deletes.
+func _predict_pk_mixed(plan: _TablePlan) -> void:
+	var ins_count: Dictionary = { }
+	for table_update: TableUpdateData in plan.updates:
+		for row: _ModuleTableType in table_update.inserts:
+			var pk: Variant = row.get(plan.pk_field)
+			if pk != null:
+				ins_count[pk] = ins_count.get(pk, 0) + 1
+	var ref_table: Dictionary = _ref_counts.get(plan.table, { })
+	var table_dict: Dictionary = _tables[plan.table]
+	for pk: Variant in plan.del_count:
+		var old: int = ref_table.get(pk, 0)
+		if old > 0 and _pk_new_ref(old, ins_count.get(pk, 0), plan.del_count[pk]) == 0:
+			var cached: _ModuleTableType = table_dict.get(pk)
+			if cached != null:
+				plan.before_delete.append(cached)
+
+
+## [method _count_pk_plan]'s prediction for a message that only deletes from the table:
+## the cached rows its deletes take to zero, counted without touching the mirror.
+func _predict_pk_deletes(plan: _TablePlan) -> void:
+	var ref_table: Dictionary = _ref_counts.get(plan.table, { })
+	var table_dict: Dictionary = _tables[plan.table]
+	var pending: Dictionary = { }
+	for table_update: TableUpdateData in plan.updates:
+		for row: _ModuleTableType in table_update.deletes:
+			var pk: Variant = row.get(plan.pk_field)
+			if pk == null:
+				continue
+			var left: int = pending.get(pk, ref_table.get(pk, 0))
+			pending[pk] = left - 1
+			if left == 1:
+				var cached: _ModuleTableType = table_dict.get(pk)
+				if cached != null:
+					plan.before_delete.append(cached)
+
+
+## Counts an unkeyed table's inserts and deletes per row value across the whole message,
+## and when [param predict] reads which cached rows the message will evict.
+func _count_pkless_plan(plan: _TablePlan, predict: bool) -> void:
+	var props: Array[StringName] = _get_row_properties(plan.table)
+	for table_update: TableUpdateData in plan.updates:
+		for row: _ModuleTableType in table_update.inserts:
+			_pkless_group(plan, row, props)[1] += 1
+		for row: _ModuleTableType in table_update.deletes:
+			_pkless_group(plan, row, props)[2] += 1
+	if not predict:
+		return
+	var counts: Dictionary = _pk_less_counts.get(plan.table, { })
+	for group: Array in plan.group_order:
+		if group[2] == 0:
+			continue
+		var entry: Array = _pk_less_find(counts, group[3], group[0], props)
+		if not entry.is_empty() and entry[1] > 0 and entry[1] + group[1] - group[2] <= 0:
+			plan.before_delete.append(entry[0])
+
+
+## The [code][row, inserts, deletes, hash][/code] group holding [param row]'s value,
+## created on first sight.
+func _pkless_group(plan: _TablePlan, row: _ModuleTableType, props: Array[StringName]) -> Array:
+	var h: int = _row_hash(row, props)
+	var groups: Dictionary = plan.groups
+	if groups.has(h):
+		for group: Array in groups[h]:
+			var member: _ModuleTableType = group[0]
+			if member._row_eq(row, props):
+				return group
+	else:
+		groups[h] = []
+	var created: Array = [row, 0, 0, h]
+	groups[h].append(created)
+	plan.group_order.append(created)
+	return created
+
+
+## Phase 1's callbacks. Returns false when one of them wiped the mirror, which ends the
+## message: the wipe emptied the store the plans were read from, and reported (or, for
+## [method clear_all_tables], deliberately did not report) every row still in it. Each
+## table that announced a before-delete is still terminated then, since a silent wipe
+## leaves the announced rows with no delete and no close otherwise.
+func _fire_before_deletes(plans: Array[_TablePlan], gen: int) -> bool:
+	var sent: PackedInt64Array = []
+	var intact: bool = true
+	for i: int in plans.size():
+		var plan: _TablePlan = plans[i]
+		if plan.before_delete.is_empty():
+			continue
+		if not _fire_table_before_deletes(plan, gen, sent):
+			for j: int in i + 1:
+				var announced: _TablePlan = plans[j]
+				var tx_listeners: Array = _listener_snapshot(
+					_transactions_completed_listeners_by_table,
+					announced.table,
+				)
+				_end_table_transaction(announced.table, tx_listeners, not announced.before_delete.is_empty())
+			intact = false
+			break
+	for id: int in sent:
+		_before_delete_sent.erase(id)
+	return intact
+
+
+## One table's before-deletes. Each row whose listeners all heard it goes into
+## [param sent] and [member _before_delete_sent]. Returns false as soon as a listener wiped the mirror: the
+## wipe reports the row in hand itself, so neither the remaining listeners nor the signal
+## hear it from here.
+func _fire_table_before_deletes(plan: _TablePlan, gen: int, sent: PackedInt64Array) -> bool:
+	var listeners: Array = _listener_snapshot(_before_delete_listeners_by_table, plan.table)
+	for row: _ModuleTableType in plan.before_delete:
+		for listener: Callable in listeners:
+			if listener.is_valid():
+				listener.call(row)
+				if _generation != gen:
+					return false
+		# Recorded before the signal: an emit reaches every connection even when one of
+		# them wipes, so the row is fully reported once the emit starts.
+		var id: int = row.get_instance_id()
+		_before_delete_sent[id] = true
+		sent.append(id)
+		row_before_delete.emit(plan.table, row)
+		if _generation != gen:
+			return false
+	return true
+
+
+## Phase 2 for one table: writes the message into the store and records the events it
+## produced. Calls no listener.
+func _apply_plan(plan: _TablePlan) -> void:
+	if plan.is_event:
+		# Event tables carry ephemeral rows: reported as inserts, never stored, no refcount.
+		# The deserializer flattens the server's EventTable row lists into inserts.
+		for table_update: TableUpdateData in plan.updates:
+			plan.inserted.append_array(table_update.inserts)
+		return
+	if plan.pk_field.is_empty():
+		if not _pk_less_tables.has(plan.table):
+			_pk_less_tables[plan.table] = []
+		if not _pk_less_counts.has(plan.table):
+			_pk_less_counts[plan.table] = { }
+		if plan.has_deletes:
+			_apply_pkless_counted(plan)
+		else:
+			_apply_pkless_inserts(plan)
+		return
+	if not _ref_counts.has(plan.table):
+		_ref_counts[plan.table] = { }
+	if not plan.has_deletes:
+		_apply_pk_inserts(plan)
+	elif not plan.has_inserts:
+		_apply_pk_deletes(plan)
+	else:
+		_apply_pk_counted(plan)
+
+
+## A keyed table with no deletes in this message — every subscribe snapshot, and most
+## inserts. Applied row by row: a pk nothing holds is an insert, a held one is another
+## query's overlapping delivery (refcount + 1, an update only if the value differs).
+func _apply_pk_inserts(plan: _TablePlan) -> void:
+	var table_dict: Dictionary = _tables[plan.table]
+	var ref_table: Dictionary = _ref_counts[plan.table]
+	var props: Array[StringName] = _get_row_properties(plan.table)
+	var pk_field: StringName = plan.pk_field
+	var inserted: Array[_ModuleTableType] = plan.inserted
+	var updated: Array[_ModuleTableType] = plan.updated
+	for i: int in plan.updates.size():
+		var qid: int = plan.query_ids[i]
+		var track_query: bool = qid >= 0
+		var qmem: Dictionary = _query_table_pk_mem(qid, plan.table) if track_query else { }
+		for row: _ModuleTableType in plan.updates[i].inserts:
+			var pk: Variant = row.get(pk_field)
+			if pk == null:
+				push_error(
+					"LocalDatabase: Inserted row for table '%s' has null PK '%s'. Skipping."
+					% [plan.table, pk_field]
+				)
+				continue
+			var old_ref: int = ref_table.get(pk, 0)
+			ref_table[pk] = old_ref + 1
+			if old_ref == 0:
+				if track_query:
+					qmem[pk] = row
+				table_dict[pk] = row
+				inserted.append(row)
+				continue
+			if track_query:
+				_qmem_add_repeat(qmem, pk, row)
+			var prev: _ModuleTableType = table_dict.get(pk)
+			if prev == null:
+				# Referenced but not cached (a desync): insert, so no null `old` reaches
+				# an update listener.
+				table_dict[pk] = row
+				inserted.append(row)
+			elif props.is_empty() or not prev._row_eq(row, props):
+				table_dict[pk] = row
+				updated.append(prev)
+				updated.append(row)
+
+
+## A keyed table whose message only deletes — every unsubscribe echo, and rows leaving.
+## Applied row by row: each delete releases one reference, and the one that takes a row
+## to zero evicts it. A delete for a pk nothing holds is dropped.
+func _apply_pk_deletes(plan: _TablePlan) -> void:
+	var table_dict: Dictionary = _tables[plan.table]
+	var ref_table: Dictionary = _ref_counts[plan.table]
+	var pk_field: StringName = plan.pk_field
+	var deleted: Array[_ModuleTableType] = plan.deleted
+	for i: int in plan.updates.size():
+		var qid: int = plan.query_ids[i]
+		var track_query: bool = qid >= 0
+		var qmem: Dictionary = _query_table_pk_mem(qid, plan.table) if track_query else { }
+		for row: _ModuleTableType in plan.updates[i].deletes:
+			var pk: Variant = row.get(pk_field)
+			if pk == null:
+				push_warning(
+					"LocalDatabase: Deleted row for table '%s' has null PK '%s'. Skipping."
+					% [plan.table, pk_field]
+				)
+				continue
+			var old: int = ref_table.get(pk, 0)
+			if old <= 0:
+				continue
+			if track_query:
+				_qmem_release(qmem, pk)
+			if old > 1:
+				ref_table[pk] = old - 1
+				continue
+			ref_table.erase(pk)
+			var prev: _ModuleTableType = table_dict.get(pk)
+			if prev != null:
+				table_dict.erase(pk)
+				deleted.append(prev)
+
+
+## A keyed table whose message carries inserts and deletes, merged across every query
+## set. Each insert first pairs with a pending delete of its pk anywhere in the message —
+## an update, refcount unchanged, so a row leaving one set for another is one update —
+## and only the surplus is a new reference or a real delete ([method _pk_new_ref] for a
+## held row). on_update fires only when the value differs. [method _count_pk_plan] has
+## already set aside the deletes of references the mirror does not hold; an insert paired
+## with one of those goes through [method _pair_void_delete].
+func _apply_pk_counted(plan: _TablePlan) -> void:
+	var table_dict: Dictionary = _tables[plan.table]
+	var ref_table: Dictionary = _ref_counts[plan.table]
+	var props: Array[StringName] = _get_row_properties(plan.table)
+	var pk_field: StringName = plan.pk_field
+	var del_count: Dictionary = plan.del_count
+	var void_deletes: Dictionary = plan.void_deletes
+	var inserted: Array[_ModuleTableType] = plan.inserted
+	var updated: Array[_ModuleTableType] = plan.updated
+	var unpaired: int = plan.unpaired_deletes
+	for i: int in plan.updates.size():
+		var qid: int = plan.query_ids[i]
+		var track_query: bool = qid >= 0
+		var qmem: Dictionary = _query_table_pk_mem(qid, plan.table) if track_query else { }
+		for row: _ModuleTableType in plan.updates[i].inserts:
+			var pk: Variant = row.get(pk_field)
+			if pk == null:
+				push_error(
+					"LocalDatabase: Inserted row for table '%s' has null PK '%s'. Skipping."
+					% [plan.table, pk_field]
+				)
+				continue
+			var pending: int = del_count.get(pk, 0)
+			if pending > 0:
+				del_count[pk] = pending - 1
+				unpaired -= 1
+				if track_query:
+					_qmem_add_repeat(qmem, pk, row)
+			elif void_deletes.get(pk, 0) > 0:
+				_pair_void_delete(void_deletes, ref_table, pk, qmem if track_query else null, row)
+			else:
+				ref_table[pk] = ref_table.get(pk, 0) + 1
+				if track_query:
+					_qmem_add_repeat(qmem, pk, row)
+			var prev: _ModuleTableType = table_dict.get(pk)
+			if prev == null:
+				table_dict[pk] = row
+				inserted.append(row)
+			elif props.is_empty() or not prev._row_eq(row, props):
+				table_dict[pk] = row
+				updated.append(prev)
+				updated.append(row)
+	if unpaired > 0:
+		_apply_unpaired_pk_deletes(plan)
+
+
+## An insert paired with a void delete: the server's update encoding for a row the mirror
+## holds no reference to. Each query that delivers such a pair holds ONE reference to the
+## row however many pairs it sends: under-counting self-heals on the first later delete,
+## while over-counting caches a row no delete ever evicts. A second query's pair is its own
+## reference, recorded in its own membership, so [method prune_query] of the first leaves
+## the row to the second. [param qmem] is null when the delivery records no query; such a
+## pair takes a reference only when nothing holds one.
+func _pair_void_delete(
+		void_deletes: Dictionary,
+		ref_table: Dictionary,
+		pk: Variant,
+		qmem: Variant,
+		row: _ModuleTableType,
+) -> void:
+	void_deletes[pk] -= 1
+	if qmem == null:
+		if ref_table.get(pk, 0) == 0:
+			ref_table[pk] = 1
+		return
+	var membership: Dictionary = qmem
+	var entry: Variant = membership.get(pk)
+	if entry == null:
+		ref_table[pk] = ref_table.get(pk, 0) + 1
+		membership[pk] = row
+	elif entry is Array:
+		entry[0] = row
+	else:
+		membership[pk] = row
+
+
+## The deletes of a mixed message no insert paired with: each releases one reference, and
+## the one that takes a row to zero evicts it.
+func _apply_unpaired_pk_deletes(plan: _TablePlan) -> void:
+	var table_dict: Dictionary = _tables[plan.table]
+	var ref_table: Dictionary = _ref_counts[plan.table]
+	var deleted: Array[_ModuleTableType] = plan.deleted
+	for pk: Variant in plan.del_count:
+		var left: int = plan.del_count[pk]
+		if left <= 0:
+			continue
+		var old: int = ref_table.get(pk, 0)
+		if old <= 0:
+			continue
+		if old > left:
+			ref_table[pk] = old - left
+			continue
+		ref_table.erase(pk)
+		var prev: _ModuleTableType = table_dict.get(pk)
+		if prev != null:
+			table_dict.erase(pk)
+			deleted.append(prev)
+
+
+## An unkeyed table with no deletes in this message: a value nothing holds is an insert,
+## a held one only gains a reference.
+func _apply_pkless_inserts(plan: _TablePlan) -> void:
+	var rows_array: Array = _pk_less_tables[plan.table]
+	var counts: Dictionary = _pk_less_counts[plan.table]
+	var props: Array[StringName] = _get_row_properties(plan.table)
+	var inserted: Array[_ModuleTableType] = plan.inserted
+	for i: int in plan.updates.size():
+		var qid: int = plan.query_ids[i]
+		var track_query: bool = qid >= 0
+		var qmem: Dictionary = _query_table_pkless_mem(qid, plan.table) if track_query else { }
+		for row: _ModuleTableType in plan.updates[i].inserts:
+			var h: int = _row_hash(row, props)
+			var entry: Array = _pk_less_find(counts, h, row, props)
+			if entry.is_empty():
+				_pk_less_add(counts, h, row)
+				rows_array.append(row)
+				inserted.append(row)
+			else:
+				entry[1] += 1
+			if track_query:
+				_pkless_member_add(qmem, h, row, props)
+
+
+## An unkeyed table whose message carries deletes. Each value's multiplicity moves by its
+## net count across every query set; 0 -> positive is an insert, positive -> 0 a delete.
+## A delete for a value the mirror does not hold is reported once per table and dropped.
+func _apply_pkless_counted(plan: _TablePlan) -> void:
+	var props: Array[StringName] = _get_row_properties(plan.table)
+	for i: int in plan.updates.size():
+		var qid: int = plan.query_ids[i]
+		if qid < 0:
+			continue
+		var qmem: Dictionary = _query_table_pkless_mem(qid, plan.table)
+		for row: _ModuleTableType in plan.updates[i].inserts:
+			_pkless_member_add(qmem, _row_hash(row, props), row, props)
+		for row: _ModuleTableType in plan.updates[i].deletes:
+			var h: int = _row_hash(row, props)
+			var member: Array = _pk_less_find(qmem, h, row, props)
+			if not member.is_empty():
+				member[1] -= 1
+				if member[1] == 0:
+					_pk_less_remove(qmem, h, member)
+	var counts: Dictionary = _pk_less_counts[plan.table]
+	var rows_array: Array = _pk_less_tables[plan.table]
+	var inserted: Array[_ModuleTableType] = plan.inserted
+	var deleted: Array[_ModuleTableType] = plan.deleted
+	var evicted: Dictionary[int, bool] = { }
+	for group: Array in plan.group_order:
+		var h: int = group[3]
+		var entry: Array = _pk_less_find(counts, h, group[0], props)
+		var old: int = 0 if entry.is_empty() else entry[1]
+		var new_count: int = old + group[1] - group[2]
+		if new_count < 0:
+			_warn_unmatched_delete(plan.table)
+			new_count = 0
+		if old == 0:
+			if new_count > 0:
+				_pk_less_add(counts, h, group[0])
+				_pk_less_find(counts, h, group[0], props)[1] = new_count
+				rows_array.append(group[0])
+				inserted.append(group[0])
+		elif new_count == 0:
+			var cached: _ModuleTableType = entry[0]
+			_pk_less_remove(counts, h, entry)
+			evicted[cached.get_instance_id()] = true
+			deleted.append(cached)
+		else:
+			entry[1] = new_count
+	if not evicted.is_empty():
+		_compact_pkless(plan.table, evicted)
+
+
+## Records one more reference to [param row]'s value in an unkeyed query membership.
+func _pkless_member_add(qmem: Dictionary, h: int, row: _ModuleTableType, props: Array[StringName]) -> void:
+	var member: Array = _pk_less_find(qmem, h, row, props)
+	if member.is_empty():
+		_pk_less_add(qmem, h, row)
+	else:
+		member[1] += 1
+
+
+## Drops the rows whose instance ids are in [param evicted] from an unkeyed table's row
+## list, in one pass.
+func _compact_pkless(table_name_lower: StringName, evicted: Dictionary[int, bool]) -> void:
+	var rows_array: Array = _pk_less_tables[table_name_lower]
+	var write_idx: int = 0
+	for read_idx: int in rows_array.size():
+		var row: _ModuleTableType = rows_array[read_idx]
+		if evicted.has(row.get_instance_id()):
+			continue
+		rows_array[write_idx] = row
+		write_idx += 1
+	rows_array.resize(write_idx)
+
+
+## Keeps the generated index caches in step with what [method _apply_plan] just wrote,
+## before any game callback can read them. Updates run before deletes: when one message
+## hands a unique value from one row to another, the index's holder checks keep the
+## successor either way.
+func _update_indexes(plan: _TablePlan) -> void:
+	var hooks: Array = _index_hooks_by_table.get(plan.table, _EMPTY_LISTENERS)
+	if hooks.is_empty() or plan.is_event:
+		return
+	for hook: Array in hooks:
+		var on_insert: Callable = hook[0]
+		var on_update: Callable = hook[1]
+		var on_delete: Callable = hook[2]
+		if not on_insert.is_valid():
+			continue # the index was freed; pruned on the next registration
+		for row: _ModuleTableType in plan.inserted:
+			on_insert.call(row)
+		for i: int in range(0, plan.updated.size(), 2):
+			on_update.call(plan.updated[i], plan.updated[i + 1])
+		for row: _ModuleTableType in plan.deleted:
+			on_delete.call(row)
+
+
+## Phase 3 for one table: the insert, update and delete callbacks, then the terminator.
+## Returns whether the mirror has been wiped by now ([param wiped] carries that across
+## tables).
 ##
-## Called at the END of every path through [method apply_table_update], including the ones
-## a mid-dispatch cache wipe abandons: a batch that reported rows and no terminator leaves
-## a consumer that redraws on this signal holding a view it was told to update and never
-## told to finish. The wipe cannot be relied on to have sent one — [method clear_all_tables]
-## reports nothing at all, and the PK delete pass erases each row BEFORE it dispatches, so
-## the wipe can find the table empty. A repeated terminator only makes a consumer flush
-## twice; a missing one leaves the flush undone for the session.
+## A wipe from inside a callback ends the inserts and updates still to be reported. The
+## wipe reports only what a consumer was told about ([method _unannounced_rows]): an
+## unreported insert is dropped silently, an unreported update is reported gone as the row
+## it replaced. The deletes are reported regardless. Their rows left the mirror in phase 2,
+## before the wipe took its snapshot, so this is the only record a consumer gets of them.
+func _dispatch_plan(plan: _TablePlan, gen: int, wiped: bool) -> bool:
+	var table_name_lower: StringName = plan.table
+	var tx_listeners: Array = _listener_snapshot(
+		_transactions_completed_listeners_by_table,
+		table_name_lower,
+	)
+	var dispatched: bool = false
+	var inserted: Array[_ModuleTableType] = plan.inserted
+	var updated: Array[_ModuleTableType] = plan.updated
+	var deleted: Array[_ModuleTableType] = plan.deleted
+	if not wiped and not inserted.is_empty():
+		var insert_listeners: Array = _listener_snapshot(_insert_listeners_by_table, table_name_lower)
+		for row: _ModuleTableType in inserted:
+			if _generation != gen:
+				wiped = true
+				break
+			dispatched = true
+			plan.inserts_sent += 1
+			for listener: Callable in insert_listeners:
+				if listener.is_valid():
+					listener.call(row)
+			row_inserted.emit(table_name_lower, row)
+	if not wiped and not updated.is_empty():
+		var update_listeners: Array = _listener_snapshot(_update_listeners_by_table, table_name_lower)
+		for i: int in range(0, updated.size(), 2):
+			if _generation != gen:
+				wiped = true
+				break
+			dispatched = true
+			plan.updates_sent += 1
+			var old_row: _ModuleTableType = updated[i]
+			var new_row: _ModuleTableType = updated[i + 1]
+			for listener: Callable in update_listeners:
+				if listener.is_valid():
+					listener.call(old_row, new_row)
+			row_updated.emit(table_name_lower, old_row, new_row)
+	if not deleted.is_empty():
+		var delete_listeners: Array = _listener_snapshot(_delete_listeners_by_table, table_name_lower)
+		for row: _ModuleTableType in deleted:
+			dispatched = true
+			for listener: Callable in delete_listeners:
+				if listener.is_valid():
+					listener.call(row)
+			row_deleted.emit(table_name_lower, row)
+	_end_table_transaction(table_name_lower, tx_listeners, dispatched)
+	return wiped or _generation != gen
+
+
+## Closes out one table's share of a message: the [signal row_transactions_completed]
+## terminator plus its listeners, emitted only when [param dispatched] says the message
+## reported something for this table. It is owed even after a wipe cut the reporting
+## short: a consumer that redraws on it would otherwise hold a view it was told to update
+## and never told to finish.
 func _end_table_transaction(table_name_lower: StringName, tx_listeners: Array, dispatched: bool) -> void:
 	if not dispatched:
 		return
@@ -770,386 +1526,6 @@ func _end_table_transaction(table_name_lower: StringName, tx_listeners: Array, d
 	row_transactions_completed.emit(table_name_lower)
 
 
-## Applies a single [TableUpdateData] — processes inserts then deletes, dispatches
-## listener callbacks and signals, and handles both PK-keyed and PK-less tables.
-## [param query_id] (>= 0) records which subscription contributed each row, so a
-## [method prune_query] can later drop exactly that query's rows on a SubscriptionError.
-func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> void:
-	var table_name_lower: StringName = _normalize(table_update.table_name)
-
-	if not _tables.has(table_name_lower):
-		printerr(
-			"LocalDatabase: Received update for unknown table '",
-			table_update.table_name,
-			"' (normalized: '",
-			table_name_lower,
-			"')",
-		)
-		return
-
-	var pk_field: StringName = _get_primary_key_field(table_name_lower)
-
-	# Hoist listener array lookups once per table_update, not per row. Snapshot
-	# guards against a listener unsubscribing mid-dispatch; the no-listener case
-	# allocs nothing (shared read-only empty).
-	var insert_listeners: Array = _listener_snapshot(_insert_listeners_by_table, table_name_lower)
-	var update_listeners: Array = _listener_snapshot(_update_listeners_by_table, table_name_lower)
-	var before_delete_listeners: Array = _listener_snapshot(
-		_before_delete_listeners_by_table,
-		table_name_lower,
-	)
-	var delete_listeners: Array = _listener_snapshot(_delete_listeners_by_table, table_name_lower)
-	var tx_listeners: Array = _listener_snapshot(
-		_transactions_completed_listeners_by_table,
-		table_name_lower,
-	)
-	var has_insert_listeners: bool = not insert_listeners.is_empty()
-	var has_update_listeners: bool = not update_listeners.is_empty()
-	var has_before_delete_listeners: bool = not before_delete_listeners.is_empty()
-	var has_delete_listeners: bool = not delete_listeners.is_empty()
-	# Every container this function is about to touch is hoisted into a local, and every
-	# listener call below is game code that can wipe the mirror under it (see
-	# [member _generation]). The rows of a wiped session must not land afterwards, so the
-	# batch is abandoned at the first check that disagrees.
-	var gen: int = _generation
-
-	# Event tables carry ephemeral rows: fire on_insert, never store. count()/iter()
-	# stay empty and there is no update/delete/refcount tracking. The server only
-	# sends these as EventTable row lists, which the deserializer flattens into
-	# inserts with is_event set.
-	if table_update.is_event:
-		var fired_event: bool = false
-		for event_row: _ModuleTableType in table_update.inserts:
-			fired_event = true
-			if has_insert_listeners:
-				for listener: Callable in insert_listeners:
-					if listener.is_valid():
-						listener.call(event_row)
-			row_inserted.emit(table_name_lower, event_row)
-			if _generation != gen:
-				# Wiped mid-batch: the rest of these events belong to a dead session, but
-				# the ones already delivered still owe their terminator.
-				_end_table_transaction(table_name_lower, tx_listeners, fired_event)
-				return
-		_end_table_transaction(table_name_lower, tx_listeners, fired_event)
-		return
-
-	var table_dict: Dictionary = _tables[table_name_lower]
-	var had_any_change: bool = false
-
-	if pk_field.is_empty():
-		# PK-less table: refcounted by row value (rows have no key). A distinct value held
-		# by N overlapping subscriptions has count N; on_insert fires only on 0->1 and
-		# on_delete only on 1->0, so a shared row survives one subscription's unsubscribe.
-		# _pk_less_tables holds each present row once (for iteration/queries); _pk_less_counts
-		# holds the multiplicity, keyed by row hash with an _rows_equal tiebreak.
-		if not _pk_less_tables.has(table_name_lower):
-			_pk_less_tables[table_name_lower] = []
-		if not _pk_less_counts.has(table_name_lower):
-			_pk_less_counts[table_name_lower] = { }
-		var rows_array: Array = _pk_less_tables[table_name_lower]
-		var counts: Dictionary = _pk_less_counts[table_name_lower]
-		var props: Array[StringName] = _get_row_properties(table_name_lower)
-		# Per-query membership for pk-less is itself a hash-bucket count map (same shape as
-		# _pk_less_counts), hoisted out of the row loops. O(bucket) add/remove instead of an
-		# O(n) array scan per delete.
-		var track_pkless_query: bool = query_id >= 0
-		var pkless_qmem: Dictionary = _query_table_pkless_mem(query_id, table_name_lower) if track_pkless_query else { }
-
-		for inserted_row: _ModuleTableType in table_update.inserts:
-			if _generation != gen:
-				# Wiped by the previous row's callback. The rows already dispatched still
-				# owe a terminator: clear_all_tables() reports nothing at all, so there is
-				# no wipe-side transactions_completed to fall back on.
-				_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
-				return
-			var ins_hash: int = _row_hash(inserted_row, props)
-			var ins_entry: Array = _pk_less_find(counts, ins_hash, inserted_row, props)
-			if ins_entry.is_empty():
-				# Globally new value (0->1). It's therefore also new to this query's
-				# membership, so add directly — no membership find needed.
-				_pk_less_add(counts, ins_hash, inserted_row)
-				rows_array.append(inserted_row)
-				had_any_change = true
-				if has_insert_listeners:
-					for listener: Callable in insert_listeners:
-						if listener.is_valid():
-							listener.call(inserted_row)
-				row_inserted.emit(table_name_lower, inserted_row)
-				if track_pkless_query:
-					_pk_less_add(pkless_qmem, ins_hash, inserted_row)
-			else:
-				ins_entry[1] += 1 # already present (overlap / multiplicity) — bump silently
-				# Already present globally; this query may or may not hold it yet (overlap).
-				if track_pkless_query:
-					var mem_ins: Array = _pk_less_find(pkless_qmem, ins_hash, inserted_row, props)
-					if mem_ins.is_empty():
-						_pk_less_add(pkless_qmem, ins_hash, inserted_row)
-					else:
-						mem_ins[1] += 1
-
-		if not table_update.deletes.is_empty():
-			# instance_id -> the cached row, for a single-pass array compact and for the
-			# delete callbacks that follow it. The two delete callbacks split on whether
-			# the row is still in the cache, so on_before_delete fires here (row still
-			# listed) and on_delete only after the compaction below — matching the PK path,
-			# which erases from the table dict between the two. Firing both from this loop
-			# would let on_delete still find the row in iter().
-			#
-			# One difference from the PK path follows from the compaction being a single
-			# pass: a batch evicting several rows reports every before_delete first, then
-			# every delete, where the PK path interleaves them per row. Both orders keep
-			# each row's own pair in order and the cache state each callback promises.
-			var evicted: Dictionary[int, _ModuleTableType] = { }
-			for deleted_row: _ModuleTableType in table_update.deletes:
-				if _generation != gen:
-					_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
-					return # wiped by an earlier callback of this batch
-				var del_hash: int = _row_hash(deleted_row, props)
-				var del_entry: Array = _pk_less_find(counts, del_hash, deleted_row, props)
-				if del_entry.is_empty() or del_entry[1] <= 0:
-					_warn_unmatched_delete(table_name_lower)
-					continue
-				del_entry[1] -= 1
-				if track_pkless_query:
-					var mem_del: Array = _pk_less_find(pkless_qmem, del_hash, deleted_row, props)
-					if not mem_del.is_empty():
-						mem_del[1] -= 1
-						if mem_del[1] == 0:
-							_pk_less_remove(pkless_qmem, del_hash, mem_del)
-				if del_entry[1] == 0:
-					var cached_row: _ModuleTableType = del_entry[0]
-					_pk_less_remove(counts, del_hash, del_entry)
-					evicted[cached_row.get_instance_id()] = cached_row
-					had_any_change = true
-					if has_before_delete_listeners:
-						for listener: Callable in before_delete_listeners:
-							if listener.is_valid():
-								listener.call(cached_row)
-					row_before_delete.emit(table_name_lower, cached_row)
-			if not evicted.is_empty():
-				if _generation != gen:
-					# Wiped by the last before_delete; rows_array is already empty.
-					_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
-					return
-				# Single pass compact — the stored row is the same instance appended on 0->1.
-				var write_idx: int = 0
-				for read_idx: int in rows_array.size():
-					var row: _ModuleTableType = rows_array[read_idx]
-					if evicted.has(row.get_instance_id()):
-						continue
-					rows_array[write_idx] = row
-					write_idx += 1
-				rows_array.resize(write_idx)
-				# Now the rows are actually gone. Reported in the order the batch evicted
-				# them (dict iteration is insertion-order), so a consumer sees the same
-				# sequence it saw from on_before_delete.
-				for gone_id: int in evicted:
-					# No generation check here, unlike every other dispatch loop: the
-					# compaction above already took these rows out of rows_array, so a wipe
-					# fired from inside this loop cannot report them. This loop is their
-					# only record, and bailing would leave a before_delete with no matching
-					# delete, which the class contract says cannot happen.
-					var gone: _ModuleTableType = evicted[gone_id]
-					if has_delete_listeners:
-						for listener: Callable in delete_listeners:
-							if listener.is_valid():
-								listener.call(gone)
-					row_deleted.emit(table_name_lower, gone)
-
-		_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
-		return
-
-	# PK table: refcounted single pass. One pk may appear several times in each list —
-	# every query of a set that matches the row contributes its own copy — so the
-	# insert/delete pairing below counts rather than flags. on_insert fires on
-	# refcount 0->1, on_delete on 1->0; a delete+insert of the same pk in one update is
-	# an update (net refcount 0, value may change). A row delivered by N overlapping
-	# query sets has refcount N; an identical re-delivery bumps it silently. When
-	# query_id >= 0, membership records this query's pks for precise SubscriptionError
-	# pruning (dict lookup hoisted out of the row loops).
-	if not _ref_counts.has(table_name_lower):
-		_ref_counts[table_name_lower] = { }
-	var ref_table: Dictionary = _ref_counts[table_name_lower]
-	var props: Array[StringName] = _get_row_properties(table_name_lower)
-	var track_query: bool = query_id >= 0
-	var qmem: Dictionary = _query_table_pk_mem(query_id, table_name_lower) if track_query else { }
-
-	# Update detection (delete+insert of the same pk) only matters when this update has
-	# BOTH inserts and deletes. Pure inserts (subscribe) and pure deletes (rows leaving)
-	# skip the pk-count build entirely. Null PKs are warned in the delete pass below, which
-	# a batch whose every delete pairs with an insert skips, so such a row is dropped
-	# silently.
-	var detect_updates: bool = (
-		not table_update.inserts.is_empty() and not table_update.deletes.is_empty()
-	)
-	# pk -> deletes not yet paired with an insert, plus the running total of those. A row
-	# held by N overlapping queries of one set is reported N times in a single update (the
-	# server groups every fragment's rows under one TableUpdate), so a COUNT is what pairs
-	# them: min(inserts, deletes) of a pk are one update delivered N times, and only the
-	# surplus is a new reference or a real delete. A set rather than a count would consume
-	# one delete and drop the rest, inflating the refcount and skipping the delete pass.
-	var deleted_pks: Dictionary = { }
-	var unpaired_deletes: int = 0
-	if detect_updates:
-		for deleted_row: _ModuleTableType in table_update.deletes:
-			var del_pk: Variant = deleted_row.get(pk_field)
-			if del_pk != null:
-				deleted_pks[del_pk] = deleted_pks.get(del_pk, 0) + 1
-				unpaired_deletes += 1
-
-	for inserted_row: _ModuleTableType in table_update.inserts:
-		if _generation != gen:
-			_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
-			return # wiped by the previous row's callback
-		var pk_value: Variant = inserted_row.get(pk_field)
-		if pk_value == null:
-			push_error(
-				"LocalDatabase: Inserted row for table '%s' has null PK '%s'. Skipping."
-				% [table_name_lower, pk_field]
-			)
-			continue
-		var old_ref: int = ref_table.get(pk_value, 0)
-		var pending_deletes: int = deleted_pks.get(pk_value, 0) if detect_updates else 0
-		if pending_deletes > 0:
-			# Update: delete+insert of the same pk. Refcount unchanged; consume one delete
-			# so the delete pass skips exactly this pairing. Fire on_update only when the
-			# value differs.
-			deleted_pks[pk_value] = pending_deletes - 1
-			unpaired_deletes -= 1
-			if old_ref == 0:
-				# Nothing held this pk yet, so leaving the refcount alone would cache the
-				# row at 0 (the matching delete is consumed here, so the delete pass never
-				# records this delivery's reference). An unreferenced cached row is
-				# permanent: a later delete reads 0 and skips it, so no on_delete ever
-				# fires. Record ONE reference whatever the pair count — this only happens
-				# on a desync, and under-counting self-heals on the first later delete
-				# while over-counting is the ghost above.
-				ref_table[pk_value] = 1
-				if track_query:
-					qmem[pk_value] = inserted_row
-			elif track_query:
-				# Refcount unchanged — this delivery is an update, not a new reference, so
-				# this query's membership only points at a newer row. Recording a reference
-				# here would let a later prune hand back one this query never took.
-				_qmem_refresh(qmem, pk_value, inserted_row)
-			var prev_u: _ModuleTableType = table_dict.get(pk_value)
-			if prev_u == null:
-				# No prior cached row, so this is an insert: the update path would hand
-				# listeners a null `prev`, which the index listeners dereference.
-				table_dict[pk_value] = inserted_row
-				had_any_change = true
-				if has_insert_listeners:
-					for listener: Callable in insert_listeners:
-						if listener.is_valid():
-							listener.call(inserted_row)
-				row_inserted.emit(table_name_lower, inserted_row)
-			elif props.is_empty() or not prev_u._row_eq(inserted_row, props):
-				table_dict[pk_value] = inserted_row
-				had_any_change = true
-				if has_update_listeners:
-					for listener: Callable in update_listeners:
-						if listener.is_valid():
-							listener.call(prev_u, inserted_row)
-				row_updated.emit(table_name_lower, prev_u, inserted_row)
-		elif old_ref == 0:
-			ref_table[pk_value] = 1
-			if track_query:
-				qmem[pk_value] = inserted_row
-			table_dict[pk_value] = inserted_row
-			had_any_change = true
-			if has_insert_listeners:
-				for listener: Callable in insert_listeners:
-					if listener.is_valid():
-						listener.call(inserted_row)
-			row_inserted.emit(table_name_lower, inserted_row)
-		else:
-			# Overlapping re-delivery: bump refcount; on_update only if the value differs.
-			ref_table[pk_value] = old_ref + 1
-			if track_query:
-				# Already held — by this query (overlapping queries in one subscribe) or by
-				# another. Only the first case widens the entry to a counted pair.
-				_qmem_add_repeat(qmem, pk_value, inserted_row)
-			var prev_o: _ModuleTableType = table_dict.get(pk_value)
-			if prev_o == null:
-				# Refcount bumped above but no cached row (desync, or first sight under an
-				# existing ref): insert semantics, so no null `prev` reaches listeners.
-				table_dict[pk_value] = inserted_row
-				had_any_change = true
-				if has_insert_listeners:
-					for listener: Callable in insert_listeners:
-						if listener.is_valid():
-							listener.call(inserted_row)
-				row_inserted.emit(table_name_lower, inserted_row)
-			elif props.is_empty() or not prev_o._row_eq(inserted_row, props):
-				table_dict[pk_value] = inserted_row
-				had_any_change = true
-				if has_update_listeners:
-					for listener: Callable in update_listeners:
-						if listener.is_valid():
-							listener.call(prev_o, inserted_row)
-				row_updated.emit(table_name_lower, prev_o, inserted_row)
-
-	# Delete pass: skip entirely when there are no deletes, or (when detecting updates)
-	# when every delete was consumed as an update above.
-	if not table_update.deletes.is_empty() and not (detect_updates and unpaired_deletes == 0):
-		for deleted_row2: _ModuleTableType in table_update.deletes:
-			if _generation != gen:
-				# The wipe's own snapshot cannot be relied on here: the erase below runs
-				# BEFORE the delete dispatch, so a table whose last row this batch removed
-				# is already empty when the wipe reads it.
-				_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
-				return # wiped by an earlier callback of this batch
-			var pk_value: Variant = deleted_row2.get(pk_field)
-			if pk_value == null:
-				push_warning(
-					"LocalDatabase: Deleted row for table '%s' has null PK '%s'. Skipping."
-					% [table_name_lower, pk_field]
-				)
-				continue
-			if detect_updates:
-				var unpaired: int = deleted_pks.get(pk_value, 0)
-				if unpaired <= 0:
-					continue # consumed as an update above
-				deleted_pks[pk_value] = unpaired - 1
-			var old_ref: int = ref_table.get(pk_value, 0)
-			if old_ref <= 0:
-				continue
-			if track_query:
-				# One delete releases ONE reference, matching the single decrement below.
-				# Dropping the whole entry would leave a doubly-referenced pk with a live
-				# refcount and no membership, so a later prune of this query would hand
-				# back nothing and strand the row.
-				_qmem_release(qmem, pk_value)
-			if old_ref > 1:
-				ref_table[pk_value] = old_ref - 1
-				continue
-			ref_table.erase(pk_value)
-			var cached_row: _ModuleTableType = table_dict.get(pk_value)
-			if cached_row != null:
-				had_any_change = true
-				if has_before_delete_listeners:
-					for listener: Callable in before_delete_listeners:
-						if listener.is_valid():
-							listener.call(cached_row)
-				row_before_delete.emit(table_name_lower, cached_row)
-				if _generation != gen:
-					# Wiped from inside this row's before_delete. The row was still in
-					# table_dict when the wipe snapshotted it, so the wipe reported the
-					# delete itself and carrying on would report it a SECOND time. The
-					# erase below is a no-op on the emptied dict either way.
-					_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
-					return
-				table_dict.erase(pk_value)
-				if has_delete_listeners:
-					for listener: Callable in delete_listeners:
-						if listener.is_valid():
-							listener.call(cached_row)
-				row_deleted.emit(table_name_lower, cached_row)
-
-	_end_table_transaction(table_name_lower, tx_listeners, had_any_change)
-
-
 ## Wipes every cached row from all tables, emitting a delete callback per row and a
 ## transactions-completed callback per non-empty table. This is how the client resets
 ## the mirror before a reconnect's resubscribe refills it: the resubscribe re-delivers
@@ -1157,36 +1533,68 @@ func apply_table_update(table_update: TableUpdateData, query_id: int = -1) -> vo
 ## whatever it built for a row that was deleted while the client was away.
 func clear_local_db() -> void:
 	# Snapshot the rows, then clear the INNER containers, THEN run the delete callbacks, so
-	# a listener that re-enters apply_table_update lands in the freshly-cleared maps
+	# a listener that applies a message lands in the freshly-cleared maps
 	# instead of rows about to be wiped (M4). Inner, not outer: the outer table keys are
-	# what _init pre-populates and apply_table_update's known-table guard relies on, so
+	# what _init pre-populates and _plan_batch's known-table guard relies on, so
 	# reassigning to {} would make every later PK-table update an "unknown table". The
 	# snapshot loops invoke no listeners, so they cannot mutate the dicts mid-iteration.
+	var unannounced: Dictionary[int, Variant] = _unannounced_rows()
 	var pk_rows: Array = [] # of [table_name, rows]
 	for table_name_lower: StringName in _tables:
 		var inner: Dictionary = _tables[table_name_lower]
-		pk_rows.append([table_name_lower, inner.values()])
+		pk_rows.append([table_name_lower, _announced(inner.values(), unannounced)])
 		inner.clear()
 	var pk_less_rows: Array = [] # of [table_name, rows]
 	for table_name_lower: StringName in _pk_less_tables:
 		var arr: Array = _pk_less_tables[table_name_lower]
-		pk_less_rows.append([table_name_lower, arr.duplicate()])
+		pk_less_rows.append([table_name_lower, _announced(arr.duplicate(), unannounced)])
 		arr.clear()
 	_ref_counts.clear()
 	_pk_less_counts.clear()
 	_query_rows.clear()
 	# Bumped with the containers, before the first callback goes out: an
-	# apply_table_update frame further up the stack (a listener that reconnects wipes
+	# _apply_batch frame further up the stack (a listener that reconnects wipes
 	# from inside its own dispatch) has to see this on its very next check.
 	_generation += 1
 	_session_generation += 1 # this wipe IS the session boundary; clear_all_tables is not
-	# The loops below do NOT stop on a re-entrant wipe, unlike every dispatch loop in
-	# apply_table_update: a nested clear_local_db() finds the containers already emptied
+	# Emptied before the delete callbacks below, so an index read from one of them agrees
+	# with the mirror it indexes.
+	_invalidate_indexes()
+	# The loops below do NOT stop on a re-entrant wipe, unlike the dispatch in
+	# _apply_batch: a nested clear_local_db() finds the containers already emptied
 	# above, so this snapshot is the only record of the rows that were dropped.
 	for entry: Array in pk_rows:
 		_emit_clear_for_table(entry[0], entry[1])
 	for entry: Array in pk_less_rows:
 		_emit_clear_for_table(entry[0], entry[1])
+
+
+## Rows a message in [member _undispatched] applied but has not reported yet, by instance
+## id: an unreported insert maps to null, an unreported update's new row to the row it
+## replaced — the one its consumers still know. Empty outside a dispatch.
+func _unannounced_rows() -> Dictionary[int, Variant]:
+	var unannounced: Dictionary[int, Variant] = { }
+	for plan: _TablePlan in _undispatched:
+		for k: int in range(plan.inserts_sent, plan.inserted.size()):
+			unannounced[plan.inserted[k].get_instance_id()] = null
+		for k: int in range(plan.updates_sent * 2, plan.updated.size(), 2):
+			unannounced[plan.updated[k + 1].get_instance_id()] = plan.updated[k]
+	return unannounced
+
+
+## [param rows] as a wipe reports them: each one in [param unannounced] swapped for the
+## row its consumers know, or left out when they know none.
+func _announced(rows: Array, unannounced: Dictionary[int, Variant]) -> Array:
+	if unannounced.is_empty():
+		return rows
+	var known: Array = []
+	for row: _ModuleTableType in rows:
+		var id: int = row.get_instance_id()
+		if not unannounced.has(id):
+			known.append(row)
+		elif unannounced[id] != null:
+			known.append(unannounced[id])
+	return known
 
 
 ## Emits delete + transactions-completed callbacks for every row in [param rows].
@@ -1203,10 +1611,11 @@ func _emit_clear_for_table(table_name_lower: StringName, rows: Array) -> void:
 		table_name_lower,
 	)
 	for row: _ModuleTableType in rows:
-		for listener: Callable in before_delete_listeners:
-			if listener.is_valid():
-				listener.call(row)
-		row_before_delete.emit(table_name_lower, row)
+		if not _before_delete_sent.has(row.get_instance_id()):
+			for listener: Callable in before_delete_listeners:
+				if listener.is_valid():
+					listener.call(row)
+			row_before_delete.emit(table_name_lower, row)
 		for listener: Callable in delete_listeners:
 			if listener.is_valid():
 				listener.call(row)
@@ -1361,23 +1770,24 @@ func clear_all_tables() -> void:
 	# called from a row callback. Without this bump the rest of the batch stays cached with
 	# an empty _ref_counts, i.e. rows no later delete can evict. See [member _generation].
 	_generation += 1
-	# Dead entries first, so the walk below cannot meet one: calling an invalid Callable is
-	# a runtime error, which unwinds this whole function.
+	# The `dropped_rows` gate is load-bearing, not an optimisation: it is what makes a
+	# re-entrant wipe terminate. clear_local_db()'s emit loops stop on their own because
+	# what they report comes from containers the outer call already emptied; the
+	# invalidator list is a registry no wipe empties, so an invalidator that calls back into
+	# clear_all_tables() would re-fire every entry including itself without bound. An
+	# already-emptied database has nothing left to invalidate, so the nested call returns.
+	if dropped_rows:
+		_invalidate_indexes()
+
+
+## Empties every generated index cache. Fired after the containers, so an invalidator that
+## reads this database sees an emptied one — and from a COPY, like every other dispatch
+## loop in this class, since an invalidator may register or release another index. Dead
+## entries are dropped first: calling an invalid Callable is a runtime error.
+func _invalidate_indexes() -> void:
 	for i: int in range(_index_invalidators.size() - 1, -1, -1):
 		if not _index_invalidators[i].is_valid():
 			_index_invalidators.remove_at(i)
-	if not dropped_rows:
-		return
-	# Fired after the containers, so an invalidator that reads this database sees an emptied
-	# one — and from a COPY, like every other dispatch loop in this class, since an
-	# invalidator may register or release another index.
-	#
-	# The `dropped_rows` gate above is load-bearing, not an optimisation: it is what makes a
-	# re-entrant wipe terminate. clear_local_db()'s emit loops stop on their own because
-	# what they report comes from containers the outer call already emptied; this list is a
-	# registry no wipe empties, so an invalidator that calls back into clear_all_tables()
-	# would re-fire every entry including itself without bound. An already-emptied database
-	# has nothing left to invalidate, so the nested call returns above.
 	for invalidator: Callable in _index_invalidators.duplicate():
 		if invalidator.is_valid():
 			invalidator.call()
