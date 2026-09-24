@@ -256,9 +256,9 @@ Waits for the procedure call response and returns the raw BSATN-encoded return b
 | `database_initialized` | Emitted once when the local DB receives its first server data (the first `SubscribeApplied`, or the first transaction update if one arrives first). |
 | `row_inserted(table_name: StringName, row: Resource)` | Emitted when a row is inserted. |
 | `row_updated(table_name: StringName, old_row: Resource, new_row: Resource)` | Emitted when a row is updated. |
-| `row_before_delete(table_name: StringName, row: Resource)` | Emitted just before a row is removed — the row is still queryable in the cache. |
+| `row_before_delete(table_name: StringName, row: Resource)` | Emitted before the message that removes the row is applied — the row is still queryable in the cache. |
 | `row_deleted(table_name: StringName, row: Resource)` | Emitted when a row is deleted. |
-| `row_transactions_completed(table_name: StringName)` | Emitted when all row changes for a table update are applied. |
+| `row_transactions_completed(table_name: StringName)` | Emitted once per table per server message, after that table's row callbacks. |
 | `transaction_update_received(update: TransactionUpdateMessage)` | Emitted when a transaction update is received. |
 | `reducer_result_received(request_id: int, tx_update: TransactionUpdateMessage)` | Emitted when a reducer result arrives. |
 | `procedure_result_received(request_id: int, return_bytes: PackedByteArray)` | Emitted when a procedure result arrives. |
@@ -266,6 +266,31 @@ Waits for the procedure call response and returns the raw BSATN-encoded return b
 | `reconnecting(attempt: int, max_attempts: int)` | Emitted before each reconnection attempt. |
 | `reconnected` | Emitted after a successful reconnection and all subscriptions are restored. |
 | `reconnect_failed` | Emitted when all reconnection attempts are exhausted. |
+
+### When row callbacks fire
+
+Each server message (a transaction, a subscribe snapshot, an unsubscribe) is applied as a
+whole before any of its row callbacks run, the same as the official Rust, C# and
+TypeScript SDKs:
+
+1. Every `on_before_delete` / `row_before_delete` for the message, across all its tables,
+   while the cache still holds the state from before the message.
+2. The message is applied to every table, including the generated index caches.
+3. Per table, in the order the message first mentions them: every `on_insert`, then every
+   `on_update`, then every `on_delete`, then one `row_transactions_completed`.
+
+So a callback always sees the whole message applied. A player's `on_insert` can look up
+the entity the same transaction inserted into another table, by primary key or through an
+index, and an `on_delete` sees every other row that transaction removed already gone.
+
+A transaction's query sets are merged per table first. A row that leaves one of your
+subscriptions and enters another in one transaction (an entity crossing between two
+separately subscribed areas) is a single `on_update`, not an `on_delete` followed by an
+`on_insert`.
+
+Messages are applied one at a time. A message your code applies to the `LocalDatabase`
+from inside a row callback is queued and applied once the current message has finished,
+so every callback of the current message still sees it exactly as described above.
 
 ### Row callbacks across a reconnect
 
@@ -461,9 +486,10 @@ class ModuleTable:
 func(row: Row) -> void
 ```
 
-The `on_before_delete` listener runs just before a row is removed from the local
-database — the row (and related rows) are still queryable from the cache when it
-fires. Use it to read pre-delete state that `on_delete` could no longer see.
+The `on_before_delete` listener runs before the message that removes a row is applied —
+the row, and every other row in the cache, is still at its pre-message state when it
+fires. Use it to read pre-delete state that `on_delete` could no longer see. See
+[When row callbacks fire](#when-row-callbacks-fire).
 
 Call `remove_on_before_delete` to un-register a previously registered listener.
 
@@ -1480,7 +1506,7 @@ class LocalDatabase:
     func unsubscribe_from_transactions_completed(table_name: StringName, callable: Callable) -> void
 ```
 
-The `callable` runs after all row changes for a table update batch have been applied to the table with the given `table_name`. Useful for batching UI updates rather than reacting to each individual row change.
+The `callable` runs once per server message that changed the table with the given `table_name`, after that table's insert, update and delete callbacks. Useful for batching UI updates rather than reacting to each individual row change.
 
 ### Access untyped data in the local database
 

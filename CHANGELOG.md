@@ -4,7 +4,40 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 
 ## [Unreleased]
 
+### Fixed
+- **A row that moves between two of your subscriptions in one transaction is now an
+  update, not a despawn and a respawn.** The server sends one query set per subscription,
+  and the SDK applied them one after another, so a row leaving area A and entering area B
+  fired `on_delete` and then `on_insert` (or the reverse). Every query set's rows are now
+  merged per table before anything is applied, as the official Rust, C# and TypeScript
+  SDKs do, and the move fires one `on_update`. Rows without a primary key are merged the
+  same way. First fixed in #37 by @villiger, which ordered every set's inserts ahead of
+  its deletes; the per-table merge replaces that ordering and keeps its test.
+- **Row callbacks now see the whole message applied.** Each server message (transaction,
+  subscribe snapshot, unsubscribe) is applied to every table, generated index caches
+  included, before any row callback runs. Previously a callback saw only the rows applied
+  so far, so a player's `on_insert` could miss the entity the same transaction inserted
+  into a later table. The order is now: every `on_before_delete` for the message, against
+  the cache as it was before the message; then the apply; then per table every
+  `on_insert`, `on_update`, `on_delete`, and one `row_transactions_completed`. See "When
+  row callbacks fire" in `docs/api.md`. A callback that wipes the mirror partway through
+  a message (a listener that reconnects) reports only what it had announced: an insert
+  it never reported is not reported deleted, and an unreported update is reported deleted
+  as the row it replaced. A message applied to the `LocalDatabase` from inside a row
+  callback is queued until the current one has finished, as the official SDKs process
+  messages one at a time.
+
 ### Changed
+- `row_transactions_completed` fires once per table per server message. It used to fire
+  once per query set, so a transaction touching one table through two subscriptions
+  fired it twice.
+- Generated index caches (`_ModuleTableUniqueIndex`, `_ModuleTableBTreeIndex`) are
+  updated during the apply instead of from row listeners, through the new
+  `LocalDatabase.register_index_hooks`. An index is therefore current inside every row
+  callback, including one on another table.
+- New `LocalDatabase.apply_transaction_update` and `LocalDatabase.apply_table_updates`
+  apply a whole message; `apply_table_update` still works and treats its one table
+  update as a message.
 - Verified the SDK end-to-end against **SpacetimeDB 2.10.0**; the tested range is now
   `2.2.0`–`2.10.0`, covering 2.9.0 and 2.10.0. No code change was needed. Nothing the
   client parses changed: `crates/client-api-messages` is byte-identical from `v2.7.0`
@@ -36,6 +69,10 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1, submodules 8/8.
 
 ### Performance
+- Applying a message before its callbacks costs about 110 to 390 ns per changed row
+  (insert +40 to 42%, update +16 to 18%, delete +16 to 19%, measured A/B at N=100k): some
+  0.22 ms per 1,000 inserted rows. The table and the reasoning are in
+  `docs/performance.md`, "Cost of applying a whole message before its callbacks".
 - **Update detection on a generated row is about 40% faster. Regenerate your bindings to
   get it.** Deciding whether a re-delivered row changed ran every column through a generic
   walk: a property lookup and a type dispatch per column, repeated inside every nested

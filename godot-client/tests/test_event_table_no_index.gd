@@ -136,7 +136,7 @@ func _test_event_rows_are_not_resident() -> int:
 		func(_row: _ModuleTableType) -> void:
 			seen[0] += 1,
 	)
-	# A hand-built index of the shape codegen used to emit, wired to the same callbacks.
+	# A hand-built index of the shape codegen used to emit.
 	var idx: _EvBTree = _EvBTree.new(db)
 
 	for _batch: int in BATCHES:
@@ -150,10 +150,11 @@ func _test_event_rows_are_not_resident() -> int:
 	f += _check_i("the mirror stores none of them", db.count_all_rows(&"ev"), 0)
 	f += _check_i("iter() is empty", db.get_all_rows(&"ev").size(), 0)
 	f += _check_i("find_by reports nothing", db.find_by(&"ev", &"kind", 7).size(), 0)
-	# The measurement the codegen rule rests on: an index subscribed to those same
-	# callbacks holds every row ever delivered, because no delete is ever reported.
-	# If this ever stops being true (event rows made resident), revisit the codegen rule.
-	f += _check_i("an index would hold all of them", idx.bucket_size(7), pushed)
+	# Index upkeep now runs on hooks called while a message is applied, and the apply
+	# path skips them for an event table, so even a hand-wired index stays as empty as
+	# the mirror. It used to ride the insert listeners above and held every row ever
+	# delivered (no delete is ever reported) — the measurement the codegen rule rests on.
+	f += _check_i("a hand-wired index stays empty", idx.bucket_size(7), 0)
 	db.free()
 	return f
 

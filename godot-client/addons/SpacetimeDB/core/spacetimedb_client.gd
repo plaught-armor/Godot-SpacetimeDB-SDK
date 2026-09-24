@@ -2173,15 +2173,9 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 	elif message is UnsubscribeAppliedMessage:
 		var qid: int = message.query_id.id
 		if not message.tables.is_empty():
-			# Same session boundary as _handle_transaction_update: a callback here can wipe
-			# the mirror, and the remaining tables would then apply into the next
-			# session's as deletes for rows it does not hold, re-creating membership for a
-			# query that no longer exists.
-			var gen: int = _local_db.session_generation()
-			for table_update: TableUpdateData in message.tables:
-				_local_db.apply_table_update(table_update, qid)
-				if _local_db.session_generation() != gen:
-					break # break, not return: the bookkeeping below still has to run
+			# One message: every dropped row is applied before any callback runs, so a
+			# callback that wipes the mirror cannot leave later tables half-dropped.
+			_local_db.apply_table_updates(message.tables, qid)
 		_local_db.forget_query(qid)
 		_unsubscribing_query_ids.erase(qid)
 		# Also handle a query unsubscribed before its SubscribeApplied arrived: its
@@ -2265,60 +2259,20 @@ func _decode_reducer_error(err_bytes: PackedByteArray) -> String:
 
 
 func _handle_transaction_update(update_sets: TransactionUpdateMessage) -> void:
+	# Every query set is applied as ONE message, merged per table: a row that leaves one
+	# set and enters another in this transaction is an update, not a despawn + respawn.
 	# A row callback can end this session and start another (disconnect_db() then
-	# connect_db() wipes the mirror synchronously). The query sets after that one belong to
-	# the session the caller threw away, and applied into the fresh mirror they are rows no
-	# unsubscribe or delete can remove. LocalDatabase abandons a wiped batch of its own;
-	# this is the loop one level above it.
+	# connect_db() wipes the mirror synchronously); what follows then belongs to the
+	# session the caller threw away.
 	var gen: int = _local_db.session_generation()
-	for dataset: DatabaseUpdateData in _inserts_before_deletes(update_sets.query_sets):
-		_local_db.apply_database_update(dataset)
-		if _local_db.session_generation() != gen:
-			return
-		if not _received_initial_subscription:
-			_received_initial_subscription = true
-			self.database_initialized.emit()
-	# Emit the full transaction update signal regardless of status
+	_local_db.apply_transaction_update(update_sets)
+	if _local_db.session_generation() != gen:
+		return
+	if not _received_initial_subscription and not update_sets.query_sets.is_empty():
+		_received_initial_subscription = true
+		self.database_initialized.emit()
+	# Emitted whatever the transaction's status, unless a callback ended the session above.
 	self.transaction_update_received.emit(update_sets)
-
-## A row that moves from one query set to another in a transaction (an entity
-## crossing between two cells subscribed separately) arrives as a delete in one
-## set and an insert in the other. Applied set by set, a delete that comes first
-## drops the row to refcount 0 and fires on_delete, and the insert brings it back
-## with on_insert, a false despawn. With every set's inserts applied first, the
-## insert lands as an overlapping re-delivery (refcount 1 -> 2, on_update with the
-## new value) and the delete only releases the old set's reference (2 -> 1).
-##
-## A lone query set keeps its delete+insert pairing, so it is passed through as is.
-## Split, a set's own update of a row takes the same overlapping path, which ends
-## in the same cached row and one on_update.
-static func _inserts_before_deletes(query_sets: Array[DatabaseUpdateData]) -> Array[DatabaseUpdateData]:
-	if query_sets.size() <= 1:
-		return query_sets
-	var insert_sets: Array[DatabaseUpdateData] = []
-	var delete_sets: Array[DatabaseUpdateData] = []
-	for dataset: DatabaseUpdateData in query_sets:
-		var inserts: DatabaseUpdateData = DatabaseUpdateData.new()
-		var deletes: DatabaseUpdateData = DatabaseUpdateData.new()
-		inserts.query_id = dataset.query_id
-		deletes.query_id = dataset.query_id
-		for table: TableUpdateData in dataset.tables:
-			if not table.inserts.is_empty():
-				var t: TableUpdateData = TableUpdateData.new()
-				t.table_name = table.table_name
-				t.is_event = table.is_event
-				t.inserts = table.inserts
-				inserts.tables.append(t)
-			if not table.deletes.is_empty():
-				var t: TableUpdateData = TableUpdateData.new()
-				t.table_name = table.table_name
-				t.is_event = table.is_event
-				t.deletes = table.deletes
-				deletes.tables.append(t)
-		insert_sets.append(inserts)
-		delete_sets.append(deletes)
-	return insert_sets + delete_sets
-
 
 # --- Reconnection ---
 

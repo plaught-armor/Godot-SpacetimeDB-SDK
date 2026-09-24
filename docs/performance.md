@@ -104,13 +104,36 @@ All measured, and test-verified against a green suite:
 ## Measured apply-path baseline
 
 `LocalDatabase.apply_table_update`, saturated (N=100k, best-of-7, median of 5 runs,
-re-measured 2026-09-11), `tests/bench_apply_profile.gd`:
+re-measured 2026-09-24), `tests/bench_apply_profile.gd`:
 
 | wave | prim row (6 primitive fields) | entity row (nested record field) | circle row (nested record + float) |
 |---|---|---|---|
-| insert | ~535 ns/row | ~545 ns/row | ~548 ns/row |
-| update (detect) | ~2260 ns/row | ~2010 ns/row | ~2100 ns/row |
-| delete | ~586 ns/row | ~613 ns/row | ~628 ns/row |
+| insert | ~764 ns/row | ~783 ns/row | ~763 ns/row |
+| update (detect) | ~2807 ns/row | ~2572 ns/row | ~2712 ns/row |
+| delete | ~785 ns/row | ~775 ns/row | ~794 ns/row |
+
+### Cost of applying a whole message before its callbacks
+
+These numbers include applying each server message as a whole before any of its row
+callbacks run (see "When row callbacks fire" in `docs/api.md`), which the official Rust,
+C# and TypeScript SDKs all do. Before that change the SDK fired each row's callbacks as it
+applied the row. Deferring them means recording every changed row first and walking that
+record afterwards, and counting each row as it is reported, so a callback that wipes the
+mirror mid-message reports only the rows its consumers were told about. That is the whole
+cost. Measured A/B against the previous
+apply path, interleaved in the same runs (median of 5, N=100k, ns/row):
+
+| wave | prim before / after | entity before / after | circle before / after |
+|---|---|---|---|
+| insert | 539 / 764 (+42%) | 558 / 783 (+40%) | 546 / 763 (+40%) |
+| update (detect) | 2417 / 2807 (+16%) | 2185 / 2572 (+18%) | 2331 / 2712 (+16%) |
+| delete | 662 / 785 (+19%) | 660 / 775 (+17%) | 684 / 794 (+16%) |
+
+The added cost is about 110 to 390 ns per changed row: some 0.22 ms per 1,000 inserted
+rows, and about 22 ms across a 100,000-row subscribe snapshot. The apply path already
+skips predicting before-delete targets when nothing listens, and has its own insert-only
+and delete-only paths so a single-kind wave does no pairing work. Typed record arrays
+were measured and made no difference.
 
 The prim row is declared inside the bench, so it has no generated `_row_eq` and its update
 detection runs the generic walk. The entity and circle rows are generated bindings and run

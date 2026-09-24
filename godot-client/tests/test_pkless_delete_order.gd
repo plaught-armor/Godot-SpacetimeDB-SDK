@@ -14,9 +14,8 @@
 #   - a row still held by another subscription is not reported deleted at all,
 #   - the surviving rows are exactly the ones left, in order,
 #   - the PK path's ordering is unchanged (the contract being matched),
-#   - the emission SHAPE of a multi-row batch, which is where the two paths differ: the
-#     PK path interleaves each row's pair, the PK-less path reports every before-delete
-#     and then every delete (one compaction pass sits between them),
+#   - the emission SHAPE of a multi-row batch, the same on both paths: every
+#     before-delete of the message first, then every delete,
 #   - the same value appearing twice in one deletes list is counted twice and reported
 #     once.
 #
@@ -87,8 +86,8 @@ func _run() -> int:
 
 
 # The order a multi-row batch reports, pinned on both paths so a later change to either
-# one shows up as a disagreement rather than passing quietly. PK-less batches its two
-# phases around the single compaction pass; the PK path erases per row and so interleaves.
+# one shows up as a disagreement rather than passing quietly. Both report every
+# before-delete of a message before the message is applied, then every delete.
 func _test_batch_shape() -> int:
 	var f: int = 0
 	var db: LocalDatabase = _mk_db()
@@ -129,9 +128,9 @@ func _test_batch_shape() -> int:
 	_apply_to(db, &"keyed", [_keyed_row(1), _keyed_row(2)], [])
 	_apply_to(db, &"keyed", [], [_keyed_row(1), _keyed_row(2)])
 	f += _check_s(
-		"pk batch interleaves each row's pair",
+		"pk batch reports every before-delete first",
 		", ".join(pk_order),
-		"bd:1, d:1, bd:2, d:2",
+		"bd:1, bd:2, d:1, d:2",
 	)
 
 	db.free()
