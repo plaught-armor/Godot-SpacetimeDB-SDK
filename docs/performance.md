@@ -160,9 +160,9 @@ reporting whether anything listened or not.
 
 Reading which cached rows a message will evict, and reporting them, is skipped when
 nothing listens. But the client re-emitted `row_before_delete` through a connection of its
-own, and that connection counted as a listener. It is now a relay:
-`LocalDatabase.register_before_delete_relay`. The relay's own connections count, and the
-relaying itself does not. A/B, median of 5 interleaved runs, ns/row:
+own, and that connection counted as a listener. It is now a relay, registered with
+`LocalDatabase.register_row_relays` (next section). The relay's own connections count,
+and the relaying itself does not. A/B, median of 5 interleaved runs, ns/row:
 
 | wave | `game` before / after |
 |---|---|
@@ -172,6 +172,53 @@ relaying itself does not. A/B, median of 5 interleaved runs, ns/row:
 
 The bare `LocalDatabase` rows are unchanged. The rest of the gap between the `game` row
 and the entity row is the per-row signal forwarding and the index hooks.
+
+### Signal forwarding and index hooks in a running game
+
+The `game` row now builds the entity table as a game does: the client's row signals
+relayed, and the generated `BlackholioEntityTable` wrapper, with its primary-key unique
+index and its typed `inserted` / `updated` / `deleted` signals. Three costs separated it
+from the bare entity row, each paid per changed row:
+
+1. **The primary-key unique index kept a cache of its own.** `LocalDatabase` already keeps
+   a primary-key table as key -> row, so the index's dictionary was a second copy, kept
+   current by a hook call on every inserted, updated and deleted row. A unique index on
+   the primary key now reads `LocalDatabase`'s table (`_find_by_primary_key`) and
+   registers no hooks. Unique indexes on other columns keep their cache.
+2. **The wrapper's typed signals were re-emitted by a listener.** The generated `_init`
+   subscribed `_emit_inserted` / `_emit_updated` / `_emit_deleted`, each a call, a cast and
+   an emit per row. `LocalDatabase` now emits the wrapper's signals itself
+   (`register_table_relays`, called from `_ModuleTable._relay_row_signals`), just before
+   the table's listeners, where the wrapper's listener used to sit.
+3. **The client re-emitted every row signal through a forwarding connection.**
+   `LocalDatabase` now emits the client's `row_inserted` / `row_updated` /
+   `row_before_delete` / `row_deleted` / `row_transactions_completed` itself
+   (`register_row_relays`), each just before its own signal, where the forwarding
+   connection used to sit. This is backlog item 2 below, without the API break: consumers
+   still connect to the client's signals.
+
+1 and 2 are generated code: they take effect when bindings are regenerated. Bindings
+generated before this keep working unchanged, through the listener and hook paths.
+
+A/B, median of 5 interleaved runs, ns/row, each step against the one before it
+(4.8.dev editor build):
+
+| step | insert | update | delete |
+|---|---|---|---|
+| 1. primary-key index reads the table | 1301 → 951 | 3499 → 2818 | 1393 → 950 |
+| 2. wrapper signals relayed | 936 → 788 | 2781 → 2538 | 963 → 799 |
+| 3. client signals relayed | 791 → 647 | 2567 → 2377 | 784 → 644 |
+| all three, against the code before step 1 | 1285 → 639 | 3512 → 2375 | 1371 → 641 |
+
+The `game` row is now within about 70 ns/row of the bare entity row on inserts and
+deletes, and about 85 on updates. The bare rows pay the relay checks with nothing
+registered: about +2 to +5% on inserts and deletes, 10 to 25 ns/row, and nothing
+measurable on updates.
+
+Measured, not taken: skipping a table's reporting loops when nothing listens to it at
+all. Knowing that takes about 15 connection checks per table per message, some 750 ns,
+against at most about 75 ns/row saved, so it only pays from about 10 rows per table per
+message, and a game usually listens to the tables it subscribes to.
 
 The prim row is declared inside the bench, so it has no generated `_row_eq` and its update
 detection runs the generic walk. The entity and circle rows are generated bindings and run
@@ -191,12 +238,12 @@ Per-row insert attributed via `tests/bench_apply_components.gd` (component ns/op
 | per-row signal emit (1 listener) | ~142 | ~25% |
 | `Resource.get(StringName)` (pk fetch) | ~44 | ~8% |
 
-On signal cost, mind which zero-listener number you use: a signal that has **never**
-been connected emits at ~150 ns, while the same signal after one connect+disconnect
-cycle emits at ~78 ns (the connection slot is allocated lazily on first connect). It
-is not a warmup artifact — a discard pass before timing doesn't close the gap. The
-SDK's row signals always carry the client forwarder, so the 1-listener figure is the
-one that describes production.
+On signal cost, mind which zero-listener number you use. An earlier build measured a
+signal that had **never** been connected emitting at ~150 ns, against ~78 ns for the
+same signal after one connect and disconnect. On the 4.8.dev build used for the tables
+above the two are 56 and 53 ns, against 120 ns with one connection. `LocalDatabase`'s
+own row signals have no connection in a game now that the client's are relayed; the
+emit a game pays per row is the one on whichever signal its code connects to.
 
 ### Update cost is dominated by value equality
 
@@ -376,7 +423,10 @@ trade can be re-weighed if a real workload crosses its trigger.
 - **Trigger**: sustained > ~5k row-deltas/tick on the main thread, or a profile showing
   signal dispatch as a top frame cost. Below that, AIMD already hides it.
 
-### 2. Drop the LocalDatabase→client signal forwarder double-emit
+### 2. Drop the LocalDatabase→client signal forwarder double-emit — **SHIPPED** (2026-09-24)
+
+- **Outcome**: shipped without the API break, as relays: `LocalDatabase` emits the
+  client's signals itself. See "Signal forwarding and index hooks in a running game".
 
 - **What**: every row currently fires a LocalDatabase signal **and** a client forwarder
   re-emit of the client's own same-named signal (`_forward_row_*`). Two dispatches/row.

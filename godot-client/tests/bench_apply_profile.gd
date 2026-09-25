@@ -6,9 +6,9 @@
 # float) are generated rows, so theirs runs the typed comparison codegen emits. Reveals
 # where the apply budget goes under load, so the next optimization target is measured,
 # not guessed. The `game` row repeats the entity row as a game runs it: with
-# SpacetimeDBClient's signal forwarders connected, as they always are, and a unique index
-# on the primary key, as generated bindings register. Each row signal then runs a
-# handler and each change an index hook, which the bare-LocalDatabase rows never pay.
+# SpacetimeDBClient's row signals relayed, as they always are, and the generated
+# BlackholioEntityTable wrapper, whose typed signals are relayed too and whose primary-key
+# unique index reads the table. The bare-LocalDatabase rows pay none of that.
 extends SceneTree
 
 ## Loaded by path rather than named: a --script main loop compiles before autoloads
@@ -97,18 +97,17 @@ func _run(
 	var db: LocalDatabase = LocalDatabase.new(SpacetimeDBSchema.new("x"))
 	_seed(db, table, pk, props)
 	var client: Node = null
-	var index: _ModuleTableUniqueIndex = null
+	var wrapper: _ModuleTable = null
 	if game:
-		index = _ModuleTableUniqueIndex.new()
-		index._table_name = table
-		index._field_name = pk
-		index._connect_cache_to_db({ }, db)
+		wrapper = BlackholioEntityTable.new(db)
 		client = (load(CLIENT_SCRIPT) as GDScript).new()
-		db.row_inserted.connect(client._forward_row_inserted)
-		db.row_updated.connect(client._forward_row_updated)
-		db.register_before_delete_relay(client.row_before_delete)
-		db.row_deleted.connect(client._forward_row_deleted)
-		db.row_transactions_completed.connect(client._forward_row_transactions_completed)
+		db.register_row_relays(
+			client.row_inserted,
+			client.row_updated,
+			client.row_before_delete,
+			client.row_deleted,
+			client.row_transactions_completed,
+		)
 
 	# INSERT wave (subscribe): empty table -> N inserts.
 	var ins_us: int = _best(

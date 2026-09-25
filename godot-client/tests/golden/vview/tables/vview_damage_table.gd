@@ -10,9 +10,7 @@ signal deleted(row: VviewDamage)
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"damage"
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[VviewDamage]:
 	var rows: Array[_ModuleTableType] = super()
@@ -49,12 +47,3 @@ func find_by_amount(value: int) -> Array[VviewDamage]:
 
 func first_by_amount(value: int) -> VviewDamage:
 	return first_by(&"amount", value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as VviewDamage)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as VviewDamage, new_row as VviewDamage)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as VviewDamage)

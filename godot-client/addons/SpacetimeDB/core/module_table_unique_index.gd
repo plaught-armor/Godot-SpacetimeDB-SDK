@@ -14,6 +14,9 @@ var _field_name: StringName
 ## Reference to the subclass-owned cache, captured in [method _connect_cache_to_db]
 ## so the named hooks below can read it (the typed cache lives on the subclass).
 var _cache_ref: Dictionary = { }
+## Set instead of a cache when the index is on the table's primary key: [LocalDatabase]
+## already keeps that table as primary key -> row, so the index reads it there.
+var _db: LocalDatabase = null
 
 
 ## Wires [param cache] to live insert/update/delete hooks on [param db]
@@ -31,6 +34,19 @@ func _connect_cache_to_db(cache: Dictionary, db: LocalDatabase) -> void:
 ## answering [code]find()[/code] with rows that are gone.
 func _clear_cache() -> void:
 	_cache_ref.clear()
+
+
+## Wires an index on the table's primary key: no cache and no hooks, since the table itself
+## maps each primary key to its row. Keeping a second copy cost every inserted, updated
+## and deleted row of the table a hook call.
+func _read_primary_key_rows(db: LocalDatabase) -> void:
+	_db = db
+
+
+## The row whose primary key is [param col_val], or null, for an index wired by
+## [method _read_primary_key_rows].
+func _find_by_primary_key(col_val: Variant) -> _ModuleTableType:
+	return _db.get_row_by_pk(_table_name, col_val)
 
 
 ## Insert hook — maps the row's unique key to the row.

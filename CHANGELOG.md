@@ -69,12 +69,32 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1, submodules 8/8.
 
 ### Performance
+- **A game's row callbacks cost about half what they did per changed row. Regenerate your
+  bindings to get most of it.** Measured on an entity row with the client and the
+  generated table wrapper attached, as in a game: insert 1285 → 639 ns/row, update
+  3512 → 2375, delete 1371 → 641. Three per-row costs are gone:
+  - A generated unique index on a table's primary key reads `LocalDatabase`'s own table
+    instead of keeping a second copy in a cache of its own, updated by a hook call on
+    every changed row. Unique indexes on other columns are unchanged.
+  - A generated table's typed `inserted` / `updated` / `deleted` signals are emitted by
+    `LocalDatabase` directly (`register_table_relays`), not re-emitted by a listener the
+    wrapper registered. They still fire just before the table's `on_insert` /
+    `on_update` / `on_delete` callbacks.
+  - The client's `row_inserted` / `row_updated` / `row_before_delete` / `row_deleted` /
+    `row_transactions_completed` are emitted by `LocalDatabase` as relays
+    (`register_row_relays`), not through a forwarding connection per signal. They still
+    fire just before `LocalDatabase`'s own signals.
+
+  The first two are generated code. Bindings generated earlier keep working unchanged,
+  without those two gains. The bare `LocalDatabase`, with nothing attached, pays 10 to
+  25 ns/row more on inserts and deletes for the relay checks. The steps are measured one
+  by one in `docs/performance.md`, "Signal forwarding and index hooks in a running game".
 - **Updates and deletes in a running game no longer pay for before-delete reporting when
   nothing listens for it.** The client re-emitted `row_before_delete` through a
   connection that counted as a listener, so every update and delete read which cached
   rows it would evict and reported them, with or without a listener. The client now
-  registers its signal as a relay (`LocalDatabase.register_before_delete_relay`), which
-  counts only its own connections. Measured on an entity row with the client and a
+  registers its signal as a relay (`LocalDatabase.register_row_relays`), which counts
+  only its own connections. Measured on an entity row with the client and a
   unique index attached, as in a game: update 3839 → 3178 ns/row (−17%), delete
   2481 → 1219 (−51%). Listeners on the client's `row_before_delete`, on `LocalDatabase`'s
   or per table hear the same rows as before, relay listeners first.

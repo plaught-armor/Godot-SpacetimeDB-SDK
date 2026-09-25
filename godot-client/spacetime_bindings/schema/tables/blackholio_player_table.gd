@@ -14,9 +14,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	_table_name = &"player"
 	identity = BlackholioPlayerIdentityUniqueIndex.new(p_local_db)
 	player_id = BlackholioPlayerPlayerIdUniqueIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[BlackholioPlayer]:
 	var rows: Array[_ModuleTableType] = super()
@@ -67,12 +65,3 @@ func find_by_name(value: String) -> Array[BlackholioPlayer]:
 
 func first_by_name(value: String) -> BlackholioPlayer:
 	return first_by(&"name", value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as BlackholioPlayer)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as BlackholioPlayer, new_row as BlackholioPlayer)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as BlackholioPlayer)

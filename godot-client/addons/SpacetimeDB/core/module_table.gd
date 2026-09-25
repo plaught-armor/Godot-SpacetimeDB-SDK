@@ -14,6 +14,18 @@ func _init(db: LocalDatabase) -> void:
 	_db = db
 
 
+## Has [LocalDatabase] emit this wrapper's typed [code]inserted[/code],
+## [code]updated[/code] and [code]deleted[/code] signals, which every generated table
+## declares, with each row of [member _table_name]. Called by the generated [code]_init[/code].
+func _relay_row_signals() -> void:
+	_db.register_table_relays(
+		_table_name,
+		Signal(self, &"inserted"),
+		Signal(self, &"updated"),
+		Signal(self, &"deleted"),
+	)
+
+
 ## Returns the total number of rows in this table.
 func count() -> int:
 	return _db.count_all_rows(_table_name)

@@ -14,9 +14,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	_table_name = &"thing"
 	id = VviewThingIdUniqueIndex.new(p_local_db)
 	score = VviewThingScoreBTreeIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[VviewThing]:
 	var rows: Array[_ModuleTableType] = super()
@@ -63,12 +61,3 @@ func find_by_label(value: String) -> Array[VviewThing]:
 
 func first_by_label(value: String) -> VviewThing:
 	return first_by(&"label", value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as VviewThing)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as VviewThing, new_row as VviewThing)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as VviewThing)

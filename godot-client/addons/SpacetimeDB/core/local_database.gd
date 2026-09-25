@@ -36,6 +36,11 @@ var _update_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Cal
 var _before_delete_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
 var _delete_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
 var _transactions_completed_listeners_by_table: Dictionary[StringName, Array] = { } ## Array[Callable]
+## The typed row signals of the generated table wrappers, per table, emitted with each row
+## ahead of that table's listeners (see [method register_table_relays]).
+var _insert_relays_by_table: Dictionary[StringName, Array] = { } ## Array[Signal]
+var _update_relays_by_table: Dictionary[StringName, Array] = { } ## Array[Signal]
+var _delete_relays_by_table: Dictionary[StringName, Array] = { } ## Array[Signal]
 ## Shared read-only sentinel returned by [method _listener_snapshot] when a table
 ## has no listeners — avoids allocating an empty Array per snapshot on the common
 ## no-listener path. Read-only so a stray mutation fails loud (C2a).
@@ -140,9 +145,13 @@ var _before_delete_sent: Dictionary[int, bool] = { }
 ## finishes. See [method _apply_batch].
 var _queued_batches: Array[Array] = []
 var _applying: bool = false
-## A signal emitted with every [signal row_before_delete], its connections counted as
-## listeners (see [method register_before_delete_relay]). Null when none is registered.
+## Signals emitted with this database's own row signals, one each (see
+## [method register_row_relays]). Null when none is registered.
+var _inserted_relay: Signal
+var _updated_relay: Signal
 var _before_delete_relay: Signal
+var _deleted_relay: Signal
+var _transactions_completed_relay: Signal
 
 ## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -258,20 +267,62 @@ func register_index_hooks(
 ## [param invalidator] is expected to empty a cache and nothing else — it must not mutate
 ## this database. Wiping again is the dangerous shape: the list is a registry no wipe
 ## empties, so a re-entrant [method clear_all_tables] would fire every entry again.
-## Makes [param relay] a second [signal row_before_delete]: emitted with it, row for row,
-## and its connections count as listeners. The client re-emits this signal as its own,
-## and a forwarding connection would count as a listener on its own, so every update and
-## delete would pay for reading which rows it evicts even with nothing listening.
-func register_before_delete_relay(relay: Signal) -> void:
-	_before_delete_relay = relay
-
-
 func register_index_invalidator(invalidator: Callable) -> void:
 	for i: int in range(_index_invalidators.size() - 1, -1, -1):
 		if not _index_invalidators[i].is_valid():
 			_index_invalidators.remove_at(i)
 	if not _index_invalidators.has(invalidator):
 		_index_invalidators.append(invalidator)
+
+
+## Makes each signal a second [signal row_inserted], [signal row_updated],
+## [signal row_before_delete], [signal row_deleted] and
+## [signal row_transactions_completed]: emitted just before it, with the same arguments,
+## and its connections count as listeners. The client re-emits these signals as its own.
+## Relaying skips the forwarding call a connection would add per row, and a forwarding
+## connection on [signal row_before_delete] would count as a listener on its own, so every
+## update and delete would pay for reading which rows it evicts with nothing listening.
+func register_row_relays(
+		inserted: Signal,
+		updated: Signal,
+		before_delete: Signal,
+		deleted: Signal,
+		transactions_completed: Signal,
+) -> void:
+	_inserted_relay = inserted
+	_updated_relay = updated
+	_before_delete_relay = before_delete
+	_deleted_relay = deleted
+	_transactions_completed_relay = transactions_completed
+
+
+## Registers a generated table wrapper's typed [param inserted], [param updated] and
+## [param deleted] signals on [param table_name]. Each is emitted with the same arguments
+## as the matching table listener, just before that table's listeners run, so the
+## wrapper needs no listener of its own to re-emit each row. Signals whose object has been
+## freed are pruned here, the same shape as [method _add_listener].
+func register_table_relays(
+		table_name: StringName,
+		inserted: Signal,
+		updated: Signal,
+		deleted: Signal,
+) -> void:
+	var key: StringName = _normalize(table_name)
+	_add_relay(_insert_relays_by_table, key, inserted)
+	_add_relay(_update_relays_by_table, key, updated)
+	_add_relay(_delete_relays_by_table, key, deleted)
+
+
+# Adds [param relay] to a table's relay array, dropping any whose object has been freed.
+func _add_relay(by_table: Dictionary, key: StringName, relay: Signal) -> void:
+	if not by_table.has(key):
+		by_table[key] = []
+	var relays: Array = by_table[key]
+	for i: int in range(relays.size() - 1, -1, -1):
+		if (relays[i] as Signal).get_object() == null:
+			relays.remove_at(i)
+	if not relays.has(relay):
+		relays.append(relay)
 
 
 ## Registers [param callable] to be called with the inserted row for [param table_name].
@@ -1517,6 +1568,8 @@ func _dispatch_plan(plan: _TablePlan, gen: int, wiped: bool) -> bool:
 	var updated: Array = plan.updated
 	var deleted: Array = plan.deleted
 	if not wiped and not inserted.is_empty():
+		var insert_relays: Array = _listener_snapshot(_insert_relays_by_table, table_name_lower)
+		var relayed: bool = not _inserted_relay.is_null()
 		var insert_listeners: Array = _listener_snapshot(_insert_listeners_by_table, table_name_lower)
 		# Each loop sets this on entry: its first row is always reported, since the only game
 		# code run before it is the loop above, and that one reported a row to run any.
@@ -1528,12 +1581,18 @@ func _dispatch_plan(plan: _TablePlan, gen: int, wiped: bool) -> bool:
 				wiped = true
 				break
 			_in_flight_sent += 1
+			for relay: Signal in insert_relays:
+				relay.emit(row)
 			for listener: Callable in insert_listeners:
 				if listener.is_valid():
 					listener.call(row)
+			if relayed:
+				_inserted_relay.emit(table_name_lower, row)
 			row_inserted.emit(table_name_lower, row)
 		plan.inserts_sent = _in_flight_sent
 	if not wiped and not updated.is_empty():
+		var update_relays: Array = _listener_snapshot(_update_relays_by_table, table_name_lower)
+		var relayed: bool = not _updated_relay.is_null()
 		var update_listeners: Array = _listener_snapshot(_update_listeners_by_table, table_name_lower)
 		dispatched = true
 		plan.updates_sent = -1
@@ -1545,18 +1604,28 @@ func _dispatch_plan(plan: _TablePlan, gen: int, wiped: bool) -> bool:
 			_in_flight_sent += 1
 			var old_row: Variant = updated[i]
 			var new_row: Variant = updated[i + 1]
+			for relay: Signal in update_relays:
+				relay.emit(old_row, new_row)
 			for listener: Callable in update_listeners:
 				if listener.is_valid():
 					listener.call(old_row, new_row)
+			if relayed:
+				_updated_relay.emit(table_name_lower, old_row, new_row)
 			row_updated.emit(table_name_lower, old_row, new_row)
 		plan.updates_sent = _in_flight_sent
 	if not deleted.is_empty():
+		var delete_relays: Array = _listener_snapshot(_delete_relays_by_table, table_name_lower)
 		var delete_listeners: Array = _listener_snapshot(_delete_listeners_by_table, table_name_lower)
+		var relayed: bool = not _deleted_relay.is_null()
 		dispatched = true
 		for row: Variant in deleted:
+			for relay: Signal in delete_relays:
+				relay.emit(row)
 			for listener: Callable in delete_listeners:
 				if listener.is_valid():
 					listener.call(row)
+			if relayed:
+				_deleted_relay.emit(table_name_lower, row)
 			row_deleted.emit(table_name_lower, row)
 	_end_table_transaction(table_name_lower, tx_listeners, dispatched)
 	return wiped or _generation != gen
@@ -1573,6 +1642,8 @@ func _end_table_transaction(table_name_lower: StringName, tx_listeners: Array, d
 	for listener: Callable in tx_listeners:
 		if listener.is_valid():
 			listener.call()
+	if not _transactions_completed_relay.is_null():
+		_transactions_completed_relay.emit(table_name_lower)
 	row_transactions_completed.emit(table_name_lower)
 
 
@@ -1657,6 +1728,7 @@ func _emit_clear_for_table(table_name_lower: StringName, rows: Array) -> void:
 		_before_delete_listeners_by_table,
 		table_name_lower,
 	)
+	var delete_relays: Array = _listener_snapshot(_delete_relays_by_table, table_name_lower)
 	var delete_listeners: Array = _listener_snapshot(_delete_listeners_by_table, table_name_lower)
 	var tx_listeners: Array = _listener_snapshot(
 		_transactions_completed_listeners_by_table,
@@ -1668,13 +1740,19 @@ func _emit_clear_for_table(table_name_lower: StringName, rows: Array) -> void:
 				if listener.is_valid():
 					listener.call(row)
 			_emit_before_delete(table_name_lower, row)
+		for relay: Signal in delete_relays:
+			relay.emit(row)
 		for listener: Callable in delete_listeners:
 			if listener.is_valid():
 				listener.call(row)
+		if not _deleted_relay.is_null():
+			_deleted_relay.emit(table_name_lower, row)
 		row_deleted.emit(table_name_lower, row)
 	for listener: Callable in tx_listeners:
 		if listener.is_valid():
 			listener.call()
+	if not _transactions_completed_relay.is_null():
+		_transactions_completed_relay.emit(table_name_lower)
 	row_transactions_completed.emit(table_name_lower)
 
 

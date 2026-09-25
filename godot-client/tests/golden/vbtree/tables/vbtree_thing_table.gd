@@ -16,9 +16,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	id = VbtreeThingIdUniqueIndex.new(p_local_db)
 	owner = VbtreeThingOwnerBTreeIndex.new(p_local_db)
 	score = VbtreeThingScoreBTreeIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[VbtreeThing]:
 	var rows: Array[_ModuleTableType] = super()
@@ -65,12 +63,3 @@ func find_by_owner(value: PackedByteArray) -> Array[VbtreeThing]:
 
 func first_by_owner(value: PackedByteArray) -> VbtreeThing:
 	return owner._first_row(value) as VbtreeThing
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as VbtreeThing)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as VbtreeThing, new_row as VbtreeThing)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as VbtreeThing)
