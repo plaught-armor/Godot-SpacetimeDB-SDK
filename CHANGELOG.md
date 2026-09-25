@@ -69,10 +69,11 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1, submodules 8/8.
 
 ### Performance
-- Applying a message before its callbacks costs about 110 to 390 ns per changed row
-  (insert +40 to 42%, update +16 to 18%, delete +16 to 19%, measured A/B at N=100k): some
-  0.22 ms per 1,000 inserted rows. The table and the reasoning are in
-  `docs/performance.md`, "Cost of applying a whole message before its callbacks".
+- Applying a message before its callbacks costs about 55 ns per inserted row and 220 to
+  310 ns per updated row. Deletes cost the same as before. That is insert +10%, update +9
+  to 15%, delete −3 to +1%, measured A/B at N=100k: some 0.05 ms per 1,000 inserted rows.
+  The table and the reasoning are in `docs/performance.md`, "Cost of applying a whole
+  message before its callbacks".
 - **Update detection on a generated row is about 40% faster. Regenerate your bindings to
   get it.** Deciding whether a re-delivered row changed ran every column through a generic
   walk: a property lookup and a type dispatch per column, repeated inside every nested
