@@ -147,6 +147,10 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   a release template; `bench_specialized_parser` now measures the saving at 1.24 µs/row on
   the 4.7 editor and 0.97 on the release template. The bench prints a ceiling instead:
   the speedup if row parse cost nothing.
+- `docs/performance.md` now measures this release's apply-path savings on the Godot 4.7
+  release template as well as in the editors. A game's per-row cost falls about as much
+  in an exported game: insert 1278 → 503 ns/row (−61%), update 3956 → 2052 (−48%),
+  delete 2429 → 551 (−77%).
 
 ## [2.8.0] - 2026-08-27
 

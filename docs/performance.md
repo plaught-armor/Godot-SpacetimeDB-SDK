@@ -376,6 +376,31 @@ slower than before the change.
 | row compare, circle equal: walk / generated | 2018 / 507 ns | 1759 / 433 ns | −13% / −15% |
 | row compare, config equal: walk / generated | 403 / 195 ns | 363 / 171 ns | −10% / −12% |
 
+### After the apply-path work (2026-09-25)
+
+The three apply-path changes of 2026-09-24/25 (the deferred-apply overhead cut, the
+before-delete relay, and the forwarding and index-hook relays) were measured only on the
+4.8.dev editor build. Re-measured with `bench_apply_profile` on three binaries: the code
+before all three (`fb97aa9`, with its own generated bindings and the client's forwarding
+connections) against the code after (`0f5c0fb`). Each round ran both sides on every binary
+in rotated order; medians of 10 rounds, ns/row, before → after.
+
+| row, wave | 4.8.dev editor | 4.7 editor | 4.7 release template |
+|---|---|---|---|
+| `game` insert | 1438 → 640 (−56%) | 1541 → 666 (−57%) | 1278 → 503 (−61%) |
+| `game` update | 4281 → 2383 (−44%) | 4908 → 2854 (−42%) | 3956 → 2052 (−48%) |
+| `game` delete | 2686 → 645 (−76%) | 2957 → 713 (−76%) | 2429 → 551 (−77%) |
+| entity insert | 733 → 582 (−21%) | 745 → 602 (−19%) | 536 → 455 (−15%) |
+| entity update | 2424 → 2337 (−4%) | 2896 → 2732 (−6%) | 2054 → 1986 (−3%) |
+| entity delete | 660 → 569 (−14%) | 690 → 669 (−3%) | 474 → 504 (+6%) |
+
+- **The saving carries over to a shipped game.** The `game` row gains as much on the
+  release template as in either editor, and slightly more in relative terms.
+- **Bare deletes gain nothing on the release template.** The prim, entity and circle
+  rows measure +0%, +6% and +5%, 0 to 30 ns/row, within the run-to-run spread (entity
+  after: 471 to 574 ns). That is the relay checks, which the editors hide behind larger
+  savings. The bare `LocalDatabase` rows are not what a game runs.
+
 ## Research verdicts (2026-06-20)
 
 A deep-research pass (23 sources, 25 adversarially 3-vote-verified claims, official
