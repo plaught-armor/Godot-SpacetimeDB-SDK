@@ -447,7 +447,9 @@ func initialize_and_connect() -> void:
 	# the formatter mangles inline-lambda indentation; see project rule S1).
 	_local_db.row_inserted.connect(_forward_row_inserted)
 	_local_db.row_updated.connect(_forward_row_updated)
-	_local_db.row_before_delete.connect(_forward_row_before_delete)
+	# Relayed rather than forwarded: a forwarding connection would count as a listener,
+	# and make every update and delete read which rows it evicts with nothing listening.
+	_local_db.register_before_delete_relay(row_before_delete)
 	_local_db.row_deleted.connect(_forward_row_deleted)
 	_local_db.row_transactions_completed.connect(_forward_row_transactions_completed)
 	_local_db.name = "LocalDatabase"
@@ -1219,10 +1221,6 @@ func _forward_row_inserted(tn: StringName, r: _ModuleTableType) -> void:
 
 func _forward_row_updated(tn: StringName, p: _ModuleTableType, r: _ModuleTableType) -> void:
 	row_updated.emit(tn, p, r)
-
-
-func _forward_row_before_delete(tn: StringName, r: _ModuleTableType) -> void:
-	row_before_delete.emit(tn, r)
 
 
 func _forward_row_deleted(tn: StringName, r: _ModuleTableType) -> void:

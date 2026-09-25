@@ -151,6 +151,28 @@ What keeps it there, each measured in the editor:
 - The apply path skips predicting before-delete targets when nothing listens, and has its
   own insert-only and delete-only paths, so a single-kind wave does no pairing work.
 
+### Before-delete work in a running game
+
+`bench_apply_profile.gd`'s `game` row applies the entity row as a game does: with the
+client's signal forwarders connected, which they always are, and a unique index on the
+primary key. That row showed every update and delete in a game paying for before-delete
+reporting whether anything listened or not.
+
+Reading which cached rows a message will evict, and reporting them, is skipped when
+nothing listens. But the client re-emitted `row_before_delete` through a connection of its
+own, and that connection counted as a listener. It is now a relay:
+`LocalDatabase.register_before_delete_relay`. The relay's own connections count, and the
+relaying itself does not. A/B, median of 5 interleaved runs, ns/row:
+
+| wave | `game` before / after |
+|---|---|
+| insert | 1022 / 1002 |
+| update | 3839 / 3178 (−17%) |
+| delete | 2481 / 1219 (−51%) |
+
+The bare `LocalDatabase` rows are unchanged. The rest of the gap between the `game` row
+and the entity row is the per-row signal forwarding and the index hooks.
+
 The prim row is declared inside the bench, so it has no generated `_row_eq` and its update
 detection runs the generic walk. The entity and circle rows are generated bindings and run
 the typed comparison codegen emits (next section), which is why the nested rows now update
