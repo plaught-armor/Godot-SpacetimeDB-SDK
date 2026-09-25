@@ -69,6 +69,15 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   anonymous `Result` 2/2, PK-less refcount 3/3, reconnect identity 1/1, submodules 8/8.
 
 ### Performance
+- **Updates and deletes in a running game no longer pay for before-delete reporting when
+  nothing listens for it.** The client re-emitted `row_before_delete` through a
+  connection that counted as a listener, so every update and delete read which cached
+  rows it would evict and reported them, with or without a listener. The client now
+  registers its signal as a relay (`LocalDatabase.register_before_delete_relay`), which
+  counts only its own connections. Measured on an entity row with the client and a
+  unique index attached, as in a game: update 3839 → 3178 ns/row (−17%), delete
+  2481 → 1219 (−51%). Listeners on the client's `row_before_delete`, on `LocalDatabase`'s
+  or per table hear the same rows as before, relay listeners first.
 - Applying a message before its callbacks costs about 55 ns per inserted row and 220 to
   310 ns per updated row. Deletes cost the same as before. That is insert +10%, update +9
   to 15%, delete −3 to +1%, measured A/B at N=100k: some 0.05 ms per 1,000 inserted rows.

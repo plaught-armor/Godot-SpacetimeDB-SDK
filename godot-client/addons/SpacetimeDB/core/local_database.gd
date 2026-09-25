@@ -140,6 +140,9 @@ var _before_delete_sent: Dictionary[int, bool] = { }
 ## finishes. See [method _apply_batch].
 var _queued_batches: Array[Array] = []
 var _applying: bool = false
+## A signal emitted with every [signal row_before_delete], its connections counted as
+## listeners (see [method register_before_delete_relay]). Null when none is registered.
+var _before_delete_relay: Signal
 
 ## Emitted after a row is inserted into a table.
 signal row_inserted(table_name: StringName, row: _ModuleTableType)
@@ -255,6 +258,14 @@ func register_index_hooks(
 ## [param invalidator] is expected to empty a cache and nothing else — it must not mutate
 ## this database. Wiping again is the dangerous shape: the list is a registry no wipe
 ## empties, so a re-entrant [method clear_all_tables] would fire every entry again.
+## Makes [param relay] a second [signal row_before_delete]: emitted with it, row for row,
+## and its connections count as listeners. The client re-emits this signal as its own,
+## and a forwarding connection would count as a listener on its own, so every update and
+## delete would pay for reading which rows it evicts even with nothing listening.
+func register_before_delete_relay(relay: Signal) -> void:
+	_before_delete_relay = relay
+
+
 func register_index_invalidator(invalidator: Callable) -> void:
 	for i: int in range(_index_invalidators.size() - 1, -1, -1):
 		if not _index_invalidators[i].is_valid():
@@ -962,7 +973,17 @@ func _has_before_delete_consumers(table_name_lower: StringName) -> bool:
 	return (
 		_before_delete_listeners_by_table.has(table_name_lower)
 		or not row_before_delete.get_connections().is_empty()
+		or (not _before_delete_relay.is_null() and not _before_delete_relay.get_connections().is_empty())
 	)
+
+
+## [signal row_before_delete] and its relay. The relay goes first, where the client's
+## forwarding connection used to sit. No wipe check between the two: both are one signal
+## to a consumer, which reaches every connection even when one of them wipes.
+func _emit_before_delete(table_name_lower: StringName, row: _ModuleTableType) -> void:
+	if not _before_delete_relay.is_null():
+		_before_delete_relay.emit(table_name_lower, row)
+	row_before_delete.emit(table_name_lower, row)
 
 
 ## Counts a keyed table's deletes per pk across the whole message and hands each deleting
@@ -1123,7 +1144,7 @@ func _fire_table_before_deletes(plan: _TablePlan, gen: int, sent: PackedInt64Arr
 		var id: int = row.get_instance_id()
 		_before_delete_sent[id] = true
 		sent.append(id)
-		row_before_delete.emit(plan.table, row)
+		_emit_before_delete(plan.table, row)
 		if _generation != gen:
 			return false
 	return true
@@ -1646,7 +1667,7 @@ func _emit_clear_for_table(table_name_lower: StringName, rows: Array) -> void:
 			for listener: Callable in before_delete_listeners:
 				if listener.is_valid():
 					listener.call(row)
-			row_before_delete.emit(table_name_lower, row)
+			_emit_before_delete(table_name_lower, row)
 		for listener: Callable in delete_listeners:
 			if listener.is_valid():
 				listener.call(row)

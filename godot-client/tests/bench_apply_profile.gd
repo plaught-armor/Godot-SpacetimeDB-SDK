@@ -5,9 +5,15 @@
 # BlackholioEntity (a nested record column) and BlackholioCircle (nested record plus a
 # float) are generated rows, so theirs runs the typed comparison codegen emits. Reveals
 # where the apply budget goes under load, so the next optimization target is measured,
-# not guessed.
+# not guessed. The `game` row repeats the entity row as a game runs it: with
+# SpacetimeDBClient's signal forwarders connected, as they always are, and a unique index
+# on the primary key, as generated bindings register. Each row signal then runs a
+# handler and each change an index hook, which the bare-LocalDatabase rows never pay.
 extends SceneTree
 
+## Loaded by path rather than named: a --script main loop compiles before autoloads
+## register, and the client script is what the addon's autoload is built from.
+const CLIENT_SCRIPT: String = "res://addons/SpacetimeDB/core/spacetimedb_client.gd"
 const N: int = 100000
 const REPS: int = 7
 
@@ -72,7 +78,14 @@ func _wave(table: StringName, ins: Array[Resource], del: Array[Resource]) -> Tab
 	return u
 
 
-func _run(label: String, table: StringName, pk: StringName, props: Array[StringName], mk: Callable) -> void:
+func _run(
+		label: String,
+		table: StringName,
+		pk: StringName,
+		props: Array[StringName],
+		mk: Callable,
+		game: bool = false,
+) -> void:
 	var empty: Array[Resource] = []
 	# Pre-build row sets once (outside timing).
 	var first: Array[Resource] = []
@@ -83,6 +96,19 @@ func _run(label: String, table: StringName, pk: StringName, props: Array[StringN
 
 	var db: LocalDatabase = LocalDatabase.new(SpacetimeDBSchema.new("x"))
 	_seed(db, table, pk, props)
+	var client: Node = null
+	var index: _ModuleTableUniqueIndex = null
+	if game:
+		index = _ModuleTableUniqueIndex.new()
+		index._table_name = table
+		index._field_name = pk
+		index._connect_cache_to_db({ }, db)
+		client = (load(CLIENT_SCRIPT) as GDScript).new()
+		db.row_inserted.connect(client._forward_row_inserted)
+		db.row_updated.connect(client._forward_row_updated)
+		db.register_before_delete_relay(client.row_before_delete)
+		db.row_deleted.connect(client._forward_row_deleted)
+		db.row_transactions_completed.connect(client._forward_row_transactions_completed)
 
 	# INSERT wave (subscribe): empty table -> N inserts.
 	var ins_us: int = _best(
@@ -132,6 +158,9 @@ func _run(label: String, table: StringName, pk: StringName, props: Array[StringN
 			(del_us - ins_us) * 1000.0 / N,
 		]
 	)
+	if client != null:
+		client.free()
+	db.free()
 
 
 func _initialize() -> void:
@@ -155,5 +184,13 @@ func _initialize() -> void:
 		&"entity_id",
 		[&"entity_id", &"player_id", &"direction", &"speed", &"last_split_time"] as Array[StringName],
 		_circ,
+	)
+	_run(
+		"game  ",
+		&"entity",
+		&"entity_id",
+		[&"entity_id", &"position", &"mass"] as Array[StringName],
+		_ent,
+		true,
 	)
 	quit()

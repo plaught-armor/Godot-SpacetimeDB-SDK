@@ -61,6 +61,7 @@ func _run() -> int:
 	f += _test_nested_delete_from_before_delete()
 	f += _test_queued_message_dropped_by_wipe()
 	f += _test_prune_from_callback()
+	f += _test_before_delete_relay()
 	return f
 
 
@@ -506,6 +507,43 @@ func _test_prune_from_callback() -> int:
 	)
 	f += _check_b("prune in callback: membership gone", _db._query_rows.has(1), false)
 	f += _check_b("prune in callback: other query kept", _holds(2, &"player", 4), true)
+	return f
+
+
+## The client relays LocalDatabase's before-delete signal instead of connecting a
+## forwarder to it, so the forwarding does not count as a listener: with nothing connected
+## to either signal, a delete skips reading which rows it evicts. A listener on the relay
+## hears each evicted row while it is still cached, before a listener connected to
+## LocalDatabase itself, and a wipe announces the rows it drops to both.
+func _test_before_delete_relay() -> int:
+	_fresh()
+	var client: Node = load(CLIENT_SCRIPT).new()
+	_db.register_before_delete_relay(client.row_before_delete)
+	_db.apply_transaction_update(
+		_tx([_qset(1, [_table(&"player", [_player(7, 1), _player(8, 1)], [])])])
+	)
+	var f: int = _check_b(
+		"relay: nothing listening",
+		_db._has_before_delete_consumers(&"player"),
+		false,
+	)
+	var heard: PackedStringArray = []
+	client.row_before_delete.connect(
+		func(_t: StringName, r: _ModuleTableType) -> void:
+			var cached: bool = _db.get_row_by_pk(&"player", r.id) != null
+			heard.append("relay:%d:%s" % [r.id, "cached" if cached else "gone"]),
+	)
+	f += _check_b("relay: its listener counts", _db._has_before_delete_consumers(&"player"), true)
+	_db.row_before_delete.connect(
+		func(_t: StringName, r: _ModuleTableType) -> void:
+			heard.append("db:%d" % r.id),
+	)
+	_db.apply_transaction_update(_tx([_qset(1, [_table(&"player", [], [_player(7, 1)])])]))
+	f += _check_s("relay: delete announced", ", ".join(heard), "relay:7:cached, db:7")
+	heard.clear()
+	_db.clear_local_db()
+	f += _check_s("relay: wipe announced", ", ".join(heard), "relay:8:gone, db:8")
+	client.free()
 	return f
 
 # --- harness ---
