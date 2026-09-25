@@ -12,9 +12,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"food"
 	entity_id = BlackholioFoodEntityIdUniqueIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[BlackholioFood]:
 	var rows: Array[_ModuleTableType] = super()
@@ -49,12 +47,3 @@ func find_by_entity_id(value: int) -> Array[BlackholioFood]:
 
 func first_by_entity_id(value: int) -> BlackholioFood:
 	return entity_id.find(value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as BlackholioFood)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as BlackholioFood, new_row as BlackholioFood)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as BlackholioFood)

@@ -443,15 +443,17 @@ func initialize_and_connect() -> void:
 	_local_db = LocalDatabase.new(schema)
 	_init_db(_local_db)
 
-	# Re-emit LocalDatabase signals as the client's own (named methods, not lambdas —
-	# the formatter mangles inline-lambda indentation; see project rule S1).
-	_local_db.row_inserted.connect(_forward_row_inserted)
-	_local_db.row_updated.connect(_forward_row_updated)
-	# Relayed rather than forwarded: a forwarding connection would count as a listener,
-	# and make every update and delete read which rows it evicts with nothing listening.
-	_local_db.register_before_delete_relay(row_before_delete)
-	_local_db.row_deleted.connect(_forward_row_deleted)
-	_local_db.row_transactions_completed.connect(_forward_row_transactions_completed)
+	# LocalDatabase emits the client's row signals alongside its own. Relayed rather than
+	# forwarded: a forwarding connection costs a call per row, and on row_before_delete it
+	# would count as a listener, making every update and delete read which rows it evicts
+	# with nothing listening.
+	_local_db.register_row_relays(
+		row_inserted,
+		row_updated,
+		row_before_delete,
+		row_deleted,
+		row_transactions_completed,
+	)
 	_local_db.name = "LocalDatabase"
 	add_child(_local_db) # Add as child if it needs signals
 
@@ -1212,23 +1214,6 @@ func _wait_for_response(
 
 func _init_db(_local_db: LocalDatabase) -> void:
 	pass
-
-
-# --- LocalDatabase signal forwarders (re-emit as the client's own signals) ---
-func _forward_row_inserted(tn: StringName, r: _ModuleTableType) -> void:
-	row_inserted.emit(tn, r)
-
-
-func _forward_row_updated(tn: StringName, p: _ModuleTableType, r: _ModuleTableType) -> void:
-	row_updated.emit(tn, p, r)
-
-
-func _forward_row_deleted(tn: StringName, r: _ModuleTableType) -> void:
-	row_deleted.emit(tn, r)
-
-
-func _forward_row_transactions_completed(tn: StringName) -> void:
-	row_transactions_completed.emit(tn)
 
 
 func _load_token_or_request() -> void:

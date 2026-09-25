@@ -2,12 +2,10 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name VsubmodAuthBazBazItemsIdUniqueIndex extends _ModuleTableUniqueIndex
 
-var _cache: Dictionary[int, VsubmodAuthBazBazItems] = {}
-
 func _init(p_local_db: LocalDatabase) -> void:
 	_table_name = &"auth.baz.baz_items"
 	_field_name = &"id"
-	_connect_cache_to_db(_cache, p_local_db)
+	_read_primary_key_rows(p_local_db)
 
 func find(col_val: int) -> VsubmodAuthBazBazItems:
-	return _cache.get(col_val, null)
+	return _find_by_primary_key(col_val)

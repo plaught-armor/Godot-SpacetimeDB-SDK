@@ -12,9 +12,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"my_schedule"
 	scheduled_id = VtypesMyScheduleScheduledIdUniqueIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[VtypesMySchedule]:
 	var rows: Array[_ModuleTableType] = super()
@@ -49,12 +47,3 @@ func find_by_scheduled_id(value: int) -> Array[VtypesMySchedule]:
 
 func first_by_scheduled_id(value: int) -> VtypesMySchedule:
 	return scheduled_id.find(value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as VtypesMySchedule)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as VtypesMySchedule, new_row as VtypesMySchedule)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as VtypesMySchedule)

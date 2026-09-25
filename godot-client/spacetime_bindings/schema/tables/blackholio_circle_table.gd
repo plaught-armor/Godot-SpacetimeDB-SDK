@@ -14,9 +14,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	_table_name = &"circle"
 	entity_id = BlackholioCircleEntityIdUniqueIndex.new(p_local_db)
 	player_id = BlackholioCirclePlayerIdBTreeIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[BlackholioCircle]:
 	var rows: Array[_ModuleTableType] = super()
@@ -69,12 +67,3 @@ func find_by_last_split_time(value: int) -> Array[BlackholioCircle]:
 
 func first_by_last_split_time(value: int) -> BlackholioCircle:
 	return first_by(&"last_split_time", value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as BlackholioCircle)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as BlackholioCircle, new_row as BlackholioCircle)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as BlackholioCircle)

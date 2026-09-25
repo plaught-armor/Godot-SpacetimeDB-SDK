@@ -14,9 +14,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	_table_name = &"thing"
 	id = VeventThingIdUniqueIndex.new(p_local_db)
 	score = VeventThingScoreBTreeIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[VeventThing]:
 	var rows: Array[_ModuleTableType] = super()
@@ -57,12 +55,3 @@ func find_by_score(value: int) -> Array[VeventThing]:
 
 func first_by_score(value: int) -> VeventThing:
 	return score._first_row(value) as VeventThing
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as VeventThing)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as VeventThing, new_row as VeventThing)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as VeventThing)

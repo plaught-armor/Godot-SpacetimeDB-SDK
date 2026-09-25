@@ -62,6 +62,7 @@ func _run() -> int:
 	f += _test_queued_message_dropped_by_wipe()
 	f += _test_prune_from_callback()
 	f += _test_before_delete_relay()
+	f += _test_row_relays()
 	return f
 
 
@@ -518,7 +519,13 @@ func _test_prune_from_callback() -> int:
 func _test_before_delete_relay() -> int:
 	_fresh()
 	var client: Node = load(CLIENT_SCRIPT).new()
-	_db.register_before_delete_relay(client.row_before_delete)
+	_db.register_row_relays(
+		client.row_inserted,
+		client.row_updated,
+		client.row_before_delete,
+		client.row_deleted,
+		client.row_transactions_completed,
+	)
 	_db.apply_transaction_update(
 		_tx([_qset(1, [_table(&"player", [_player(7, 1), _player(8, 1)], [])])])
 	)
@@ -543,6 +550,60 @@ func _test_before_delete_relay() -> int:
 	heard.clear()
 	_db.clear_local_db()
 	f += _check_s("relay: wipe announced", ", ".join(heard), "relay:8:gone, db:8")
+	client.free()
+	return f
+
+## The client's row_inserted / row_updated / row_deleted / row_transactions_completed
+## are emitted by LocalDatabase as relays, each just before LocalDatabase's own signal,
+## where the client's forwarding connection used to sit. A wipe reports through them too.
+func _test_row_relays() -> int:
+	_fresh()
+	var client: Node = load(CLIENT_SCRIPT).new()
+	_db.register_row_relays(
+		client.row_inserted,
+		client.row_updated,
+		client.row_before_delete,
+		client.row_deleted,
+		client.row_transactions_completed,
+	)
+	var heard: PackedStringArray = []
+	client.row_inserted.connect(
+		func(_t: StringName, r: _ModuleTableType) -> void: heard.append("client ins:%d" % r.id)
+	)
+	client.row_updated.connect(
+		func(_t: StringName, _o: _ModuleTableType, r: _ModuleTableType) -> void:
+			heard.append("client upd:%d" % r.id)
+	)
+	client.row_deleted.connect(
+		func(_t: StringName, r: _ModuleTableType) -> void: heard.append("client del:%d" % r.id)
+	)
+	client.row_transactions_completed.connect(
+		func(_t: StringName) -> void: heard.append("client done")
+	)
+	_db.row_inserted.connect(
+		func(_t: StringName, r: _ModuleTableType) -> void: heard.append("db ins:%d" % r.id)
+	)
+	_db.row_transactions_completed.connect(func(_t: StringName) -> void: heard.append("db done"))
+	_db.apply_transaction_update(
+		_tx([_qset(1, [_table(&"player", [_player(7, 1), _player(8, 1)], [])])])
+	)
+	var f: int = _check_s(
+		"relays: insert",
+		", ".join(heard),
+		"client ins:7, db ins:7, client ins:8, db ins:8, client done, db done",
+	)
+	heard.clear()
+	_db.apply_transaction_update(
+		_tx([_qset(1, [_table(&"player", [_player(7, 2)], [_player(7, 1), _player(8, 1)])])])
+	)
+	f += _check_s(
+		"relays: update and delete",
+		", ".join(heard),
+		"client upd:7, client del:8, client done, db done",
+	)
+	heard.clear()
+	_db.clear_local_db()
+	f += _check_s("relays: wipe", ", ".join(heard), "client del:7, client done, db done")
 	client.free()
 	return f
 

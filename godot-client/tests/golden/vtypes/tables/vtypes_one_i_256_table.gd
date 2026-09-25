@@ -10,9 +10,7 @@ signal deleted(row: VtypesOneI256)
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"one_i_256"
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[VtypesOneI256]:
 	var rows: Array[_ModuleTableType] = super()
@@ -43,12 +41,3 @@ func find_by_n(value: PackedByteArray) -> Array[VtypesOneI256]:
 
 func first_by_n(value: PackedByteArray) -> VtypesOneI256:
 	return first_by(&"n", value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as VtypesOneI256)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as VtypesOneI256, new_row as VtypesOneI256)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as VtypesOneI256)

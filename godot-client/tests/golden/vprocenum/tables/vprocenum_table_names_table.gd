@@ -10,9 +10,7 @@ signal deleted(row: VprocenumKindRow)
 func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"table_names"
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[VprocenumKindRow]:
 	var rows: Array[_ModuleTableType] = super()
@@ -67,12 +65,3 @@ func find_by_create_(value: int) -> Array[VprocenumKindRow]:
 
 func first_by_create_(value: int) -> VprocenumKindRow:
 	return first_by(&"create_", value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as VprocenumKindRow)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as VprocenumKindRow, new_row as VprocenumKindRow)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as VprocenumKindRow)

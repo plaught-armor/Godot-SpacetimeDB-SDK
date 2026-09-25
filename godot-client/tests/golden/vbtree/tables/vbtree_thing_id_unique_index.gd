@@ -2,12 +2,10 @@
 # FILE WILL NOT BE SAVED. MODIFY TABLES IN YOUR MODULE SOURCE CODE INSTEAD.
 class_name VbtreeThingIdUniqueIndex extends _ModuleTableUniqueIndex
 
-var _cache: Dictionary[int, VbtreeThing] = {}
-
 func _init(p_local_db: LocalDatabase) -> void:
 	_table_name = &"thing"
 	_field_name = &"id"
-	_connect_cache_to_db(_cache, p_local_db)
+	_read_primary_key_rows(p_local_db)
 
 func find(col_val: int) -> VbtreeThing:
-	return _cache.get(col_val, null)
+	return _find_by_primary_key(col_val)

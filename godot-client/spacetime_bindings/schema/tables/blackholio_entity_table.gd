@@ -12,9 +12,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"entity"
 	entity_id = BlackholioEntityEntityIdUniqueIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[BlackholioEntity]:
 	var rows: Array[_ModuleTableType] = super()
@@ -55,12 +53,3 @@ func find_by_mass(value: int) -> Array[BlackholioEntity]:
 
 func first_by_mass(value: int) -> BlackholioEntity:
 	return first_by(&"mass", value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as BlackholioEntity)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as BlackholioEntity, new_row as BlackholioEntity)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as BlackholioEntity)

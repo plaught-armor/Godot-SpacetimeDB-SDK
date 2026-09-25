@@ -544,6 +544,9 @@ class ModuleTable:
     signal deleted(row: Row)
 ```
 
+Each fires with a row just before that table's `on_insert` / `on_update` / `on_delete`
+callbacks for the same row.
+
 #### Unique index access
 
 For each unique constraint on a table, its table class has a property whose name is the unique column name. This property is a `ModuleTableUniqueIndex` which has a `find` method.

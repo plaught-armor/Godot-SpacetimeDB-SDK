@@ -12,9 +12,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"lib.lib_secret"
 	id = VsubmodLibLibSecretIdUniqueIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[VsubmodLibLibSecret]:
 	var rows: Array[_ModuleTableType] = super()
@@ -55,12 +53,3 @@ func find_by_secret(value: String) -> Array[VsubmodLibLibSecret]:
 
 func first_by_secret(value: String) -> VsubmodLibLibSecret:
 	return first_by(&"secret", value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as VsubmodLibLibSecret)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as VsubmodLibLibSecret, new_row as VsubmodLibLibSecret)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as VsubmodLibLibSecret)

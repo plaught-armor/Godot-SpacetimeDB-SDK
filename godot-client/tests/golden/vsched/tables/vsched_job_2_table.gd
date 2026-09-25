@@ -12,9 +12,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	super(p_local_db)
 	_table_name = &"job_2"
 	scheduled_id = VschedJob2ScheduledIdUniqueIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[VschedJob2]:
 	var rows: Array[_ModuleTableType] = super()
@@ -55,12 +53,3 @@ func find_by_note(value: String) -> Array[VschedJob2]:
 
 func first_by_note(value: String) -> VschedJob2:
 	return first_by(&"note", value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as VschedJob2)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as VschedJob2, new_row as VschedJob2)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as VschedJob2)

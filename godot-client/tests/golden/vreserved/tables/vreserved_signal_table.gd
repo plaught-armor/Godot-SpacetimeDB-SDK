@@ -14,9 +14,7 @@ func _init(p_local_db: LocalDatabase) -> void:
 	_table_name = &"signal"
 	func_ = VreservedSignalFuncUniqueIndex.new(p_local_db)
 	class_ = VreservedSignalClassBTreeIndex.new(p_local_db)
-	on_insert(_emit_inserted)
-	on_update(_emit_updated)
-	on_delete(_emit_deleted)
+	_relay_row_signals()
 
 func iter() -> Array[VreservedThing]:
 	var rows: Array[_ModuleTableType] = super()
@@ -75,12 +73,3 @@ func find_by_namespace_(value: int) -> Array[VreservedThing]:
 
 func first_by_namespace_(value: int) -> VreservedThing:
 	return first_by(&"namespace_", value)
-
-func _emit_inserted(row: _ModuleTableType) -> void:
-	inserted.emit(row as VreservedThing)
-
-func _emit_updated(old_row: _ModuleTableType, new_row: _ModuleTableType) -> void:
-	updated.emit(old_row as VreservedThing, new_row as VreservedThing)
-
-func _emit_deleted(row: _ModuleTableType) -> void:
-	deleted.emit(row as VreservedThing)
