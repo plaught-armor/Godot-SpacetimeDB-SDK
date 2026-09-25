@@ -52,6 +52,9 @@ func _run() -> int:
 	f += _test_one_terminator_per_table()
 	f += _test_client_applies_one_message()
 	f += _test_wipe_reports_only_announced()
+	f += _test_wipe_during_updates()
+	f += _test_lone_delivery_with_held_rows(20, "insert:1, insert:3")
+	f += _test_lone_delivery_with_held_rows(21, "insert:1, insert:3, update:2")
 	f += _test_void_pairs_take_one_membership()
 	f += _test_void_pairs_from_two_queries()
 	f += _test_before_delete_wipe_reports_once()
@@ -231,6 +234,60 @@ func _test_client_applies_one_message() -> int:
 	)
 	var f: int = _check_s("client: move is one update", _entity_events(), "update:1")
 	client.free()
+	return f
+
+
+## The same wipe from an update callback: the update already reported is gone as its new
+## row, the one not yet reported as the row it replaced.
+func _test_wipe_during_updates() -> int:
+	_fresh()
+	_db.apply_transaction_update(
+		_tx([_qset(1, [_table(&"entity", [_ent(1, 10), _ent(2, 20)], [])])])
+	)
+	_db.subscribe_to_updates(
+		&"entity",
+		func(_old: _ModuleTableType, r: _ModuleTableType) -> void:
+			if r.id == 1:
+				_db.clear_local_db(),
+	)
+	var gone: PackedStringArray = []
+	_db.row_deleted.connect(
+		func(table: StringName, r: _ModuleTableType) -> void:
+			gone.append("%s:%d:%d" % [table, r.id, r.tag]),
+	)
+	var entity: TableUpdateData = _table(
+		&"entity",
+		[_ent(1, 11), _ent(2, 21)],
+		[_ent(1, 10), _ent(2, 20)],
+	)
+	_db.apply_transaction_update(_tx([_qset(1, [entity])]))
+	return _check_s(
+		"wipe mid-updates: only announced rows reported",
+		", ".join(gone),
+		"entity:1:11, entity:2:20",
+	)
+
+
+## One delivery whose inserts are mostly new, with a row another query already holds in
+## the middle (value [param held_tag], 20 = unchanged) and first: the new rows are still
+## each reported once, in order, and the held one only as an update when it changed.
+func _test_lone_delivery_with_held_rows(held_tag: int, want: String) -> int:
+	var f: int = 0
+	for held_first: bool in [false, true]:
+		var tag: String = "lone delivery (tag %d, held %s)" % [
+			held_tag,
+			"first" if held_first else "mid",
+		]
+		_fresh()
+		_db.apply_transaction_update(_tx([_qset(1, [_table(&"entity", [_ent(2, 20)], [])])]))
+		_log.clear()
+		var rows: Array = [_ent(1, 10), _ent(2, held_tag), _ent(3, 30)]
+		if held_first:
+			rows = [_ent(2, held_tag), _ent(1, 10), _ent(3, 30)]
+		_db.apply_transaction_update(_tx([_qset(2, [_table(&"entity", rows, [])])]))
+		f += _check_s("%s: events" % tag, _entity_events(), want)
+		f += _check_i("%s: refcount of held row" % tag, _db._ref_counts[&"entity"][2], 2)
+		f += _check_i("%s: rows" % tag, _db.count_all_rows(&"entity"), 3)
 	return f
 
 

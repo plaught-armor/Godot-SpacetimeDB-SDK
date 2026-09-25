@@ -121,19 +121,35 @@ applied the row. Deferring them means recording every changed row first and walk
 record afterwards, and counting each row as it is reported, so a callback that wipes the
 mirror mid-message reports only the rows its consumers were told about. That is the whole
 cost. Measured A/B against the previous
-apply path, interleaved in the same runs (median of 5, N=100k, ns/row):
+apply path, interleaved in the same runs (median of 10, N=100k, ns/row):
 
 | wave | prim before / after | entity before / after | circle before / after |
 |---|---|---|---|
-| insert | 539 / 764 (+42%) | 558 / 783 (+40%) | 546 / 763 (+40%) |
-| update (detect) | 2417 / 2807 (+16%) | 2185 / 2572 (+18%) | 2331 / 2712 (+16%) |
-| delete | 662 / 785 (+19%) | 660 / 775 (+17%) | 684 / 794 (+16%) |
+| insert | 530 / 584 (+10%) | 530 / 585 (+10%) | 530 / 582 (+10%) |
+| update (detect) | 2342 / 2562 (+9%) | 2036 / 2348 (+15%) | 2226 / 2446 (+10%) |
+| delete | 622 / 606 (−3%) | 616 / 622 (+1%) | 633 / 620 (−2%) |
 
-The added cost is about 110 to 390 ns per changed row: some 0.22 ms per 1,000 inserted
-rows, and about 22 ms across a 100,000-row subscribe snapshot. The apply path already
-skips predicting before-delete targets when nothing listens, and has its own insert-only
-and delete-only paths so a single-kind wave does no pairing work. Typed record arrays
-were measured and made no difference.
+The added cost is about 55 ns per inserted row and 220 to 310 ns per updated row; deletes
+cost the same as before. That is some 0.05 ms per 1,000 inserted rows, and about 5.5 ms
+across a 100,000-row subscribe snapshot. An update costs the most because it records a
+pair of rows and walks them back out, where an insert or a delete records one.
+
+What keeps it there, each measured in the editor:
+
+- **The records are untyped `Array`s, read into `Variant` variables.** Appending to an
+  `Array[_ModuleTableType]` costs about 125 ns against 53 for a plain `Array`, and reading
+  a row into a variable typed `_ModuleTableType` runs a script-class check of about
+  110 ns that a `Variant` variable skips. The hot row loops and cache lookups read rows as
+  `Variant` for the same reason. A method call through a `Variant` costs the same as a
+  typed one. The first version of this change typed every record and paid both costs,
+  which was most of its insert overhead (then +40%).
+- **A delivery whose inserted rows are all new is not copied.** When a table has one
+  delivery in the message and every row in it is new, which is every first subscribe
+  snapshot, that delivery's own array is the record of what was inserted.
+- **The report counter lives on the `LocalDatabase`, not the table's record:** ~20 ns per
+  row against ~42.
+- The apply path skips predicting before-delete targets when nothing listens, and has its
+  own insert-only and delete-only paths, so a single-kind wave does no pairing work.
 
 The prim row is declared inside the bench, so it has no generated `_row_eq` and its update
 detection runs the generic walk. The entity and circle rows are generated bindings and run

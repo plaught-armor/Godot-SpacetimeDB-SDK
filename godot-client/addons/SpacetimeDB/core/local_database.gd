@@ -122,11 +122,15 @@ var _index_invalidators: Array[Callable] = []
 ## APPLIED, before any game callback runs, so an index read from a row callback already
 ## reflects the whole message — the same guarantee the rows themselves carry.
 var _index_hooks_by_table: Dictionary[StringName, Array] = { }
-## Plans of every message whose callbacks are being reported right now, outermost first (a
-## callback can apply a message of its own). Their rows are already in the mirror, so a
-## wipe from one of those callbacks reads this to leave out what the message has not
-## announced yet — see [method _unannounced_rows].
+## Plans of the message whose callbacks are being reported right now (one at most: a
+## message applied from a callback is queued, see [method _apply_batch]). Their rows are
+## already in the mirror, so a wipe from one of those callbacks reads this to leave out
+## what the message has not announced yet — see [method _unannounced_rows].
 var _undispatched: Array[_TablePlan] = []
+## How many rows the insert or update loop now running in [method _dispatch_plan] has
+## reported. Its plan holds -1 in the matching sent count until the loop ends: a counter
+## here costs ~20 ns/row, one on the plan ~42.
+var _in_flight_sent: int = 0
 ## Instance ids of rows whose before-delete a message in phase 1 has fully reported, still
 ## cached until phase 2 evicts them. A wipe from a later before-delete reports these rows
 ## deleted without announcing them a second time.
@@ -828,13 +832,15 @@ class _TablePlan:
 	var group_order: Array = []
 	## Cached rows this message will evict, read before anything is applied.
 	var before_delete: Array[_ModuleTableType] = []
-	## Typed, so the dispatch loops iterate without a per-row class check (an untyped
-	## Array read into a `_ModuleTableType` loop variable costs ~117 ns/row).
-	var inserted: Array[_ModuleTableType] = []
+	## Untyped, and read back into Variant loop variables: a typed append costs ~125 ns/row
+	## against ~53, and a Variant loop variable skips the per-row class check (~110 ns)
+	## that reading an untyped Array into a `_ModuleTableType` variable costs.
+	var inserted: Array = []
 	## Flattened [old, new, old, new, ...].
-	var updated: Array[_ModuleTableType] = []
-	var deleted: Array[_ModuleTableType] = []
-	## How many [member inserted] rows and [member updated] pairs have been reported so far.
+	var updated: Array = []
+	var deleted: Array = []
+	## How many [member inserted] rows and [member updated] pairs have been reported so far;
+	## -1 while their loop runs, which counts in [member LocalDatabase._in_flight_sent].
 	var inserts_sent: int = 0
 	var updates_sent: int = 0
 
@@ -967,11 +973,16 @@ func _has_before_delete_consumers(table_name_lower: StringName) -> bool:
 func _count_pk_plan(plan: _TablePlan, predict: bool) -> void:
 	var pk_field: StringName = plan.pk_field
 	var del_count: Dictionary = plan.del_count
+	var void_deletes: Dictionary = plan.void_deletes
+	# A delete can only release a reference the mirror holds. The surplus (the server's
+	# update encoding for a row this mirror never got) is set aside as void.
+	var ref_table: Dictionary = _ref_counts.get(plan.table, { })
+	var unpaired: int = 0
 	for i: int in plan.updates.size():
 		var qid: int = plan.query_ids[i]
 		var track_query: bool = qid >= 0
 		var qmem: Dictionary = _query_table_pk_mem(qid, plan.table) if track_query else { }
-		for row: _ModuleTableType in plan.updates[i].deletes:
+		for row: Variant in plan.updates[i].deletes:
 			var pk: Variant = row.get(pk_field)
 			if pk == null:
 				push_warning(
@@ -979,20 +990,15 @@ func _count_pk_plan(plan: _TablePlan, predict: bool) -> void:
 					% [plan.table, pk_field]
 				)
 				continue
-			del_count[pk] = del_count.get(pk, 0) + 1
-			plan.unpaired_deletes += 1
+			var wanted: int = del_count.get(pk, 0) + 1
+			if wanted > ref_table.get(pk, 0):
+				void_deletes[pk] = void_deletes.get(pk, 0) + 1
+			else:
+				del_count[pk] = wanted
+				unpaired += 1
 			if track_query:
 				_qmem_release(qmem, pk)
-	# A delete can only release a reference the mirror holds. The surplus (the server's
-	# update encoding for a row this mirror never got) is set aside as void.
-	var ref_table: Dictionary = _ref_counts.get(plan.table, { })
-	for pk: Variant in del_count:
-		var held: int = ref_table.get(pk, 0)
-		var wanted: int = del_count[pk]
-		if wanted > held:
-			del_count[pk] = held
-			plan.void_deletes[pk] = wanted - held
-			plan.unpaired_deletes -= wanted - held
+	plan.unpaired_deletes = unpaired
 	if predict:
 		_predict_pk_mixed(plan)
 
@@ -1002,7 +1008,7 @@ func _count_pk_plan(plan: _TablePlan, predict: bool) -> void:
 func _predict_pk_mixed(plan: _TablePlan) -> void:
 	var ins_count: Dictionary = { }
 	for table_update: TableUpdateData in plan.updates:
-		for row: _ModuleTableType in table_update.inserts:
+		for row: Variant in table_update.inserts:
 			var pk: Variant = row.get(plan.pk_field)
 			if pk != null:
 				ins_count[pk] = ins_count.get(pk, 0) + 1
@@ -1011,7 +1017,7 @@ func _predict_pk_mixed(plan: _TablePlan) -> void:
 	for pk: Variant in plan.del_count:
 		var old: int = ref_table.get(pk, 0)
 		if old > 0 and _pk_new_ref(old, ins_count.get(pk, 0), plan.del_count[pk]) == 0:
-			var cached: _ModuleTableType = table_dict.get(pk)
+			var cached: Variant = table_dict.get(pk)
 			if cached != null:
 				plan.before_delete.append(cached)
 
@@ -1023,14 +1029,14 @@ func _predict_pk_deletes(plan: _TablePlan) -> void:
 	var table_dict: Dictionary = _tables[plan.table]
 	var pending: Dictionary = { }
 	for table_update: TableUpdateData in plan.updates:
-		for row: _ModuleTableType in table_update.deletes:
+		for row: Variant in table_update.deletes:
 			var pk: Variant = row.get(plan.pk_field)
 			if pk == null:
 				continue
 			var left: int = pending.get(pk, ref_table.get(pk, 0))
 			pending[pk] = left - 1
 			if left == 1:
-				var cached: _ModuleTableType = table_dict.get(pk)
+				var cached: Variant = table_dict.get(pk)
 				if cached != null:
 					plan.before_delete.append(cached)
 
@@ -1160,31 +1166,44 @@ func _apply_pk_inserts(plan: _TablePlan) -> void:
 	var ref_table: Dictionary = _ref_counts[plan.table]
 	var props: Array[StringName] = _get_row_properties(plan.table)
 	var pk_field: StringName = plan.pk_field
-	var inserted: Array[_ModuleTableType] = plan.inserted
-	var updated: Array[_ModuleTableType] = plan.updated
+	var inserted: Array = plan.inserted
+	var updated: Array = plan.updated
+	# While every row of a lone delivery is new, the delivery's own array is the insert
+	# report: new_rows counts them instead of copying each one (~53 ns/row), and the first
+	# row that is not new copies the ones before it and stops the aliasing.
+	var aliasing: bool = plan.updates.size() == 1
+	var new_rows: int = 0
 	for i: int in plan.updates.size():
 		var qid: int = plan.query_ids[i]
 		var track_query: bool = qid >= 0
 		var qmem: Dictionary = _query_table_pk_mem(qid, plan.table) if track_query else { }
-		for row: _ModuleTableType in plan.updates[i].inserts:
+		var rows: Array = plan.updates[i].inserts
+		for row: Variant in rows:
 			var pk: Variant = row.get(pk_field)
+			if pk != null:
+				var old_ref: int = ref_table.get(pk, 0)
+				ref_table[pk] = old_ref + 1
+				if old_ref == 0:
+					if track_query:
+						qmem[pk] = row
+					table_dict[pk] = row
+					if aliasing:
+						new_rows += 1
+					else:
+						inserted.append(row)
+					continue
+			if aliasing:
+				inserted.append_array(rows.slice(0, new_rows))
+				aliasing = false
 			if pk == null:
 				push_error(
 					"LocalDatabase: Inserted row for table '%s' has null PK '%s'. Skipping."
 					% [plan.table, pk_field]
 				)
 				continue
-			var old_ref: int = ref_table.get(pk, 0)
-			ref_table[pk] = old_ref + 1
-			if old_ref == 0:
-				if track_query:
-					qmem[pk] = row
-				table_dict[pk] = row
-				inserted.append(row)
-				continue
 			if track_query:
 				_qmem_add_repeat(qmem, pk, row)
-			var prev: _ModuleTableType = table_dict.get(pk)
+			var prev: Variant = table_dict.get(pk)
 			if prev == null:
 				# Referenced but not cached (a desync): insert, so no null `old` reaches
 				# an update listener.
@@ -1194,6 +1213,8 @@ func _apply_pk_inserts(plan: _TablePlan) -> void:
 				table_dict[pk] = row
 				updated.append(prev)
 				updated.append(row)
+	if aliasing:
+		plan.inserted = plan.updates[0].inserts
 
 
 ## A keyed table whose message only deletes — every unsubscribe echo, and rows leaving.
@@ -1203,12 +1224,12 @@ func _apply_pk_deletes(plan: _TablePlan) -> void:
 	var table_dict: Dictionary = _tables[plan.table]
 	var ref_table: Dictionary = _ref_counts[plan.table]
 	var pk_field: StringName = plan.pk_field
-	var deleted: Array[_ModuleTableType] = plan.deleted
+	var deleted: Array = plan.deleted
 	for i: int in plan.updates.size():
 		var qid: int = plan.query_ids[i]
 		var track_query: bool = qid >= 0
 		var qmem: Dictionary = _query_table_pk_mem(qid, plan.table) if track_query else { }
-		for row: _ModuleTableType in plan.updates[i].deletes:
+		for row: Variant in plan.updates[i].deletes:
 			var pk: Variant = row.get(pk_field)
 			if pk == null:
 				push_warning(
@@ -1225,7 +1246,7 @@ func _apply_pk_deletes(plan: _TablePlan) -> void:
 				ref_table[pk] = old - 1
 				continue
 			ref_table.erase(pk)
-			var prev: _ModuleTableType = table_dict.get(pk)
+			var prev: Variant = table_dict.get(pk)
 			if prev != null:
 				table_dict.erase(pk)
 				deleted.append(prev)
@@ -1245,14 +1266,14 @@ func _apply_pk_counted(plan: _TablePlan) -> void:
 	var pk_field: StringName = plan.pk_field
 	var del_count: Dictionary = plan.del_count
 	var void_deletes: Dictionary = plan.void_deletes
-	var inserted: Array[_ModuleTableType] = plan.inserted
-	var updated: Array[_ModuleTableType] = plan.updated
+	var inserted: Array = plan.inserted
+	var updated: Array = plan.updated
 	var unpaired: int = plan.unpaired_deletes
 	for i: int in plan.updates.size():
 		var qid: int = plan.query_ids[i]
 		var track_query: bool = qid >= 0
 		var qmem: Dictionary = _query_table_pk_mem(qid, plan.table) if track_query else { }
-		for row: _ModuleTableType in plan.updates[i].inserts:
+		for row: Variant in plan.updates[i].inserts:
 			var pk: Variant = row.get(pk_field)
 			if pk == null:
 				push_error(
@@ -1272,7 +1293,7 @@ func _apply_pk_counted(plan: _TablePlan) -> void:
 				ref_table[pk] = ref_table.get(pk, 0) + 1
 				if track_query:
 					_qmem_add_repeat(qmem, pk, row)
-			var prev: _ModuleTableType = table_dict.get(pk)
+			var prev: Variant = table_dict.get(pk)
 			if prev == null:
 				table_dict[pk] = row
 				inserted.append(row)
@@ -1319,7 +1340,7 @@ func _pair_void_delete(
 func _apply_unpaired_pk_deletes(plan: _TablePlan) -> void:
 	var table_dict: Dictionary = _tables[plan.table]
 	var ref_table: Dictionary = _ref_counts[plan.table]
-	var deleted: Array[_ModuleTableType] = plan.deleted
+	var deleted: Array = plan.deleted
 	for pk: Variant in plan.del_count:
 		var left: int = plan.del_count[pk]
 		if left <= 0:
@@ -1331,7 +1352,7 @@ func _apply_unpaired_pk_deletes(plan: _TablePlan) -> void:
 			ref_table[pk] = old - left
 			continue
 		ref_table.erase(pk)
-		var prev: _ModuleTableType = table_dict.get(pk)
+		var prev: Variant = table_dict.get(pk)
 		if prev != null:
 			table_dict.erase(pk)
 			deleted.append(prev)
@@ -1343,7 +1364,7 @@ func _apply_pkless_inserts(plan: _TablePlan) -> void:
 	var rows_array: Array = _pk_less_tables[plan.table]
 	var counts: Dictionary = _pk_less_counts[plan.table]
 	var props: Array[StringName] = _get_row_properties(plan.table)
-	var inserted: Array[_ModuleTableType] = plan.inserted
+	var inserted: Array = plan.inserted
 	for i: int in plan.updates.size():
 		var qid: int = plan.query_ids[i]
 		var track_query: bool = qid >= 0
@@ -1382,8 +1403,8 @@ func _apply_pkless_counted(plan: _TablePlan) -> void:
 					_pk_less_remove(qmem, h, member)
 	var counts: Dictionary = _pk_less_counts[plan.table]
 	var rows_array: Array = _pk_less_tables[plan.table]
-	var inserted: Array[_ModuleTableType] = plan.inserted
-	var deleted: Array[_ModuleTableType] = plan.deleted
+	var inserted: Array = plan.inserted
+	var deleted: Array = plan.deleted
 	var evicted: Dictionary[int, bool] = { }
 	for group: Array in plan.group_order:
 		var h: int = group[3]
@@ -1447,11 +1468,11 @@ func _update_indexes(plan: _TablePlan) -> void:
 		var on_delete: Callable = hook[2]
 		if not on_insert.is_valid():
 			continue # the index was freed; pruned on the next registration
-		for row: _ModuleTableType in plan.inserted:
+		for row: Variant in plan.inserted:
 			on_insert.call(row)
 		for i: int in range(0, plan.updated.size(), 2):
 			on_update.call(plan.updated[i], plan.updated[i + 1])
-		for row: _ModuleTableType in plan.deleted:
+		for row: Variant in plan.deleted:
 			on_delete.call(row)
 
 
@@ -1471,39 +1492,47 @@ func _dispatch_plan(plan: _TablePlan, gen: int, wiped: bool) -> bool:
 		table_name_lower,
 	)
 	var dispatched: bool = false
-	var inserted: Array[_ModuleTableType] = plan.inserted
-	var updated: Array[_ModuleTableType] = plan.updated
-	var deleted: Array[_ModuleTableType] = plan.deleted
+	var inserted: Array = plan.inserted
+	var updated: Array = plan.updated
+	var deleted: Array = plan.deleted
 	if not wiped and not inserted.is_empty():
 		var insert_listeners: Array = _listener_snapshot(_insert_listeners_by_table, table_name_lower)
-		for row: _ModuleTableType in inserted:
+		# Each loop sets this on entry: its first row is always reported, since the only game
+		# code run before it is the loop above, and that one reported a row to run any.
+		dispatched = true
+		plan.inserts_sent = -1
+		_in_flight_sent = 0
+		for row: Variant in inserted:
 			if _generation != gen:
 				wiped = true
 				break
-			dispatched = true
-			plan.inserts_sent += 1
+			_in_flight_sent += 1
 			for listener: Callable in insert_listeners:
 				if listener.is_valid():
 					listener.call(row)
 			row_inserted.emit(table_name_lower, row)
+		plan.inserts_sent = _in_flight_sent
 	if not wiped and not updated.is_empty():
 		var update_listeners: Array = _listener_snapshot(_update_listeners_by_table, table_name_lower)
+		dispatched = true
+		plan.updates_sent = -1
+		_in_flight_sent = 0
 		for i: int in range(0, updated.size(), 2):
 			if _generation != gen:
 				wiped = true
 				break
-			dispatched = true
-			plan.updates_sent += 1
-			var old_row: _ModuleTableType = updated[i]
-			var new_row: _ModuleTableType = updated[i + 1]
+			_in_flight_sent += 1
+			var old_row: Variant = updated[i]
+			var new_row: Variant = updated[i + 1]
 			for listener: Callable in update_listeners:
 				if listener.is_valid():
 					listener.call(old_row, new_row)
 			row_updated.emit(table_name_lower, old_row, new_row)
+		plan.updates_sent = _in_flight_sent
 	if not deleted.is_empty():
 		var delete_listeners: Array = _listener_snapshot(_delete_listeners_by_table, table_name_lower)
-		for row: _ModuleTableType in deleted:
-			dispatched = true
+		dispatched = true
+		for row: Variant in deleted:
 			for listener: Callable in delete_listeners:
 				if listener.is_valid():
 					listener.call(row)
@@ -1575,9 +1604,11 @@ func clear_local_db() -> void:
 func _unannounced_rows() -> Dictionary[int, Variant]:
 	var unannounced: Dictionary[int, Variant] = { }
 	for plan: _TablePlan in _undispatched:
-		for k: int in range(plan.inserts_sent, plan.inserted.size()):
+		var inserts_sent: int = plan.inserts_sent if plan.inserts_sent >= 0 else _in_flight_sent
+		var updates_sent: int = plan.updates_sent if plan.updates_sent >= 0 else _in_flight_sent
+		for k: int in range(inserts_sent, plan.inserted.size()):
 			unannounced[plan.inserted[k].get_instance_id()] = null
-		for k: int in range(plan.updates_sent * 2, plan.updated.size(), 2):
+		for k: int in range(updates_sent * 2, plan.updated.size(), 2):
 			unannounced[plan.updated[k + 1].get_instance_id()] = plan.updated[k]
 	return unannounced
 
