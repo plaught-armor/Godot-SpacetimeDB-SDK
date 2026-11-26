@@ -1,4 +1,4 @@
-# Unit test for the three fail-closed edges of a session.
+# Unit test for the fail-closed edges of a session.
 #
 # 1. A packet that fails to parse delivers nothing, abandons the stream until the session
 #    boundary, and drops the socket once, from the main thread. Checked on both parse
@@ -13,7 +13,11 @@
 #    that does not match the request) is terminal: no reconnect follows, connection_error
 #    names the fault, reconnect_failed is heard if a reconnect cycle owned the session, and
 #    disconnected comes last. The attempt count resets when the reconnect's IdentityToken
-#    arrives, as it does in the official SDKs, not when the replay settles.
+#    arrives, as it does in the official SDKs, not when the replay settles. A
+#    connection_error handler that calls connect_db or disconnect_db hears nothing after it.
+# 4. The give-ups that come before a socket is tried (no token, no tree for the backoff
+#    timer) end the cycle like an exhausted one: reconnect_failed, then disconnected, and
+#    the attempt count is reset.
 #
 # Driven through the real handlers with stub connection and deserializer objects. The
 # client is in the tree because the reconnect scheduler needs get_tree(); its delays are
@@ -40,6 +44,7 @@ var _disconnected_count: int = 0
 var _connected_count: int = 0
 var _error_codes: PackedInt32Array = []
 var _error_reasons: PackedStringArray = []
+var _order: PackedStringArray = []
 
 
 func _initialize() -> void:
@@ -52,6 +57,8 @@ func _initialize() -> void:
 	f += await _test_terminal_close_before_replay_settles()
 	f += _test_violation_reports_its_code()
 	f += await _test_first_violation_is_terminal()
+	f += await _test_violation_handler_decides()
+	f += await _test_early_give_ups_end_the_cycle()
 	if f == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:
@@ -407,6 +414,91 @@ func _test_first_violation_is_terminal() -> int:
 	return f
 
 
+# A connection_error handler that calls connect_db or disconnect_db has already decided what
+# happens next. The violation arrives inside a reconnect's replay window, where the cycle
+# owns the session, so anything emitted after the handler would be a reconnect_failed (and,
+# after a connect_db re-armed it, a disconnected) for a session the game already replaced.
+func _test_violation_handler_decides() -> int:
+	var f: int = 0
+	var violation: int = SpacetimeDBConnection.ERR_PROTOCOL_VIOLATION
+	var reason: String = "Protocol violation: a server message could not be parsed (bad tag)"
+
+	var leaving: SpacetimeDBClient = await _make_replaying_window()
+	leaving.connection_error.connect(func(_c: int, _r: String) -> void: leaving.disconnect_db())
+	_reset_counts()
+	leaving._on_connection_error(violation, reason)
+	f += _check_i("disconnect_db handler: no reconnect_failed", _reconnect_failed_count, 0)
+	f += _check_i("disconnect_db handler: its own disconnected only", _disconnected_count, 1)
+	_free_client(leaving)
+
+	var restarting: SpacetimeDBClient = await _make_replaying_window()
+	var conn: _StubConn = restarting._connection
+	conn.opened = 0 # the reconnect that opened the window
+	var options: SpacetimeDBConnectionOptions = restarting.connection_options
+	options.threading = false
+	restarting.connection_error.connect(
+		func(_c: int, _r: String) -> void:
+			conn.up = false # the violation closed the socket, so connect_db is allowed
+			restarting.connect_db("http://localhost:3000", "test_mod", options)
+	)
+	_reset_counts()
+	restarting._on_connection_error(violation, reason)
+	f += _check_i("connect_db handler: no reconnect_failed", _reconnect_failed_count, 0)
+	f += _check_i("connect_db handler: no disconnected", _disconnected_count, 0)
+	f += _check_i("connect_db handler: the new session opened", conn.opened, 1)
+	_free_client(restarting)
+	return f
+
+
+# The give-ups that come before a socket is even tried — no token to reconnect with, or no
+# tree to run the backoff timer in — end the cycle the same way an exhausted one does:
+# reconnect_failed, then disconnected, each once, and nothing left counting toward the next
+# cycle's max_reconnect_attempts.
+func _test_early_give_ups_end_the_cycle() -> int:
+	var f: int = 0
+
+	var tokenless: SpacetimeDBClient = await _make_replaying_client()
+	_reset_counts()
+	tokenless._on_connection_error(ERR_CONNECTION_ERROR, "dropped")
+	f += _check_i("no token: attempt 1 scheduled", tokenless._reconnect_attempt, 1)
+	tokenless._token = ""
+	tokenless._attempt_reconnect()
+	f += _check_s("no token: failed, then disconnected", ",".join(_order), "failed,disconnected")
+	f += _check_i("no token: the count is reset", tokenless._reconnect_attempt, 0)
+	f += _check_b(
+		"no token: the cycle is over",
+		tokenless._reconnect_state == tokenless._ReconnectState.IDLE,
+		true,
+	)
+	_free_client(tokenless)
+
+	var treeless: SpacetimeDBClient = await _make_replaying_client()
+	root.remove_child(treeless) # IDLE as it leaves, so nothing is suspended
+	_reset_counts()
+	treeless._reconnect_state = treeless._ReconnectState.RECONNECTING
+	treeless._schedule_next_reconnect_attempt()
+	f += _check_s("no tree: failed, then disconnected", ",".join(_order), "failed,disconnected")
+	f += _check_i("no tree: the count is reset", treeless._reconnect_attempt, 0)
+	f += _check_b(
+		"no tree: the cycle is over",
+		treeless._reconnect_state == treeless._ReconnectState.IDLE,
+		true,
+	)
+	root.add_child(treeless)
+	_free_client(treeless)
+	return f
+
+
+# A replaying client one reconnect into its replay window: the identity has arrived and the
+# subscriptions went out, so the cycle still owns the session.
+func _make_replaying_window() -> SpacetimeDBClient:
+	var client: SpacetimeDBClient = await _make_replaying_client()
+	client._on_connection_error(ERR_CONNECTION_ERROR, "dropped")
+	client._attempt_reconnect()
+	client._handle_parsed_message(_identity_token())
+	return client
+
+
 func _identity_token() -> IdentityTokenMessage:
 	var message: IdentityTokenMessage = IdentityTokenMessage.new()
 	message.identity = PackedByteArray()
@@ -457,6 +549,7 @@ func _reset_counts() -> void:
 	_reconnecting_count = 0
 	_reconnect_failed_count = 0
 	_disconnected_count = 0
+	_order.clear()
 
 
 func _on_reconnecting(_attempt: int, _max_attempts: int) -> void:
@@ -465,6 +558,7 @@ func _on_reconnecting(_attempt: int, _max_attempts: int) -> void:
 
 func _on_reconnect_failed() -> void:
 	_reconnect_failed_count += 1
+	_order.append("failed")
 
 
 func _on_connected(_identity: PackedByteArray, _token: String) -> void:
@@ -478,6 +572,7 @@ func _on_connection_error(code: int, reason: String) -> void:
 
 func _on_disconnected() -> void:
 	_disconnected_count += 1
+	_order.append("disconnected")
 
 
 func _check_i(label: String, got: int, want: int) -> int:
@@ -486,6 +581,15 @@ func _check_i(label: String, got: int, want: int) -> int:
 		print("PASS  %s = %d" % [label, got])
 		return 0
 	printerr("FAIL  %s: got %d want %d" % [label, got, want])
+	return 1
+
+
+func _check_s(label: String, got: String, want: String) -> int:
+	_total += 1
+	if got == want:
+		print("PASS  %s = '%s'" % [label, got])
+		return 0
+	printerr("FAIL  %s: got '%s' want '%s'" % [label, got, want])
 	return 1
 
 
@@ -504,6 +608,8 @@ class _StubConn:
 	extends SpacetimeDBConnection
 
 	var sent: int = 0
+	var opened: int = 0
+	var up: bool = true
 	var violations: PackedStringArray = []
 
 
@@ -512,7 +618,7 @@ class _StubConn:
 
 
 	func is_connected_db() -> bool:
-		return true
+		return up
 
 
 	func is_websocket_active() -> bool:
@@ -534,7 +640,7 @@ class _StubConn:
 		_connection_id: String,
 		_session_id: String = "",
 	) -> void:
-		pass
+		opened += 1
 
 
 	func abort_protocol_violation(reason: String) -> void:

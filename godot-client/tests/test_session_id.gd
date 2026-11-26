@@ -6,6 +6,8 @@
 #   - drawn per connect_db(): a fresh session gets a fresh id;
 #   - drawn too by an initialize_and_connect() that connect_db did not call (auto_connect
 #     from _ready, or a direct call), so that path is resumable as well;
+#   - ended by disconnect_db(), so the next session cannot reuse it whichever way it
+#     starts;
 #   - kept across that session's automatic reconnects (while the per-attempt
 #     connection id still changes on every socket);
 #   - 128 bits as 32 hex characters, the only spelling the server parses;
@@ -29,6 +31,7 @@ func _initialize() -> void:
 	f += _test_session_id_lifecycle()
 	f += _test_no_session_id_without_auto_reconnect()
 	f += _test_direct_initialize_draws_session_id()
+	f += _test_disconnect_ends_session_id()
 	if f == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:
@@ -118,6 +121,29 @@ func _test_direct_initialize_draws_session_id() -> int:
 		f += _check_s("the reconnect keeps the id", conn.session_ids[0], drawn)
 	client.free()
 	conn.free()
+	return f
+
+
+# disconnect_db ends the session the id names. A direct initialize_and_connect() only draws
+# an id when it has none, so an id left behind would be claimed again by the next session:
+# the server would treat it as a resume of the one the game just ended. The leftover id
+# here stands in for a first initialize that drew its id and then failed before finishing.
+func _test_disconnect_ends_session_id() -> int:
+	var client: _DirectClient = _DirectClient.new()
+	client.module_name = "test_mod"
+	client.schema_path = "res://__no_schema__"
+	client.database_name = "test_mod"
+	client.save_token = false
+	client.use_threading = false # no worker to join before the free
+	client.connection_options = _mk_options(true)
+	var leftover: String = "0123456789abcdef0123456789abcdef"
+	client._session_id = leftover
+	client.disconnect_db()
+	var f: int = _check_s("disconnect_db clears the id", client._session_id, "")
+	client.initialize_and_connect()
+	f += _check_b("the next session draws a new id", client._session_id != leftover, true)
+	f += _check_i("and it is 32 characters", client._session_id.length(), 32)
+	client.free()
 	return f
 
 
