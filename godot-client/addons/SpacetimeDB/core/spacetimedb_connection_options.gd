@@ -167,6 +167,10 @@ var auto_tune_target_fps: int = 0
 var auto_reconnect: bool = false
 ## Maximum reconnect attempts before giving up. [code]0[/code] means infinite.
 ##
+## An attempt counts until the new session's subscriptions are restored, not just until its
+## socket opens, so a server that accepts the socket and then fails the replay every time
+## (a protocol violation, a message that cannot be parsed) still uses the budget up.
+##
 ## A NEGATIVE value reads as infinite too — the cycle gives up only on a positive budget —
 ## but nothing documents that, so it is refused and the default used: a sign slip is not
 ## consent to an unbounded retry cycle.

@@ -116,6 +116,15 @@ var _thread_should_exit: bool = false
 ## packets parsed under a prior session are discarded instead of being applied to
 ## the fresh post-reconnect database.
 var _session_epoch: int = 0
+## Why this session's inbound stream was abandoned, or empty while it is sound. Set by
+## whichever thread parses (the worker, under _packet_mutex, when threading is on) and acted
+## on by the main thread, which owns the socket: see [method _close_on_parse_fault]. Cleared
+## only at a session boundary, by [method _drop_dead_session_traffic], so every packet that
+## arrives after the bad one is dropped unparsed until then.
+var _parse_fault: String = ""
+## Main-thread only. Set once [method _close_on_parse_fault] has dropped the socket for the
+## current fault, so the close is made once rather than every frame until the boundary.
+var _parse_fault_closed: bool = false
 # Per-frame apply drain limits: time budget (primary) + message ceiling
 # (bounded-loop backstop). Set from SpacetimeDBConnectionOptions in connect_db.
 # _frame_budget_us is mutated by _auto_tune_budget when auto-tuning is on.
@@ -388,6 +397,7 @@ func _apply_process_mode() -> void:
 
 # --- WebSocket Message Handling ---
 func _physics_process(_delta: float) -> void:
+	_close_on_parse_fault()
 	_process_results_asynchronously()
 
 
@@ -1551,8 +1561,12 @@ func _on_websocket_message_received(raw_bytes: PackedByteArray) -> void:
 		_packet_queue.append(raw_bytes)
 		_packet_mutex.unlock()
 		_packet_semaphore.post()
-	else:
-		_result_queue.append_array(_parse_packet_and_get_resource(_decompress_and_parse(raw_bytes)))
+	elif _parse_fault.is_empty():
+		var parsed: Array[SpacetimeDBServerMessage] = _parse_packet_and_get_resource(
+			_decompress_and_parse(raw_bytes)
+		)
+		_parse_fault = _last_parse_error()
+		_result_queue.append_array(parsed)
 
 
 func _thread_loop() -> void:
@@ -1564,7 +1578,10 @@ func _thread_loop() -> void:
 
 		# Drain all pending packets in one lock acquisition
 		_packet_mutex.lock()
-		if _packet_queue.is_empty():
+		# A stream already abandoned stays abandoned until the session boundary clears the
+		# fault: what follows a bad message is not worth parsing.
+		if _packet_queue.is_empty() or not _parse_fault.is_empty():
+			_packet_queue.clear()
 			_packet_mutex.unlock()
 			continue
 		var local_packets: Array[PackedByteArray] = []
@@ -1583,9 +1600,21 @@ func _thread_loop() -> void:
 
 		# Parse all packets without holding any lock
 		var local_results: Array[SpacetimeDBServerMessage] = []
+		var fault: String = ""
 		for packet: PackedByteArray in local_packets:
 			var payload: PackedByteArray = _decompress_and_parse(packet)
 			local_results.append_array(_parse_packet_and_get_resource(payload))
+			fault = _last_parse_error()
+			if not fault.is_empty():
+				break
+
+		# Recorded for the main thread, which owns the socket and drops it. Only for the
+		# session the packet belongs to: a fault from a dead session has nothing to close.
+		if not fault.is_empty():
+			_packet_mutex.lock()
+			if batch_epoch == _session_epoch and _parse_fault.is_empty():
+				_parse_fault = fault
+			_packet_mutex.unlock()
 
 		# Flush parsed results in one lock acquisition — but only if a reconnect
 		# hasn't bumped the session epoch while we were parsing, otherwise these
@@ -1986,15 +2015,58 @@ func _parse_packet_and_get_resource(bsatn_bytes: PackedByteArray) -> Array[Space
 		bsatn_bytes
 	)
 
-	if _deserializer.has_error():
-		printerr(
-			"SpacetimeDBClient: Failed to parse BSATN packet: ",
-			_deserializer.get_last_error(),
+	if not _deserializer.has_error():
+		return result
+	# Nothing from the packet is delivered, and the stream is abandoned: the caller reads
+	# the error (_last_parse_error, which logs it) and records it as the session's fault,
+	# and the main thread drops the socket (_close_on_parse_fault). The messages
+	# read before the failure are whole, but a server that sent one message this client
+	# cannot read has already broken the stream the mirror is built from — the bad message
+	# may have been the transaction that the next ones build on, so applying what surrounds
+	# it would leave the mirror wrong with nothing to say so. The packets parsed before this
+	# one were delivered whole and stay delivered.
+	#
+	# With auto-reconnect on, the drop is an ordinary failed connection and the cycle that
+	# follows is bounded by SpacetimeDBConnectionOptions.max_reconnect_attempts. The attempt
+	# count only resets once a reconnect's resubscribe has settled (_finish_resubscribe),
+	# not when the new socket's identity arrives, so a server that fails the same parse on
+	# every replay exhausts the cycle and reports reconnect_failed instead of reconnecting
+	# forever. A fault that arrives after a replay settled starts a fresh count: that
+	# session was established, and the next cycle is a new drop.
+	return []
+
+
+## The parse error the last [method _parse_packet_and_get_resource] call left, or empty.
+## Logs and consumes it, so call it once per parse. Read on the thread that made the call:
+## the deserializer belongs to it.
+func _last_parse_error() -> String:
+	if _deserializer == null or not _deserializer.has_error():
+		return ""
+	var error: String = _deserializer.get_last_error()
+	printerr("SpacetimeDBClient: Failed to parse BSATN packet: ", error)
+	return error
+
+
+## Drops the socket once the parser has abandoned the inbound stream (see
+## [member _parse_fault]). Main thread only: the worker cannot touch the socket, so it
+## records the fault and this picks it up on the next physics frame.
+func _close_on_parse_fault() -> void:
+	if _parse_fault_closed:
+		return
+	var fault: String = _parse_fault
+	if use_threading:
+		if _packet_mutex == null:
+			return
+		_packet_mutex.lock()
+		fault = _parse_fault
+		_packet_mutex.unlock()
+	if fault.is_empty():
+		return
+	_parse_fault_closed = true
+	if _connection != null:
+		_connection.abort_protocol_violation(
+			"a server message could not be parsed (%s)" % fault
 		)
-	# Whatever parsed is still delivered. A packet carries several complete server
-	# messages and the failure is at one of them; the ones read before it are whole and
-	# ordered, so dropping them would discard uncorrupted updates on top of the loss.
-	return result
 
 
 func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
@@ -2226,7 +2298,11 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				% _saved_subscriptions.size()
 			)
 			_reconnect_state = _ReconnectState.IDLE
-			_reconnect_attempt = 0
+			# _reconnect_attempt is NOT reset here. A socket that opens and then fails its
+			# replay (a protocol violation, a message that cannot be parsed) has not
+			# reconnected anything, and resetting on the identity would let a server that
+			# does that every time cycle without bound. _finish_resubscribe resets it once
+			# the replay has settled; until then the next drop carries the count on.
 			# Even with nothing saved: the reconcile is what drops the old session's rows.
 			_resubscribe_saved_queries()
 	else:
@@ -2279,6 +2355,17 @@ func _on_connection_disconnected() -> void:
 	# instead of self-stamping TIMEOUT. The request ids won't survive the reconnect.
 	_fail_pending_calls_disconnected()
 
+	# A close that says the server rejected what this client sent is not retried: a new
+	# socket would send the same bytes and meet the same close, so a cycle would only spend
+	# its attempts on it. The connection has already reported the code (close_diagnostic).
+	if _connection != null and SpacetimeDBConnection.is_terminal_close(_connection.last_close_code):
+		print_log(
+			"SpacetimeDBClient: close code %d is terminal, not reconnecting."
+			% _connection.last_close_code
+		)
+		_give_up_reconnection(_reconnect_state == _ReconnectState.RECONNECTING)
+		return
+
 	# A graceful server close (normal WS code) during a reconnect attempt routes here, not
 	# through _on_connection_error (code -1 only). Without this branch
 	# _start_reconnection() early-returns on the RECONNECTING state and the machine wedges
@@ -2305,6 +2392,21 @@ func _on_connection_disconnected() -> void:
 		_start_reconnection()
 	else:
 		_emit_disconnected()
+
+
+## Ends the session for good: no further attempt, the saved handles end, and the game hears
+## [signal reconnect_failed] (when [param cycle_failed], i.e. a cycle was running) and then
+## [signal disconnected]. Shared by an exhausted cycle and a terminal close.
+func _give_up_reconnection(cycle_failed: bool) -> void:
+	_reconnect_state = _ReconnectState.IDLE
+	_reconnect_attempt = 0
+	# Nothing will restore these now, so they end rather than staying suspended — a
+	# handle that reads neither active nor ended is the one shape a caller cannot act
+	# on.
+	_end_saved_subscriptions()
+	if cycle_failed:
+		reconnect_failed.emit()
+	_emit_disconnected()
 
 
 ## True when the close that just ended a reconnect attempt was a session-busy refusal the
@@ -2370,7 +2472,9 @@ func _start_reconnection(immediate: bool = false) -> void:
 	_resolve_reconnect_pacing(connection_options)
 
 	_reconnect_state = _ReconnectState.RECONNECTING
-	_reconnect_attempt = 0
+	# Not reset: it is already 0 unless the last cycle's socket opened but its replay never
+	# settled, and that count is the one this cycle has to go on from (see the IdentityToken
+	# handler). Every path that ends a cycle — settled, cancelled, exhausted — zeroes it.
 	_reconnect_immediate = immediate
 	_reconnect_session_busy = false
 	_session_busy_retries = 0
@@ -2413,14 +2517,7 @@ func _schedule_next_reconnect_attempt() -> void:
 
 	if max_attempts > 0 and _reconnect_attempt >= max_attempts:
 		print_log("SpacetimeDBClient: All %d reconnect attempts exhausted." % max_attempts)
-		_reconnect_state = _ReconnectState.IDLE
-		_reconnect_attempt = 0
-		# Nothing will restore these now, so they end rather than staying suspended — a
-		# handle that reads neither active nor ended is the one shape a caller cannot act
-		# on.
-		_end_saved_subscriptions()
-		reconnect_failed.emit()
-		_emit_disconnected()
+		_give_up_reconnection(true)
 		return
 
 	_reconnect_attempt += 1
@@ -2546,12 +2643,15 @@ func _attempt_reconnect() -> void:
 # Both session boundaries need this — the automatic one in _prepare_for_reconnect and the
 # manual one in connect_db.
 func _drop_dead_session_traffic() -> void:
+	# The next session's stream starts sound, whichever thread parses it.
+	_parse_fault_closed = false
 	if use_threading and _packet_mutex:
 		_packet_mutex.lock()
 		# Bump the epoch under the same lock the worker drains under, so any batch
 		# it has already pulled will fail its post-parse epoch check and be dropped.
 		_session_epoch += 1
 		_packet_queue.clear()
+		_parse_fault = ""
 		_packet_mutex.unlock()
 
 		_result_mutex.lock()
@@ -2565,6 +2665,7 @@ func _drop_dead_session_traffic() -> void:
 		# worker's epoch check prevents on the threaded side. The deserializer reset is
 		# belt and braces — the parse loop clears its error at every message.
 		_result_queue.clear()
+		_parse_fault = ""
 		if _deserializer:
 			_deserializer.reset_stream_state()
 
@@ -2669,12 +2770,15 @@ func _end_subscription(sub: SpacetimeDBSubscription) -> void:
 
 
 func _cancel_reconnection() -> void:
+	# Before the IDLE check: between a reconnect's identity and its settled replay the
+	# cycle reads IDLE but still carries its attempt count, and a connect_db or
+	# disconnect_db made then starts over.
+	_reconnect_attempt = 0
 	if _reconnect_state == _ReconnectState.IDLE:
 		return
 
 	print_log("SpacetimeDBClient: Cancelling reconnection.")
 	_reconnect_state = _ReconnectState.IDLE
-	_reconnect_attempt = 0
 	_reconnect_immediate = false
 	_reconnect_session_busy = false
 	_resubscribe_epoch += 1 # supersede any in-flight resubscribe settles
@@ -2958,6 +3062,8 @@ func _finish_resubscribe(epoch: int) -> void:
 		return
 	# Supersede this cycle so the watchdog or a late answer can't re-fire reconnected.
 	_resubscribe_epoch += 1
+	# The reconnect is complete only now, so only now does the next drop start a new count.
+	_reconnect_attempt = 0
 	# Cleared, not ended: every entry that was restored is live again in current/pending,
 	# and the ones that were not have already ended.
 	_saved_subscriptions.clear()

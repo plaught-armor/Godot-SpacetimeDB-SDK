@@ -455,9 +455,12 @@ func _physics_process(_delta: float) -> void:
 				# Some closes carry a cause the game cannot work out from the number:
 				# they get pushed rather than logged, because debug_mode (which gates
 				# _print_log) is off by default and a silent close that repeats every
-				# reconnect is the worst way to learn about one. Reconnect is NOT
-				# suppressed for any of them — a 1009 raised by one oversized transaction
-				# update is survivable, and only the caller knows whether its
+				# reconnect is the worst way to learn about one. Reconnect is suppressed
+				# only for the terminal codes (is_terminal_close: 1002, 1003, 1007,
+				# 1008), where the server rejected what this client sent and a new socket
+				# would send the same thing; the client reads last_close_code to decide.
+				# Every other close still reconnects — a 1009 raised by one oversized
+				# transaction update is survivable, and only the caller knows whether its
 				# subscription is the kind that will reproduce it.
 				var diagnostic: String = close_diagnostic(code, _inbound_buffer_size, reason)
 				if diagnostic.is_empty():
@@ -1015,6 +1018,17 @@ func send_bytes(bytes: PackedByteArray) -> Error:
 ## [param reason] is the server's own close-frame text, which two closes share a code
 ## and differ only by; pass [method WebSocketPeer.get_close_reason] verbatim.
 static func close_diagnostic(code: int, inbound_buffer_size: int, reason: String) -> String:
+	if is_terminal_close(code):
+		return (
+			(
+				"SpacetimeDBConnection: the server closed the socket with %d (%s), reason "
+				+ "\"%s\" — it rejected something this client sent. The close is terminal: "
+				+ "auto-reconnect does not retry it, because a new socket would send the "
+				+ "same thing. A mismatch between this SDK and the server version, or a "
+				+ "proxy between them that alters the traffic, are the usual causes."
+			)
+			% [code, _terminal_close_name(code), reason]
+		)
 	if code == CLOSE_GOING_AWAY and reason == CLOSE_REASON_IDLE_TIMEOUT:
 		return (
 			"SpacetimeDBConnection: the server closed the socket with 1001 (idle "
@@ -1044,6 +1058,25 @@ static func close_diagnostic(code: int, inbound_buffer_size: int, reason: String
 		)
 		% inbound_buffer_size
 	)
+
+
+## True for a close code that says the other end rejected what this client sent — 1002
+## (protocol error), 1003 (unsupported data), 1007 (invalid payload data) and 1008 (policy
+## violation), RFC 6455 section 7.4.1. Auto-reconnect does not retry them: a new socket
+## would send the same bytes and meet the same close, so a cycle would only spend its
+## attempts on it. Pure, so the rule is testable without a socket.
+static func is_terminal_close(code: int) -> bool:
+	return code == 1002 or code == 1003 or code == 1007 or code == 1008
+
+
+static func _terminal_close_name(code: int) -> String:
+	if code == 1002:
+		return "protocol error"
+	if code == 1003:
+		return "unsupported data"
+	if code == 1007:
+		return "invalid payload data"
+	return "policy violation"
 
 
 ## The [code]?...[/code] query string for the subscribe endpoint. Pure, so the wire

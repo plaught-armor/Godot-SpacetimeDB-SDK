@@ -288,7 +288,6 @@ func _reconnecting_client(query_ids: PackedInt64Array) -> SpacetimeDBClient:
 	client._prepare_for_reconnect()
 	# What the IdentityToken handler does once the new socket is up.
 	client._reconnect_state = SpacetimeDBClient._ReconnectState.IDLE
-	client._reconnect_attempt = 0
 	client._resubscribe_saved_queries()
 	return client
 

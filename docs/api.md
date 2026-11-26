@@ -318,6 +318,26 @@ A handle the reconnect is *not* carrying (one whose unsubscribe was in flight wh
 socket died) is ended during the reconnect preparation. Its rows stay until the reconcile,
 which deletes them unless a restored subscription still covers them.
 
+After `reconnect_failed`, the cache keeps the last state it had, the same as after
+`disconnect_db()`. It is not cleared.
+
+### What ends a session without a reconnect
+
+- **A server message that cannot be parsed.** Nothing from that packet is delivered, every
+  packet after it is dropped unread, and the socket is closed as a protocol violation
+  (`connection_error` with `ERR_INVALID_DATA`). With `auto_reconnect` on this counts as a
+  failed connection, so a reconnect follows.
+- **A close with code 1002, 1003, 1007 or 1008.** These mean the server rejected what
+  this client sent, so a new socket would meet the same close. No reconnect follows: a
+  cycle in progress ends with `reconnect_failed`, then `disconnected` fires. The error log
+  names the code and the server's reason.
+
+A reconnect counts as done only once its subscriptions are restored, not when the new
+socket opens. A server that accepts the socket and then fails the replay every time (a
+protocol violation or a message that cannot be parsed) uses up `max_reconnect_attempts`
+and ends with `reconnect_failed`. A failure after a restore succeeded starts a fresh
+count, since that session was established.
+
 ## Generated `ModuleClient` class
 
 **Inherits:** [SpacetimeDBClient](#spacetimedbclient-class) < Node
@@ -1000,7 +1020,7 @@ class SpacetimeDBConnectionOptions:
 | Name | Description |
 | --- | --- |
 | `auto_reconnect` | Whether to reconnect automatically on disconnect. Must be `true` for any of the rest to apply. |
-| `max_reconnect_attempts` | Maximum reconnection attempts. `0` for infinite retries. |
+| `max_reconnect_attempts` | Maximum reconnection attempts. `0` for infinite retries. An attempt whose socket opens but whose subscription restore fails still counts. |
 | `reconnect_initial_delay` | Delay before the first reconnection attempt, in seconds. |
 | `reconnect_max_delay` | Maximum delay between reconnection attempts, in seconds. |
 | `reconnect_backoff_multiplier` | Multiplier applied to the delay after each failed attempt. |

@@ -19,6 +19,20 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   not match the request (wrong request id, or result sets other than the ones sent) is a
   protocol violation, and the socket is dropped. See "Row callbacks across a reconnect"
   in `docs/api.md`.
+- **A server message that cannot be parsed ends the session.** Before, the messages read
+  before the failure were still delivered and the rest of the packet was skipped. Now
+  nothing from the packet is delivered, the packets after it are dropped, and the socket
+  is closed as a protocol violation. Auto-reconnect treats that close as a failed
+  connection.
+- **Close codes 1002, 1003, 1007 and 1008 are terminal.** They mean the server rejected
+  what this client sent, and a new socket would meet the same close. Auto-reconnect no
+  longer retries them: a cycle in progress ends with `reconnect_failed`, then
+  `disconnected` fires, and the error log names the code.
+- **A reconnect attempt counts until its subscriptions are restored.** The attempt
+  counter used to reset as soon as the new socket's identity arrived. A server that
+  accepted the socket and then failed the replay every time made the client reconnect
+  forever. The counter now resets only once the restore has settled, so that server uses
+  up `max_reconnect_attempts` and the cycle ends with `reconnect_failed`.
 
 ### Added
 - **Auto-reconnect keeps one server session.** With `auto_reconnect` on, the client
