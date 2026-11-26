@@ -4,6 +4,8 @@
 # overlap the connection it replaces. The id has to follow the official SDKs' rules:
 #
 #   - drawn per connect_db(): a fresh session gets a fresh id;
+#   - drawn too by an initialize_and_connect() that connect_db did not call (auto_connect
+#     from _ready, or a direct call), so that path is resumable as well;
 #   - kept across that session's automatic reconnects (while the per-attempt
 #     connection id still changes on every socket);
 #   - 128 bits as 32 hex characters, the only spelling the server parses;
@@ -26,6 +28,7 @@ func _initialize() -> void:
 	var f: int = 0
 	f += _test_session_id_lifecycle()
 	f += _test_no_session_id_without_auto_reconnect()
+	f += _test_direct_initialize_draws_session_id()
 	if f == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:
@@ -83,6 +86,38 @@ func _test_no_session_id_without_auto_reconnect() -> int:
 	if not conn.session_ids.is_empty():
 		f += _check_s("no session id sent", conn.session_ids[0], "")
 	client.free()
+	return f
+
+
+# auto_connect and a direct initialize_and_connect() never pass through connect_db, which is
+# where the id used to be drawn. The token load is stubbed out, so nothing connects until the
+# test swaps in the recording connection and runs a reconnect attempt.
+func _test_direct_initialize_draws_session_id() -> int:
+	var client: _DirectClient = _DirectClient.new()
+	client.module_name = "test_mod"
+	client.schema_path = "res://__no_schema__"
+	client.database_name = "test_mod"
+	client.save_token = false
+	client.use_threading = false # no worker to join before the free
+	client.connection_options = _mk_options(true)
+	client.initialize_and_connect()
+	var drawn: String = client._session_id
+	var f: int = _check_i("direct initialize draws a 32-character id", drawn.length(), 32)
+	f += _check_s("and the socket is given it", client._socket_session_id(), drawn)
+
+	var real_conn: SpacetimeDBConnection = client._connection
+	client.remove_child(real_conn)
+	real_conn.free()
+	var conn: _RecordingConn = _RecordingConn.new()
+	client._connection = conn
+	client._token = "header.payload.signature"
+	client._reconnect_state = SpacetimeDBClient._ReconnectState.RECONNECTING
+	client._attempt_reconnect()
+	f += _check_i("the reconnect opened a socket", conn.session_ids.size(), 1)
+	if not conn.session_ids.is_empty():
+		f += _check_s("the reconnect keeps the id", conn.session_ids[0], drawn)
+	client.free()
+	conn.free()
 	return f
 
 
@@ -185,4 +220,13 @@ class _FakeRest:
 
 
 	func set_token(_token: String) -> void:
+		pass
+
+
+# A client whose token load does nothing, so initialize_and_connect builds everything and
+# opens no socket.
+class _DirectClient:
+	extends SpacetimeDBClient
+
+	func _load_token_or_request() -> void:
 		pass

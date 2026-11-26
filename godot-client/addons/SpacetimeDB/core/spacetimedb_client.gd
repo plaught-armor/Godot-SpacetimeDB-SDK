@@ -481,6 +481,11 @@ func initialize_and_connect() -> void:
 		return
 
 	_disconnected_emitted = false # re-arm the terminal signal for this session
+	# connect_db has already made this session's id. auto_connect and a direct call come
+	# straight here, and without an id their socket would claim no server session, so the
+	# server could not hold it across a reconnect.
+	if _session_id.is_empty():
+		_session_id = _generate_connection_id()
 	print_log("SpacetimeDBClient: Initializing...")
 
 	# 1. Load Schema
