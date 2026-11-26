@@ -1061,7 +1061,8 @@ func _ready() -> void:
     _client.connect_db("http://127.0.0.1:3000", "my_db", options)
 
 
-# Awaited by the client. An empty return ends the reconnect cycle.
+# Awaited by the client. An empty return fails this reconnect attempt; the next one
+# asks again.
 # _get_steam_ticket() stands in for your GodotSteam ticket fetch; see
 # spacetimeauth-godotsteam.md.
 func _fetch_token() -> String:
@@ -1079,9 +1080,13 @@ func _fetch_token() -> String:
 ```
 
 A provider that returns an empty token, anything that is not a `String`, or a token with
-a control character ends the cycle. There is no further attempt. `connection_error`
-fires with `ERR_UNAUTHORIZED` and the reason, then `reconnect_failed`, then
-`disconnected`. A provider whose object was freed ends the cycle the same way.
+a control character fails that attempt, as in the official SDKs. `connection_error`
+fires with `ERR_UNAUTHORIZED` and the reason, the attempt does not connect, and the next
+one is scheduled after the usual backoff, which asks the provider again. Each failure
+counts against `max_reconnect_attempts`, so a provider that keeps failing ends the cycle
+with `reconnect_failed` and then `disconnected`. A provider whose object was freed fails
+each attempt the same way. A result that arrives after the attempt was superseded, by
+`disconnect_db()`, `connect_db()` or a later attempt, is dropped with no error.
 
 The check is proactive only. The provider is not called when the server rejects a token
 mid-session or at the handshake; such an attempt fails like any other and the next

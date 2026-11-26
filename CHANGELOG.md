@@ -45,8 +45,10 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   returns a fresh token for a reconnect, and may be a coroutine. Before each
   reconnect attempt, the client calls it when the current token's `exp` is less than
   max(30 s, 5% of `exp - iat`) away, already past, or missing. A provider that returns
-  an empty or unusable token, or whose object was freed, ends the cycle with
-  `connection_error` (`ERR_UNAUTHORIZED`), `reconnect_failed` and `disconnected`.
+  an empty or unusable token, or whose object was freed, fails that attempt with
+  `connection_error` (`ERR_UNAUTHORIZED`). The next attempt asks it again after the
+  usual backoff, and each failure counts against `max_reconnect_attempts`, as in the
+  official SDKs.
   The check runs only before an attempt: a token the server rejects does not trigger
   it. Without a provider, reconnect behaves as before. New static helpers
   `SpacetimeDBClient.token_claims()` and `SpacetimeDBClient.token_needs_refresh()`.

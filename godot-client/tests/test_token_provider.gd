@@ -5,9 +5,11 @@
 #    past, or is missing.
 # 3. A reconnect attempt whose token is near expiry asks the provider (awaited, so it may be
 #    a coroutine) and connects with what it returns; a token far from expiry is used as is.
-# 4. A provider that returns an empty token, a non-String, or whose object was freed ends
-#    the cycle: connection_error (ERR_UNAUTHORIZED), reconnect_failed, disconnected, and no
-#    connect.
+# 4. A provider that returns an empty token, a non-String, a token with a control
+#    character, or whose object was freed fails that attempt: connection_error
+#    (ERR_UNAUTHORIZED), no connect, and the next attempt is scheduled. One that fails once
+#    and then succeeds reconnects; one that always fails ends the cycle after
+#    max_reconnect_attempts with reconnect_failed and disconnected.
 # 5. No provider: the attempt connects with the token it has, expired or not.
 # 6. A cycle cancelled while the provider is still working does not connect.
 # 7. A result that arrives after its attempt was superseded is dropped: a disconnect_db made
@@ -46,6 +48,8 @@ func _initialize() -> void:
 	f += _test_margin_rule()
 	f += await _test_provider_called()
 	f += await _test_provider_fails()
+	f += await _test_provider_recovers()
+	f += await _test_provider_always_fails()
 	f += await _test_no_provider()
 	f += await _test_cancelled_during_provider()
 	f += await _test_stale_result_dropped()
@@ -132,19 +136,66 @@ func _test_provider_called() -> int:
 
 func _test_provider_fails() -> int:
 	var f: int = 0
-	var failures: Array = ["", 42, null]
+	var failures: Array = ["", 42, null, "bad\ntoken"]
 	for result: Variant in failures:
 		var label: String = "provider returns %s" % var_to_str(result)
 		var client: SpacetimeDBClient = await _make_client(Callable(self, "_provide"))
 		_provider_result = result
-		f += await _check_terminal(label, client)
+		f += await _check_counted_failure(label, client)
 
 	# A provider whose object was freed.
 	var holder: _Holder = _Holder.new()
 	var gone: Callable = Callable(holder, "provide")
 	holder.free()
 	var orphaned: SpacetimeDBClient = await _make_client(gone)
-	f += await _check_terminal("provider object freed", orphaned)
+	f += await _check_counted_failure("provider object freed", orphaned)
+	return f
+
+
+# Fails the first attempt, then hands out a token: the cycle goes on and reconnects.
+func _test_provider_recovers() -> int:
+	var f: int = 0
+	var client: SpacetimeDBClient = await _make_client(Callable(self, "_provide"))
+	var conn: _StubConn = client._connection
+	_provider_result = ""
+	client._token = _jwt({ "exp": Time.get_unix_time_from_system() - 10.0 })
+	client._start_reconnection()
+	await client._attempt_reconnect()
+	f += _check_i("recovers: the failed attempt does not connect", conn.connects, 0)
+	_provider_result = _FRESH_TOKEN
+	await client._attempt_reconnect()
+	f += _check_i("recovers: asked twice", _provider_calls, 2)
+	f += _check_i("recovers: the second attempt connects", conn.connects, 1)
+	f += _check_b("recovers: with the new token", conn.last_token == _FRESH_TOKEN, true)
+	f += _check_i("recovers: one error, for the failure", _errors.size(), 1)
+	f += _check_i("recovers: no reconnect_failed", _reconnect_failed_count, 0)
+	_free_client(client)
+	return f
+
+
+# Fails every attempt: the cycle ends after max_reconnect_attempts, through the usual
+# exhaustion.
+func _test_provider_always_fails() -> int:
+	var f: int = 0
+	var client: SpacetimeDBClient = await _make_client(Callable(self, "_provide"))
+	var conn: _StubConn = client._connection
+	var max_attempts: int = 3
+	client.connection_options.max_reconnect_attempts = max_attempts
+	_provider_result = ""
+	client._token = _jwt({ "exp": Time.get_unix_time_from_system() - 10.0 })
+	client._start_reconnection()
+	var attempts: int = 0
+	for i: int in max_attempts * 3:
+		if client._reconnect_state != SpacetimeDBClient._ReconnectState.RECONNECTING:
+			break
+		attempts += 1
+		await client._attempt_reconnect()
+	f += _check_i("always fails: attempts made", attempts, max_attempts)
+	f += _check_i("always fails: one error each", _errors.size(), max_attempts)
+	f += _check_i("always fails: never connects", conn.connects, 0)
+	f += _check_i("always fails: reconnect_failed", _reconnect_failed_count, 1)
+	f += _check_i("always fails: disconnected", _disconnected_count, 1)
+	_free_client(client)
 	return f
 
 
@@ -286,7 +337,7 @@ func _test_stale_result_dropped() -> int:
 	return f
 
 
-func _check_terminal(label: String, client: SpacetimeDBClient) -> int:
+func _check_counted_failure(label: String, client: SpacetimeDBClient) -> int:
 	var f: int = 0
 	var conn: _StubConn = client._connection
 	# Near expiry but present, so a failure that fell through would connect with it.
@@ -297,13 +348,14 @@ func _check_terminal(label: String, client: SpacetimeDBClient) -> int:
 	f += _check_i("%s: one error" % label, _errors.size(), 1)
 	if _errors.size() == 1:
 		f += _check_i("%s: ERR_UNAUTHORIZED" % label, _errors[0], ERR_UNAUTHORIZED)
-	f += _check_i("%s: reconnect_failed" % label, _reconnect_failed_count, 1)
-	f += _check_i("%s: disconnected" % label, _disconnected_count, 1)
+	f += _check_i("%s: no reconnect_failed" % label, _reconnect_failed_count, 0)
+	f += _check_i("%s: no disconnected" % label, _disconnected_count, 0)
 	f += _check_i(
-		"%s: idle" % label,
+		"%s: still reconnecting" % label,
 		client._reconnect_state,
-		SpacetimeDBClient._ReconnectState.IDLE,
+		SpacetimeDBClient._ReconnectState.RECONNECTING,
 	)
+	f += _check_i("%s: the next attempt is scheduled" % label, client._reconnect_attempt, 2)
 	_free_client(client)
 	return f
 

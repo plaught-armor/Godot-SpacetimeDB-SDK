@@ -2682,7 +2682,10 @@ func _attempt_reconnect() -> void:
 			print_log("SpacetimeDBClient: Reconnect superseded while the token was refreshed.")
 			return
 		if not refreshed:
-			_give_up_reconnection(true)
+			# One failed attempt, as in the official SDKs: the provider may be down for a
+			# moment, so the next attempt asks it again after the usual backoff, and
+			# max_reconnect_attempts bounds the cycle.
+			_schedule_next_reconnect_attempt()
 			return
 
 	if not _connection or _token.is_empty():
@@ -2785,7 +2788,10 @@ func _refresh_token_from_provider(provider: Callable, serial: int) -> bool:
 
 
 func _report_token_provider_failure(reason: String) -> void:
-	push_error("SpacetimeDBClient: token_provider failed — %s. Not reconnecting." % reason)
+	push_error(
+		"SpacetimeDBClient: token_provider failed — %s. Counted as a failed reconnect attempt."
+		% reason
+	)
 	connection_error.emit(ERR_UNAUTHORIZED, "Token provider failed: %s" % reason)
 
 
