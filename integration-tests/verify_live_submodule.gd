@@ -4,9 +4,11 @@
 # The generated bindings are what is under test: a submodule's table is reached through a
 # namespace member (`db.lib.lib_data`), its reducer through the matching one
 # (`reducers.lib.lib_insert`), and both have to address the server by the DOTTED name it
-# registered them under. A nested namespace (`auth.baz`) covers a name carrying more than
-# one dot, and each module's own typespace covers the type-ref hazard: `lib.lib_data.point`
-# and `root_thing.point` sit at the same index in their own modules and are different types.
+# registered them under. A nested namespace covers a name carrying more than one dot, and
+# its camelCase mount (`bazStore`, which a 2.10.2+ server registers as `auth.baz_store`) covers
+# the wire using the server's canonical namespace rather than the source name. Each module's
+# own typespace covers the type-ref hazard: `lib.lib_data.point` and `root_thing.point` sit at
+# the same index in their own modules and are different types.
 #
 #   spacetime publish -p <repo>/integration-tests/verify_submodule_module \
 #       -s http://127.0.0.1:3000 vsubmod --yes
@@ -95,7 +97,7 @@ func _case_table_names() -> void:
 	var names: Array[StringName] = _client.db.table_names
 	_check(
 		"table_names carry the dotted wire names",
-		names.has(&"lib.lib_data") and names.has(&"auth.baz.baz_items") and names.has(&"root_thing"),
+		names.has(&"lib.lib_data") and names.has(&"auth.baz_store.baz_items") and names.has(&"root_thing"),
 		str(names),
 	)
 
@@ -141,19 +143,19 @@ func _case_submodule() -> void:
 
 # Namespaces nest, so this table's wire name carries two dots.
 func _case_nested_submodule() -> void:
-	var call: SpacetimeDBReducerCall = _client.reducers.auth.baz.baz_insert(3)
+	var call: SpacetimeDBReducerCall = _client.reducers.auth.baz_store.baz_insert(3)
 	await call.wait_for_response(5.0)
 	if not call.is_ok():
 		_check(
-			"nested reducer auth.baz.baz_insert",
+			"nested reducer auth.baz_store.baz_insert",
 			false,
 			"outcome %d (%s)" % [call.outcome, call.error_message],
 		)
 		return
-	_check("nested reducer auth.baz.baz_insert accepted", true)
-	var row: VsubmodAuthBazBazItems = _client.db.auth.baz.baz_items.first_by_id(3)
+	_check("nested reducer auth.baz_store.baz_insert accepted", true)
+	var row: VsubmodAuthBazStoreBazItems = _client.db.auth.baz_store.baz_items.first_by_id(3)
 	if row == null:
-		_check("nested row in cache", false, "no row with id 3 in auth.baz.baz_items")
+		_check("nested row in cache", false, "no row with id 3 in auth.baz_store.baz_items")
 		return
 	_check("nested row round-trips", row.item != null and row.item.label == "baz-3", str(row.item))
 

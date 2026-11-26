@@ -26,6 +26,8 @@ func _initialize() -> void:
 	fails += _test_slice_path_bytes()
 	fails += _test_zero_rows()
 	fails += _test_over_read_errors()
+	fails += _test_appended_column_fixed()
+	fails += _test_appended_column_offsets()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -154,6 +156,65 @@ func _test_over_read_errors() -> int:
 	var f: int = 0
 	f += _check_b("over-read sets error", d.has_error(), true)
 	f += _check_i("over-read returns no rows", rows.size(), 0)
+	return f
+
+
+# A module may append a column to a published table, and an older client's bindings
+# then see rows longer than they read. The protocol makes the row boundaries a contract
+# for exactly this, so every row must decode from its own offset, not only the first.
+# Each row here is the known 2x u32 plus an appended u16 the bindings do not have.
+func _test_appended_column_fixed() -> int:
+	var w: StreamPeerBuffer = StreamPeerBuffer.new()
+	w.put_u8(0) # ROW_LIST_FIXED_SIZE
+	w.put_u16(10) # row_size: 8 known bytes + 2 appended
+	w.put_u32(30) # data_len: 3 rows
+	for row: Array in [[1, 2], [3, 4], [5, 6]]:
+		w.put_u32(row[0])
+		w.put_u32(row[1])
+		w.put_u16(0xBEEF)
+	w.put_u32(SENTINEL)
+	var d: BSATNDeserializer = _new_deser()
+	var spb: StreamPeerBuffer = _reader(w)
+	var rows: Array[Resource] = _parse_resources(d, spb)
+	var f: int = 0
+	f += _check_b("appended fixed: no error", d.has_error(), false)
+	f += _check_i("appended fixed: row count", rows.size(), 3)
+	if rows.size() == 3:
+		f += _check_i("appended fixed: row1.a", rows[1].a, 3)
+		f += _check_i("appended fixed: row2.b", rows[2].b, 6)
+	f += _check_i("appended fixed: spb at block end (sentinel)", d.read_u32_le(spb), SENTINEL)
+	return f
+
+
+# Same, with ROW_OFFSETS and rows of unequal length (a variable-width appended column).
+func _test_appended_column_offsets() -> int:
+	var extra: Array[int] = [1, 0, 5]
+	var w: StreamPeerBuffer = StreamPeerBuffer.new()
+	w.put_u8(1) # ROW_LIST_ROW_OFFSETS
+	w.put_u32(3) # num_offsets
+	var at: int = 0
+	for n: int in extra:
+		w.put_u64(at)
+		at += 8 + n
+	w.put_u32(at) # data_len
+	var values: Array = [[10, 20], [30, 40], [50, 60]]
+	for i: int in values.size():
+		w.put_u32(values[i][0])
+		w.put_u32(values[i][1])
+		for _b: int in extra[i]:
+			w.put_u8(0xAA)
+	w.put_u32(SENTINEL)
+	var d: BSATNDeserializer = _new_deser()
+	var spb: StreamPeerBuffer = _reader(w)
+	var rows: Array[Resource] = _parse_resources(d, spb)
+	var f: int = 0
+	f += _check_b("appended offsets: no error", d.has_error(), false)
+	f += _check_i("appended offsets: row count", rows.size(), 3)
+	if rows.size() == 3:
+		f += _check_i("appended offsets: row1.a", rows[1].a, 30)
+		f += _check_i("appended offsets: row2.a", rows[2].a, 50)
+		f += _check_i("appended offsets: row2.b", rows[2].b, 60)
+	f += _check_i("appended offsets: spb at block end (sentinel)", d.read_u32_le(spb), SENTINEL)
 	return f
 
 

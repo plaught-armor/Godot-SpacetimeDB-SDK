@@ -35,6 +35,8 @@ func _initialize() -> void:
 	fails += _test_unknown_section_inside_a_submodule_is_recorded()
 	fails += _test_handled_sections_is_locked()
 	fails += _test_handled_sections_covers_what_the_parser_reads()
+	fails += _test_server_only_sections_are_not_reported()
+	fails += _test_server_only_sections_is_locked_and_disjoint()
 
 	if fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -190,6 +192,54 @@ func _test_handled_sections_covers_what_the_parser_reads() -> int:
 			'parser reads section "%s"' % tag,
 			source.contains('section.has("%s")' % tag),
 			true,
+		)
+	return f
+
+
+# A 2.11+ TypeScript or C# module emits an `Environment` section in EVERY module and
+# submodule, even an empty one (measured on a live 2.11.0 server: four of them for a root
+# with three submodules). It declares nothing a client reaches, so reporting it printed a
+# false "tables, reducers absent" line per module on every run. A 2.14.1+ server sends
+# `CaseConversionPolicy` the same way, for every module of every language.
+func _test_server_only_sections_are_not_reported() -> int:
+	var f: int = 0
+	var sections: Array = _known_sections()
+	sections.push_front({ "Environment": [] })
+	sections.push_front({ "CaseConversionPolicy": { "None": [] } })
+	sections.append({ "Outboxes": [] })
+	sections.append({ "TableCachePolicies": [{ "table_name": "t", "policy": { "RequiredOnDisk": [] } }] })
+	sections.append(
+		{
+			"Submodules": [
+				{
+					"namespace": "lib",
+					"module": { "sections": [{ "CaseConversionPolicy": { "None": [] } }, { "Environment": [] }] },
+				},
+			],
+		},
+	)
+	var schema: SpacetimeParsedSchema = _parse(sections)
+
+	f += _check("server-only sections are not recorded", schema.skipped_sections.size(), 0)
+	f += _check("the parse still carries the table", schema.tables.size(), 1)
+	f += _check("the parse still carries the reducer", schema.reducers.size(), 1)
+	return f
+
+
+# Locked for the same reason as HANDLED_SECTIONS. A tag in both lists would mean one of
+# them is wrong about what the parser does with it.
+func _test_server_only_sections_is_locked_and_disjoint() -> int:
+	var f: int = 0
+	f += _check(
+		"the server-only table is locked against mutation",
+		SpacetimeSchemaParser.SERVER_ONLY_SECTIONS.is_read_only(),
+		true,
+	)
+	for tag: String in SpacetimeSchemaParser.SERVER_ONLY_SECTIONS:
+		f += _check(
+			'"%s" is not also a handled section' % tag,
+			SpacetimeSchemaParser.HANDLED_SECTIONS.has(tag),
+			false,
 		)
 	return f
 

@@ -1297,8 +1297,11 @@ func _read_bsatn_row_list_as_resources(
 		var pos: int = spb.get_position()
 		# Over-read means the row consumed bytes belonging to the next row — a schema/wire
 		# mismatch (e.g. client/server version skew) — so it is a hard error rather than a
-		# row populated with the next row's bytes. Under-read (trailing bytes ignored)
-		# stays a warning; the next iteration re-anchors.
+		# row populated with the next row's bytes. Under-read is normal and silent: a module
+		# may append columns to a published table, and the protocol requires a client to
+		# skip the bytes of columns its bindings do not know (BsatnRowList::size_hint in
+		# crates/client-api-messages/src/websocket/common.rs, 2.16+). The next iteration
+		# re-anchors on the row's offset.
 		if pos > row_end:
 			_set_error(
 				"Row %d for table '%s' over-read: parsed to %d, row ends at %d (schema/wire mismatch)" % [
@@ -1311,15 +1314,6 @@ func _read_bsatn_row_list_as_resources(
 			)
 			spb.seek(block_end)
 			return []
-		if pos < row_end:
-			push_warning(
-				"Row %d for table '%s': parsed to row offset %d, expected %d" % [
-					i,
-					table_name,
-					pos - block_start,
-					offsets[i + 1],
-				],
-			)
 		result[i] = row_resource
 
 	# Consume the whole block regardless of any per-row drift above.
