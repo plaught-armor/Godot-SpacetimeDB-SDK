@@ -23,6 +23,10 @@
 extends SceneTree
 
 const FIXTURE: String = "res://tests/fixtures/vsubmod.json"
+## The same module captured from a 2.16.3 server, with `baz` mounted as `bazStore`. It
+## carries what the older capture cannot: `Namespace` entries in ExplicitNames, and the
+## `Environment` and `CaseConversionPolicy` sections every module on that server sends.
+const FIXTURE_2_16_3: String = "res://tests/fixtures/vsubmod_2_16_3.json"
 const MODULE: String = "vsubmod"
 
 var _total: int = 0
@@ -49,7 +53,10 @@ func _initialize() -> void:
 	_check_private_table_parsed(schema)
 	_check_malformed_submodules()
 	_check_namespace_paths_are_distinct()
+	_check_canonical_namespaces()
+	_check_empty_canonical_namespace_falls_back()
 	_check_multiple_typespace_sections()
+	_check_live_2_16_3_capture()
 
 	if _fails == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -378,6 +385,73 @@ func _check_namespace_paths_are_distinct() -> void:
 	)
 
 
+# SpacetimeDB 2.10.2+ canonicalizes a namespace the way it does a table name, and the schema
+# sends the accessor in the submodule entry with the canonical name as a `Namespace` entry
+# in the PARENT's ExplicitNames. The wire name must follow the canonical one at every level
+# — the server registers `authz.inner_lib.row`, and a subscription to `myAuth.innerLib.row`
+# names a table it does not have — while identifiers follow the accessor, as the official
+# SDKs do. `authz` is an explicit rename, so the two cannot agree by coincidence.
+func _check_canonical_namespaces() -> void:
+	var inner: Dictionary = _submodule_entry("innerLib", "row")
+	var outer: Dictionary = {
+		"namespace": "myAuth",
+		"module": {
+			"sections": [
+				_namespace_names("innerLib", "inner_lib"),
+				{ "Submodules": [inner] },
+			],
+		},
+	}
+	var sections: Array = _minimal_root_sections()
+	sections.append(_namespace_names("myAuth", "authz"))
+	sections.append({ "Submodules": [outer] })
+	var schema: SpacetimeParsedSchema = SpacetimeSchemaParser.parse_schema(
+		{ "sections": sections },
+		MODULE,
+		{ },
+	)
+	var row: Dictionary = _table(schema, "my_auth_inner_lib_row")
+	_check(
+		"a canonicalized namespace puts the canonical path on the wire, the accessor in identifiers",
+		(
+			not schema.incomplete and row.get("wire_name", "") == "authz.inner_lib.row"
+			and row.get("local_name", "") == "row"
+			and Array(row.get("namespace", [])) == ["myAuth", "innerLib"]
+		),
+		"incomplete=%s wire=%s" % [str(schema.incomplete), row.get("wire_name", "<missing>")],
+	)
+
+
+# A `Namespace` entry with no canonical name is malformed, and must not map the accessor
+# to an empty segment: the wire name would read `..row`. It falls back to the accessor, as
+# a server that sends no entry does.
+func _check_empty_canonical_namespace_falls_back() -> void:
+	var sections: Array = _minimal_root_sections()
+	sections.append(
+		{ "ExplicitNames": { "entries": [{ "Namespace": { "source_name": "myLib" } }] } },
+	)
+	sections.append({ "Submodules": [_submodule_entry("myLib", "row")] })
+	var schema: SpacetimeParsedSchema = SpacetimeSchemaParser.parse_schema(
+		{ "sections": sections },
+		MODULE,
+		{ },
+	)
+	var row: Dictionary = _table(schema, "my_lib_row")
+	_check(
+		"a Namespace entry without a canonical name falls back to the accessor",
+		not schema.incomplete and row.get("wire_name", "") == "myLib.row",
+		"incomplete=%s wire=%s" % [str(schema.incomplete), row.get("wire_name", "<missing>")],
+	)
+
+
+func _namespace_names(accessor: String, canonical: String) -> Dictionary:
+	return {
+		"ExplicitNames": {
+			"entries": [{ "Namespace": { "source_name": accessor, "canonical_name": canonical } }],
+		},
+	}
+
+
 # A module holding nothing but [param child], so a namespace path can be built one level
 # deeper without another table.
 func _wrapping_submodule(namespace_name: String, child: Dictionary) -> Dictionary:
@@ -449,4 +523,49 @@ func _check_multiple_typespace_sections() -> void:
 		"a module with two Typespace sections offsets the next module past both",
 		not schema.incomplete and column == "U64",
 		"incomplete=%s column=%s" % [str(schema.incomplete), column],
+	)
+
+
+# The canonical-namespace path on real server output, not a hand-built schema. On 2.16.3 the
+# `bazStore` mount reaches the parser as the accessor in the Submodules entry and as a
+# `Namespace` entry mapping it to `baz_store` in auth's ExplicitNames. The wire names must
+# take the canonical segment, the identifiers the accessor: codegen spells the facade member
+# from the accessor segment (`bazStore` → `baz_store`) and the type prefix from it in
+# PascalCase. Both server-only sections must pass without a skip report.
+func _check_live_2_16_3_capture() -> void:
+	var json: Variant = JSON.parse_string(FileAccess.get_file_as_string(FIXTURE_2_16_3))
+	if not (json is Dictionary):
+		_check("the 2.16.3 capture is a JSON object", false, FIXTURE_2_16_3)
+		return
+	var schema: SpacetimeParsedSchema = SpacetimeSchemaParser.parse_schema(json, MODULE, { })
+
+	var items: Dictionary = _table(schema, "auth_baz_store_baz_items")
+	_check(
+		"2.16.3 capture: a nested table goes on the wire under the canonical namespace",
+		(
+			not schema.incomplete and items.get("wire_name", "") == "auth.baz_store.baz_items"
+			and Array(items.get("namespace", [])) == ["auth", "bazStore"]
+		),
+		"incomplete=%s wire=%s" % [str(schema.incomplete), items.get("wire_name", "<missing>")],
+	)
+
+	var insert: Dictionary = _reducer(schema, "auth_baz_store_baz_insert")
+	_check(
+		"2.16.3 capture: a nested reducer is called by its canonical dotted name",
+		insert.get("wire_name", "") == "auth.baz_store.baz_insert",
+		str(insert.get("wire_name", "<missing>")),
+	)
+
+	var item_type: String = _column_type(schema, "auth_baz_store_baz_items", "item")
+	var prefixed: String = SpacetimeSchemaParser.module_class_prefix(MODULE) + item_type
+	_check(
+		"2.16.3 capture: type names follow the accessor, not the canonical name",
+		item_type == "AuthBazStoreBazItem" and prefixed.begins_with("VsubmodAuthBazStore"),
+		prefixed,
+	)
+
+	_check(
+		"2.16.3 capture: Environment and CaseConversionPolicy are not reported as skipped",
+		schema.skipped_sections.is_empty(),
+		str(schema.skipped_sections),
 	)

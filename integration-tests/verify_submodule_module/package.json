@@ -10,7 +10,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "spacetimedb": "2.10.*"
+    "spacetimedb": "2.16.*"
   },
   "devDependencies": {
     "typescript": "^7.0.2"

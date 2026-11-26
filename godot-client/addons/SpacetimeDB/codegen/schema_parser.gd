@@ -117,9 +117,33 @@ static var HANDLED_SECTIONS: Array[String] = [ # gdlint: ignore[S6] — see abov
 ]
 
 
+## Schema-v10 sections that configure the server and declare nothing a client reaches, so
+## skipping them loses nothing and is neither logged nor recorded in
+## [member SpacetimeParsedSchema.skipped_sections]. [code]Environment[/code] (2.11+) holds
+## publish-time settings, and the TypeScript and C# module libraries emit it for EVERY module
+## and submodule, even empty — reporting it would print a false "tables, reducers absent"
+## line per module on every run. [code]Outboxes[/code] (2.12+) marks a table as an
+## inter-database outbox; the table itself still arrives in [code]Tables[/code].
+## [code]TableCachePolicies[/code] (2.16+) sets where a table's pages may be stored (memory,
+## local disk, remote storage), which changes nothing a client sees of the table.
+## [code]CaseConversionPolicy[/code] tells the server how to derive canonical names; from
+## 2.14.1 the served schema sends it for EVERY module and submodule, always as
+## [code]None[/code], because the names it carries are already canonical (the canonical
+## ones a client needs arrive in [code]ExplicitNames[/code]).
+## Locked for the same reason as [member HANDLED_SECTIONS].
+static var SERVER_ONLY_SECTIONS: Array[String] = [ # gdlint: ignore[S6] — see HANDLED_SECTIONS
+	"CaseConversionPolicy",
+	"Environment",
+	"Outboxes",
+	"TableCachePolicies",
+]
+
+
 static func _static_init() -> void:
 	if not HANDLED_SECTIONS.is_read_only():
 		HANDLED_SECTIONS.make_read_only()
+	if not SERVER_ONLY_SECTIONS.is_read_only():
+		SERVER_ONLY_SECTIONS.make_read_only()
 
 
 static func _sort_by_ty(a: Dictionary, b: Dictionary) -> bool:
@@ -205,7 +229,7 @@ static func module_class_prefix(module_key: String) -> String:
 ## at the same index up top, silently. See [code]docs/submodules.md[/code].
 static func _flatten_modules(root: Dictionary) -> Array[Dictionary]:
 	var modules: Array[Dictionary] = []
-	_collect_module(root, PackedStringArray(), modules, { })
+	_collect_module(root, PackedStringArray(), PackedStringArray(), modules, { })
 	var offset: int = 0
 	for module: Dictionary in modules:
 		module["type_offset"] = offset
@@ -221,14 +245,24 @@ static func _flatten_modules(root: Dictionary) -> Array[Dictionary]:
 const MAX_SUBMODULE_DEPTH: int = 16
 
 
-## [param seen_namespaces] is shared across the whole walk, keyed by the joined namespace
-## path. The server registers submodules BY namespace, so a healthy one never sends two
+## [param module_namespace] is the path as the module source spells it (the accessor names),
+## which the generated identifiers follow. [param wire_namespace] is the same path in the
+## canonical names the server registers it under, which the wire names follow. The two
+## differ from SpacetimeDB 2.10.2 on: the server case-converts a namespace like a table name
+## (`myAuth` → `my_auth`), and the schema carries the accessor in the submodule entry and
+## the canonical name as a [code]Namespace[/code] entry in the PARENT's
+## [code]ExplicitNames[/code]. An older server sends no such entry and registers the
+## namespace as written, so the accessor is the fallback.
+##
+## [param seen_namespaces] is shared across the whole walk, keyed by the joined canonical
+## namespace path. The server registers submodules BY namespace, so a healthy one never sends two
 ## under one path; two that did arrive would take each other's generated identifiers and —
 ## worse — register one wire name for two different row types, which routes a table update
 ## into the wrong row script.
 static func _collect_module(
 	module: Dictionary,
 	module_namespace: PackedStringArray,
+	wire_namespace: PackedStringArray,
 	out: Array[Dictionary],
 	seen_namespaces: Dictionary,
 	depth: int = 0,
@@ -241,7 +275,15 @@ static func _collect_module(
 	for section: Dictionary in sections:
 		if section.has("Typespace"):
 			type_count += section["Typespace"].get("types", []).size()
-	out.append({ "namespace": module_namespace, "sections": sections, "type_count": type_count, "type_offset": 0 })
+	out.append(
+		{
+			"namespace": module_namespace,
+			"wire_namespace": wire_namespace,
+			"sections": sections,
+			"type_count": type_count,
+			"type_offset": 0,
+		}
+	)
 
 	if depth >= MAX_SUBMODULE_DEPTH:
 		SpacetimePlugin.print_err(
@@ -249,6 +291,17 @@ static func _collect_module(
 			% [MAX_SUBMODULE_DEPTH, _namespace_label(module_namespace)]
 		)
 		return
+
+	var canonical_namespaces: Dictionary = { } # accessor -> canonical namespace
+	for section: Dictionary in sections:
+		if section.has("ExplicitNames"):
+			for entry: Dictionary in section["ExplicitNames"].get("entries", []):
+				var mapping: Dictionary = entry.get("Namespace", { })
+				var canonical: String = mapping.get("canonical_name", "")
+				# An entry without a canonical name maps nothing: storing "" would put an
+				# empty segment on the wire ("auth..baz_items") instead of the fallback.
+				if not canonical.is_empty():
+					canonical_namespaces[mapping.get("source_name", "")] = canonical
 
 	for section: Dictionary in sections:
 		if not section.has("Submodules"):
@@ -264,7 +317,9 @@ static func _collect_module(
 				continue
 			var child: PackedStringArray = module_namespace.duplicate()
 			child.append(ns)
-			var path: String = ".".join(child)
+			var wire_child: PackedStringArray = wire_namespace.duplicate()
+			wire_child.append(canonical_namespaces.get(ns, ns))
+			var path: String = ".".join(wire_child)
 			if seen_namespaces.has(path):
 				SpacetimePlugin.print_err(
 					"Invalid schema: two submodules are registered under '%s'. Only the first "
@@ -284,7 +339,7 @@ static func _collect_module(
 					+ "definition. Its tables and reducers are skipped."
 				)
 				continue
-			_collect_module(nested, child, out, seen_namespaces, depth + 1)
+			_collect_module(nested, child, wire_child, out, seen_namespaces, depth + 1)
 
 
 ## A namespace path for a message — the root module reads as "the root module" rather than
@@ -335,11 +390,11 @@ static func _offset_type_refs(value: Variant, offset: int, depth: int = 0) -> Va
 ## [code]"lib."[/code], [code]"auth.baz."[/code], empty for the root module. Namespaces
 ## nest, so a name can carry more than one dot, and the SQL parser rejoins every leading
 ## part into one catalog name rather than treating them as qualification. The segments are
-## spelled exactly as the module declared them; this is a wire name, not an identifier.
-static func _namespace_wire_prefix(module_namespace: PackedStringArray) -> String:
-	if module_namespace.is_empty():
+## the canonical names the server registers; this is a wire name, not an identifier.
+static func _namespace_wire_prefix(wire_namespace: PackedStringArray) -> String:
+	if wire_namespace.is_empty():
 		return ""
-	return ".".join(module_namespace) + "."
+	return ".".join(wire_namespace) + "."
 
 
 ## The prefix that makes a submodule's name a legal, unique GDScript identifier —
@@ -410,7 +465,11 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		var module_namespace: String = ".".join(module["namespace"])
 		for section: Dictionary in module["sections"]:
 			var tag: String = _first_key(section)
-			if not tag.is_empty() and not HANDLED_SECTIONS.has(tag):
+			if (
+				not tag.is_empty()
+				and not HANDLED_SECTIONS.has(tag)
+				and not SERVER_ONLY_SECTIONS.has(tag)
+			):
 				skipped_sections.append(tag)
 				SpacetimePlugin.print_log(
 					(
@@ -433,7 +492,7 @@ static func parse_schema(schema: Dictionary, module_name: String, project_enums:
 		# and the type prefix joins a PascalCase type name ("LibLibPoint"). All three are
 		# empty for the root module, so a schema without submodules parses to exactly what
 		# it did before they existed.
-		var wire_prefix: String = _namespace_wire_prefix(module_namespace)
+		var wire_prefix: String = _namespace_wire_prefix(module["wire_namespace"])
 		var identifier_prefix: String = _namespace_identifier_prefix(module_namespace)
 		var type_prefix: String = _namespace_type_prefix(module_namespace)
 
