@@ -6,7 +6,9 @@
 #    or a result from a session that ended mid-parse is also dropped.
 # 2. Close codes 1002, 1003, 1007 and 1008 say the server rejected what this client sent:
 #    no reconnect follows them, inside a cycle or out of one, and close_diagnostic names
-#    the code.
+#    the code. One that lands after a reconnect's IdentityToken but before its replay
+#    settles still owes the game reconnect_failed: the cycle reads IDLE there, but the game
+#    heard reconnecting and is waiting for the outcome.
 # 3. A server that answers every reconnect's replay with a protocol violation exhausts
 #    max_reconnect_attempts and reports reconnect_failed. The attempt count resets when a
 #    replay settles, not when the new socket's IdentityToken arrives, so a socket that opens
@@ -34,6 +36,7 @@ var _total: int = 0
 var _reconnecting_count: int = 0
 var _reconnect_failed_count: int = 0
 var _disconnected_count: int = 0
+var _connected_count: int = 0
 
 
 func _initialize() -> void:
@@ -43,6 +46,7 @@ func _initialize() -> void:
 	f += await _test_terminal_close_in_cycle()
 	f += await _test_terminal_close_outside_cycle()
 	f += _test_terminal_close_diagnostic()
+	f += await _test_terminal_close_before_replay_settles()
 	f += await _test_repeated_violation_exhausts()
 	if f == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
@@ -275,6 +279,58 @@ func _test_terminal_close_diagnostic() -> int:
 	return f
 
 
+func _test_terminal_close_before_replay_settles() -> int:
+	var f: int = 0
+	var client: SpacetimeDBClient = await _make_replaying_client()
+	var conn: _StubConn = client._connection
+	_connected_count = 0
+	client.connected.connect(_on_connected)
+	client._start_reconnection()
+	client._attempt_reconnect()
+	client._handle_parsed_message(_identity_token())
+	_reset_counts()
+	f += _check_i("window: connected heard", _connected_count, 1)
+	f += _check_i("window: replay sent, not settled", conn.sent, 1)
+	conn.last_close_code = 1008
+	client._on_connection_disconnected()
+	f += _check_i("1008 before the replay settles: reconnect_failed", _reconnect_failed_count, 1)
+	f += _check_i("1008 before the replay settles: disconnected", _disconnected_count, 1)
+	f += _check_i("1008 before the replay settles: no next attempt", _reconnecting_count, 0)
+	_free_client(client)
+
+	# Control: once the replay has settled, the cycle is over and owes nothing.
+	var settled: SpacetimeDBClient = await _make_replaying_client()
+	settled._start_reconnection()
+	settled._attempt_reconnect()
+	settled._handle_parsed_message(_identity_token())
+	settled._finish_resubscribe(settled._resubscribe_epoch)
+	_reset_counts()
+	(settled._connection as _StubConn).last_close_code = 1008
+	settled._on_connection_disconnected()
+	f += _check_i("1008 after the replay settled: no reconnect_failed", _reconnect_failed_count, 0)
+	f += _check_i("1008 after the replay settled: disconnected", _disconnected_count, 1)
+	_free_client(settled)
+	return f
+
+
+# A client with one live subscription, so a reconnect's replay goes out and waits for an
+# answer instead of settling at once.
+func _make_replaying_client() -> SpacetimeDBClient:
+	var client: SpacetimeDBClient = await _make_client()
+	client._serializer = BSATNSerializer.new(false)
+	client._local_db = LocalDatabase.new(
+		SpacetimeDBSchema.new("test_mod", "res://__no_schema__", false)
+	)
+	client._token = "token"
+	client.current_subscriptions[0] = SpacetimeDBSubscription.create(
+		client,
+		0,
+		PackedStringArray(["SELECT * FROM tbl"]),
+	)
+	client._next_query_id = 1
+	return client
+
+
 # Each cycle: the attempt connects, the new socket's IdentityToken arrives and the replay is
 # sent, and the server answers it with a violation (the error abort_protocol_violation
 # reports). With the count reset at the identity this goes on forever; the bound is
@@ -383,6 +439,10 @@ func _on_reconnecting(_attempt: int, _max_attempts: int) -> void:
 
 func _on_reconnect_failed() -> void:
 	_reconnect_failed_count += 1
+
+
+func _on_connected(_identity: PackedByteArray, _token: String) -> void:
+	_connected_count += 1
 
 
 func _on_disconnected() -> void:

@@ -305,6 +305,11 @@ var _reconnect_session_busy: bool = false
 ## Session-busy refusals answered in the current reconnect cycle — see
 ## [constant MAX_SESSION_BUSY_RETRIES]. Reset when a cycle starts.
 var _session_busy_retries: int = 0
+## Set from a reconnect's IdentityToken until its replay settles. The cycle reads IDLE in that
+## window, but it still owns the session: a game that heard [signal reconnecting] is waiting
+## for [signal reconnected] or [signal reconnect_failed], and a close that ends the session
+## there has to give it the second one. Cleared wherever the cycle ends.
+var _reconnect_replay_open: bool = false
 # `disconnected` means "terminally disconnected" (not a transient drop that
 # auto-reconnect recovers), so it must fire at most once per session. Two pairs would
 # otherwise fire it twice: a server close plus a cleanup disconnect_db(), and an exhausted
@@ -2327,6 +2332,7 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				% _saved_subscriptions.size()
 			)
 			_reconnect_state = _ReconnectState.IDLE
+			_reconnect_replay_open = true
 			# _reconnect_attempt is NOT reset here. A socket that opens and then fails its
 			# replay (a protocol violation, a message that cannot be parsed) has not
 			# reconnected anything, and resetting on the identity would let a server that
@@ -2392,7 +2398,7 @@ func _on_connection_disconnected() -> void:
 			"SpacetimeDBClient: close code %d is terminal, not reconnecting."
 			% _connection.last_close_code
 		)
-		_give_up_reconnection(_reconnect_state == _ReconnectState.RECONNECTING)
+		_give_up_reconnection(_reconnect_cycle_owns_session())
 		return
 
 	# A graceful server close (normal WS code) during a reconnect attempt routes here, not
@@ -2428,6 +2434,7 @@ func _on_connection_disconnected() -> void:
 ## [signal disconnected]. Shared by an exhausted cycle and a terminal close.
 func _give_up_reconnection(cycle_failed: bool) -> void:
 	_reconnect_state = _ReconnectState.IDLE
+	_reconnect_replay_open = false
 	_reconnect_attempt = 0
 	# Nothing will restore these now, so they end rather than staying suspended — a
 	# handle that reads neither active nor ended is the one shape a caller cannot act
@@ -2436,6 +2443,14 @@ func _give_up_reconnection(cycle_failed: bool) -> void:
 	if cycle_failed:
 		reconnect_failed.emit()
 	_emit_disconnected()
+
+
+## True while a reconnect cycle answers for the session: an attempt is pending or connecting,
+## or its socket is open and the replay has not settled yet (see
+## [member _reconnect_replay_open]). An end of the session then owes the game
+## [signal reconnect_failed].
+func _reconnect_cycle_owns_session() -> bool:
+	return _reconnect_state == _ReconnectState.RECONNECTING or _reconnect_replay_open
 
 
 ## True when the close that just ended a reconnect attempt was a session-busy refusal the
@@ -2908,6 +2923,7 @@ func _cancel_reconnection() -> void:
 	# cycle reads IDLE but still carries its attempt count, and a connect_db or
 	# disconnect_db made then starts over.
 	_reconnect_attempt = 0
+	_reconnect_replay_open = false
 	if _reconnect_state == _ReconnectState.IDLE:
 		return
 
@@ -3196,6 +3212,7 @@ func _finish_resubscribe(epoch: int) -> void:
 		return
 	# Supersede this cycle so the watchdog or a late answer can't re-fire reconnected.
 	_resubscribe_epoch += 1
+	_reconnect_replay_open = false
 	# The reconnect is complete only now, so only now does the next drop start a new count.
 	_reconnect_attempt = 0
 	# Cleared, not ended: every entry that was restored is live again in current/pending,
