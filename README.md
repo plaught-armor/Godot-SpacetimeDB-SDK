@@ -7,7 +7,7 @@
 
 ## SpacetimeDB Godot SDK
 
-> Requires **SpacetimeDB 2.10.2+** (v3 BSATN protocol with batched framing, schema v10, logical sessions for auto-reconnect) and **Godot 4.6+** (the editor plugin uses `EditorDock`, added in 4.6). Tested with `SpacetimeDB 2.10.2`–`2.16.3` and Godot `4.6-stable`, `4.7-stable` and `4.8.dev`. For servers from 2.2.0 to below 2.10.2 use an SDK `2.x` release; the legacy v2 sub-protocol was dropped in 2.0, so for servers below 2.2.0 use an SDK `1.x` release.
+> Requires **SpacetimeDB 2.10.2+** (v3 BSATN protocol with batched framing, schema v10, logical sessions for auto-reconnect) and **Godot 4.6+** (the editor plugin uses `EditorDock`, added in 4.6). Tested with `SpacetimeDB 2.10.2`–`2.16.3` and Godot `4.6-stable`, `4.7-stable` and `4.8-beta`. For servers from 2.2.0 to below 2.10.2 use an SDK `2.x` release; the legacy v2 sub-protocol was dropped in 2.0, so for servers below 2.2.0 use an SDK `1.x` release.
 
 A GDScript SDK for integrating Godot Engine with [SpacetimeDB](https://spacetimedb.com), enabling real-time data synchronization and server interaction directly from your Godot client, with full codegen support.
 
