@@ -9,6 +9,16 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   session (`session_id`) and the batch subscribe messages (`SubscribeBatch` /
   `SubscribeBatchApplied`) that 2.10.2 added. For servers from 2.2.0 to below 2.10.2,
   use an SDK `2.x` release.
+- **A reconnect no longer reports every row as deleted and inserted again.** The local
+  cache is kept across the drop, and the saved subscriptions are restored with one
+  `SubscribeBatch`. Its answer is applied as one message against the cached rows, the way
+  the official SDKs reconcile: a row that did not change fires nothing, a changed row
+  fires one `on_update`, and only a row that is really gone fires `on_before_delete` /
+  `on_delete`. Code that relied on the old teardown and rebuild (respawning everything
+  from `on_insert` after a reconnect) now receives only the changes. An answer that does
+  not match the request (wrong request id, or result sets other than the ones sent) is a
+  protocol violation, and the socket is dropped. See "Row callbacks across a reconnect"
+  in `docs/api.md`.
 
 ### Added
 - **Auto-reconnect keeps one server session.** With `auto_reconnect` on, the client

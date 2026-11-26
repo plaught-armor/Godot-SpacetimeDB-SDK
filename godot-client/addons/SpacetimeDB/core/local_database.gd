@@ -141,8 +141,8 @@ var _in_flight_sent: int = 0
 ## deleted without announcing them a second time.
 var _before_delete_sent: Dictionary[int, bool] = { }
 ## Messages applied while another is being applied — from inside one of its callbacks —
-## as [code][updates, query_ids, session_generation][/code], run in order once it
-## finishes. See [method _apply_batch].
+## as [code][updates, query_ids, session_generation][/code] (a reconnect snapshot adds a
+## fourth element), run in order once it finishes. See [method _apply_batch].
 var _queued_batches: Array[Array] = []
 var _applying: bool = false
 ## Signals emitted with this database's own row signals, one each (see
@@ -818,6 +818,128 @@ func forget_query(query_id: int) -> void:
 	_query_rows.erase(query_id)
 
 
+## Marks an automatic reconnect's session boundary WITHOUT wiping the mirror. The rows
+## stay cached and observable while the socket is down; the snapshot the new session
+## subscribes to replaces them through [method apply_reconnect_snapshot], which reports
+## only what actually changed.
+## [br][br]
+## What does end here: the per-query membership (its query ids name the dead session's
+## query sets, and the new session hands the same ids out again from zero), and the
+## session counter, so a message still queued from the old session is dropped and a
+## caller looping over one of its updates stops. The rows' refcounts are kept — they are
+## what the snapshot hands back. Runs no game code.
+func begin_reconnect_session() -> void:
+	_query_rows.clear()
+	_session_generation += 1
+
+
+## Replaces the dead session's rows with the snapshot of the new one, as ONE message —
+## the reconnect's answer to [method clear_local_db] followed by a fresh subscribe, which
+## would report every row deleted and then inserted again. [param updates] are the rows
+## the new session's query sets delivered, each sent for the query in [param query_ids]
+## at the same index. Every reference to a cached row that no query set of the new
+## session holds is applied as a delete in the same message, so the usual pairing
+## decides what the game hears:
+## [br]- a row the snapshot re-delivers unchanged fires nothing;
+## [br]- a keyed row the snapshot re-delivers with a new value fires one update;
+## [br]- a row the snapshot no longer holds fires before-delete and delete.
+## [br][br]
+## The deletes are counted when the message is applied, not when it is handed in: one
+## handed in from inside a row callback is queued behind the message being dispatched,
+## which can still move the counts. A reference a query set of the new session already
+## holds (one the game subscribed to after the reconnect, applied before this) is not
+## part of the old session and is left alone.
+func apply_reconnect_snapshot(updates: Array[TableUpdateData], query_ids: PackedInt64Array) -> void:
+	if _applying:
+		_queued_batches.append([updates, query_ids, _session_generation, true])
+		return
+	_applying = true
+	_apply_snapshot_message(updates, query_ids)
+	_drain_queued_batches()
+
+
+## [method apply_reconnect_snapshot]'s message: the stale references as untracked
+## deletes, then the snapshot itself.
+func _apply_snapshot_message(updates: Array[TableUpdateData], query_ids: PackedInt64Array) -> void:
+	var held: Dictionary = _held_references()
+	var all_updates: Array[TableUpdateData] = []
+	var all_ids: PackedInt64Array = []
+	for table_name_lower: StringName in _ref_counts:
+		var drop: TableUpdateData = _stale_pk_deletes(table_name_lower, held.get(table_name_lower, { }))
+		if not drop.deletes.is_empty():
+			all_updates.append(drop)
+			all_ids.append(-1)
+	for table_name_lower: StringName in _pk_less_counts:
+		var drop: TableUpdateData = _stale_pkless_deletes(
+			table_name_lower,
+			held.get(table_name_lower, { }),
+		)
+		if not drop.deletes.is_empty():
+			all_updates.append(drop)
+			all_ids.append(-1)
+	all_updates.append_array(updates)
+	all_ids.append_array(query_ids)
+	_apply_message(all_updates, all_ids)
+
+
+## The references the live session's query sets hold, summed over every query:
+## table -> (keyed: { pk -> count } | unkeyed: { hash -> Array of [row, count] }).
+func _held_references() -> Dictionary:
+	var held: Dictionary = { }
+	for query_id: int in _query_rows:
+		var tables: Dictionary = _query_rows[query_id]
+		for table_name_lower: StringName in tables:
+			if not held.has(table_name_lower):
+				held[table_name_lower] = { }
+			var sums: Dictionary = held[table_name_lower]
+			var membership: Dictionary = tables[table_name_lower]
+			if _get_primary_key_field(table_name_lower).is_empty():
+				var props: Array[StringName] = _get_row_properties(table_name_lower)
+				for h: int in membership:
+					for member: Array in membership[h]:
+						var sum: Array = _pk_less_find(sums, h, member[0], props)
+						if sum.is_empty():
+							_pk_less_add(sums, h, member[0])
+							sums[h].back()[1] = member[1]
+						else:
+							sum[1] += member[1]
+			else:
+				for pk: Variant in membership:
+					var entry: Variant = membership[pk]
+					sums[pk] = sums.get(pk, 0) + (entry[1] if entry is Array else 1)
+	return held
+
+
+## One delete of each cached keyed row per reference [param held] does not account for.
+func _stale_pk_deletes(table_name_lower: StringName, held: Dictionary) -> TableUpdateData:
+	var drop: TableUpdateData = TableUpdateData.new()
+	drop.table_name = table_name_lower
+	var ref_table: Dictionary = _ref_counts[table_name_lower]
+	var table_dict: Dictionary = _tables[table_name_lower]
+	for pk: Variant in ref_table:
+		var row: Variant = table_dict.get(pk)
+		if row == null:
+			continue
+		for _i: int in ref_table[pk] - held.get(pk, 0):
+			drop.deletes.append(row)
+	return drop
+
+
+## The unkeyed analogue of [method _stale_pk_deletes], matched by value.
+func _stale_pkless_deletes(table_name_lower: StringName, held: Dictionary) -> TableUpdateData:
+	var drop: TableUpdateData = TableUpdateData.new()
+	drop.table_name = table_name_lower
+	var props: Array[StringName] = _get_row_properties(table_name_lower)
+	var counts: Dictionary = _pk_less_counts[table_name_lower]
+	for h: int in counts:
+		for entry: Array in counts[h]:
+			var sum: Array = _pk_less_find(held, h, entry[0], props)
+			var keep: int = 0 if sum.is_empty() else sum[1]
+			for _i: int in entry[1] - keep:
+				drop.deletes.append(entry[0])
+	return drop
+
+
 ## Applies the rows of a [SubscribeAppliedMessage] to the local store as one message.
 func apply_database_subscription_applied(db_update: SubscribeAppliedMessage) -> void:
 	if not db_update:
@@ -928,9 +1050,17 @@ func _apply_batch(updates: Array[TableUpdateData], query_ids: PackedInt64Array) 
 		return
 	_applying = true
 	_apply_message(updates, query_ids)
+	_drain_queued_batches()
+
+
+## Applies the messages queued while one was being applied, in order, then ends the
+## apply. A queued entry carrying a fourth element is a reconnect snapshot, whose deletes
+## are counted only now (see [method apply_reconnect_snapshot]).
+func _drain_queued_batches() -> void:
 	# Grows while it drains: a queued message's callbacks can queue more. One queued in a
-	# session that has since ended ([method clear_local_db] ran after it was queued) is
-	# dropped: applying it would strand the old session's rows in the new mirror.
+	# session that has since ended ([method clear_local_db] or
+	# [method begin_reconnect_session] ran after it was queued) is dropped: applying it
+	# would strand the old session's rows in the new mirror.
 	var i: int = 0
 	while i < _queued_batches.size():
 		if i == _MAX_QUEUED_MESSAGES:
@@ -943,7 +1073,10 @@ func _apply_batch(updates: Array[TableUpdateData], query_ids: PackedInt64Array) 
 			)
 			break
 		var queued: Array = _queued_batches[i]
-		if queued[2] == _session_generation:
+		var live: bool = queued[2] == _session_generation
+		if live and queued.size() > 3:
+			_apply_snapshot_message(queued[0], queued[1])
+		elif live:
 			_apply_message(queued[0], queued[1])
 		i += 1
 	_queued_batches.clear()

@@ -91,11 +91,15 @@ cd godot-client && <godot> --headless --path . res://tests/_live_reconnect_check
 echo $?   # number of failed checks
 ```
 
-It passes today: the cache refills, the pre-drop handle is suspended for the
-outage and re-applied rather than ended, and a reducer call succeeds afterwards. It also writes `wire_resubscribe.bin`, so the
-offline suite keeps a replayable copy of the snapshot the server sends a
-re-subscribing client — with any frame carrying a token dropped rather than
-captured and scrubbed.
+It passes today: the cached row survives the drop and the reconcile reports nothing for
+it, the pre-drop handle is suspended for the outage and re-applied rather than ended, and
+a reducer call succeeds afterwards. `STDB_SESSION_BUSY=1` adds a second socket that takes
+the session over during the drop, so the reconnect meets a real 4000 "session busy"
+refusal and retries without counting it. It also writes `wire_subscribe_batch.bin`, so
+the offline suite keeps a replayable copy of the `SubscribeBatchApplied` the server sends
+a reconnecting client — with any frame carrying a token dropped rather than captured and
+scrubbed. The older `wire_resubscribe.bin` holds the per-handle `SubscribeApplied` the SDK
+received before 3.0 and is kept as the real-bytes copy of that message.
 
 That run closes the socket cleanly, which is the graceful-close branch. A yanked
 network is a different one: the socket dies with no close handshake (code -1) and
@@ -204,7 +208,7 @@ cd ../godot-client && <godot> --headless --path . res://tests/_capture_wire_fixt
 ```
 
 Two fixtures come from the live harnesses rather than that capture —
-`wire_resubscribe.bin` from the reconnect check and `wire_broadcast_txn.bin` from
+`wire_subscribe_batch.bin` from the reconnect check and `wire_broadcast_txn.bin` from
 the broadcast check — because each needs a situation the capture cannot stage. A
 failed run of either deletes its fixture rather than leaving a plausible-looking
 one behind.

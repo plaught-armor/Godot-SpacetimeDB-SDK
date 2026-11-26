@@ -587,6 +587,22 @@ func _abort_on_dropped_message() -> void:
 	connection_error.emit(CLOSE_MESSAGE_TOO_BIG, "Inbound message dropped (too big to receive)")
 
 
+## Drops the socket because the server sent something this client cannot reconcile with
+## what it asked for — an answer to a request it never made, say. Reported as
+## [signal connection_error] with [constant ERR_INVALID_DATA], so auto-reconnect treats it
+## like any other failed connection.[br]
+## [b]Internal — called by [SpacetimeDBClient].[/b]
+func abort_protocol_violation(reason: String) -> void:
+	push_error("SpacetimeDBConnection: protocol violation, dropping the connection: %s" % reason)
+	# State first, signal last, for the reason in _abort_on_dropped_message.
+	_reset_peer()
+	_is_connected = false
+	_connection_requested = false
+	_connect_started_ms = -1
+	set_physics_process(false)
+	connection_error.emit(ERR_INVALID_DATA, "Protocol violation: %s" % reason)
+
+
 ## The target URL with its query string cut off. On Web the token travels in that
 ## query string (the handshake there cannot carry an Authorization header), so every
 ## line that prints the URL — the connect log, the stalled-handshake report, the

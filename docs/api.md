@@ -294,24 +294,29 @@ so every callback of the current message still sees it exactly as described abov
 
 ### Row callbacks across a reconnect
 
-Each reconnection attempt resets the local cache before resubscribing, and the reset is
-reported: every cached row fires `row_before_delete` / `row_deleted` (and its per-table
-`on_delete` listeners), followed by one `row_transactions_completed` per non-empty
-table. The resubscribe then re-delivers the rows that still exist as inserts.
+The local cache is kept across a reconnect and reconciled against the new session's
+snapshot, the way the official SDKs do. The SDK restores every saved subscription with one
+`SubscribeBatch`, and the server's answer is applied as one message against what was cached:
 
-So a reconnect looks like a full teardown and rebuild to row listeners, not a diff. That
-is deliberate: the resubscribe only carries rows that still exist, so a row deleted
-server-side while the client was away has nothing left to announce it — without the
-teardown, anything you spawned for that row would stay alive for the rest of the session.
-Spawn per `on_insert` and free per `on_delete` and this takes care of itself. Key what you
-spawn by primary key: a row that survives the reconnect arrives as an insert again, not an
-update.
+- a row that is still there and unchanged fires nothing;
+- a row whose columns changed fires one `row_updated` (and its `on_update` listeners);
+- a row that is gone fires `row_before_delete` / `row_deleted`;
+- a new row fires `row_inserted`;
 
-The wipe is the last step of the reconnect preparation. Handles the reconnect carries
-are already suspended by the time it runs, so no `end` fires for them; a handle the
-reconnect is *not* carrying — one whose unsubscribe was in flight when the socket died —
-is ended just before the wipe, so an `end` handler still sees the pre-drop rows and the
-`row_deleted` run for those same rows follows immediately after.
+followed by one `row_transactions_completed` per table that changed. Then each restored
+handle emits `applied`, a set the server rejected emits `end`, and `reconnected` fires last.
+
+Until the answer arrives, the cache still holds the rows from before the drop and nothing
+is reported for them. If the server does not answer within the resubscribe timeout, the
+stale rows are dropped (reported as deletes) and `reconnected` fires anyway; a late answer
+still applies its rows and fires each handle's `applied`.
+
+Rows of a table without a primary key are matched by value, so a changed row there is a
+delete of the old row plus an insert of the new one.
+
+A handle the reconnect is *not* carrying (one whose unsubscribe was in flight when the
+socket died) is ended during the reconnect preparation. Its rows stay until the reconcile,
+which deletes them unless a restored subscription still covers them.
 
 ## Generated `ModuleClient` class
 
