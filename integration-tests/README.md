@@ -69,6 +69,9 @@ above (publish `blackholio`, then `--script verify_live_reconnect.gd`).
 
 ## Last verified
 
+The SDK's server floor is **2.10.2** (logical sessions and batch subscribe, which
+auto-reconnect depends on). The suites below need a server at or above it.
+
 Against SpacetimeDB **2.16.3** (CLI 2.16.3; the server log reports
 `spacetimedb-standalone version: 2.16.3`), schema v10, on an `--in-memory` server. The
 committed `Cargo.toml` files still pin `spacetimedb = "2.10.0"` (`blackholio-server`

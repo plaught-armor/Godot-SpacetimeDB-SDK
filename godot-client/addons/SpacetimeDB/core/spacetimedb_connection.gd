@@ -101,6 +101,15 @@ const CLOSE_GOING_AWAY: int = 1001
 ## as an abnormal close (code -1) with nothing to read.
 const CLOSE_REASON_IDLE_TIMEOUT: String = "idle timeout"
 
+## The close code a SpacetimeDB server (2.10.2+) sends right after the upgrade when the
+## socket names a session ([code]session_id[/code]) that another live socket still holds,
+## reason [code]"session busy"[/code] ([code]SESSION_BUSY_CLOSE_CODE[/code] in
+## [code]crates/client-api/src/routes/subscribe.rs[/code]). The server tears the older
+## socket down on its side, so a retry succeeds once that one's disconnect has run —
+## which is why the client answers it on a reconnect attempt by retrying at the initial
+## delay instead of counting it as a failed attempt.
+const CLOSE_SESSION_BUSY: int = 4000
+
 ## Default size of both WebSocket buffers, and what an unusable one falls back to.
 ## [SpacetimeDBConnectionOptions] declares its defaults from here so there is one number.
 const DEFAULT_BUFFER_SIZE: int = 1024 * 1024 * 2
@@ -193,6 +202,11 @@ const MIN_HEARTBEAT_SECONDS: float = 1.0
 var version: String = "v1"
 ## Sub-protocol the server selected during the handshake (e.g. "v3.bsatn.spacetimedb").
 var negotiated_protocol: String = ""
+## Code and reason of the close frame behind the latest [signal disconnected], set just
+## before it is emitted so a handler can tell a session-busy refusal
+## ([constant CLOSE_SESSION_BUSY]) from any other server close.
+var last_close_code: int = -1
+var last_close_reason: String = ""
 var preferred_compression: CompressionPreference = CompressionPreference.NONE # Default to None
 var _websocket: WebSocketPeer = WebSocketPeer.new()
 var _target_url: String
@@ -458,6 +472,8 @@ func _physics_process(_delta: float) -> void:
 					push_warning(diagnostic)
 				else:
 					push_error(diagnostic)
+				last_close_code = code
+				last_close_reason = reason
 				disconnected.emit() # Normal closure signal
 		_is_connected = false
 		_connection_requested = false
@@ -1025,11 +1041,18 @@ static func close_diagnostic(code: int, inbound_buffer_size: int, reason: String
 ##
 ## The [code]token[/code] parameter is NOT added here: it is only used on Web, where the
 ## handshake cannot carry an Authorization header, and appending it is the caller's job.
+##
+## [param session_id] (32 hex characters, a 128-bit value) is written only when non-empty.
+## The server (2.10.2+) keys a logical session on (database, identity, session id) and
+## refuses a second live socket for the same key with close code 4000, so a reconnect
+## cannot overlap the connection it replaces. An empty id leaves the server's behavior
+## exactly as it is without one.
 static func build_query_params(
 	connection_id: String,
 	compression: CompressionPreference,
 	confirmed_reads: bool,
 	light_mode: bool,
+	session_id: String = "",
 ) -> String:
 	var compression_str: String
 	if compression == CompressionPreference.NONE:
@@ -1046,6 +1069,8 @@ static func build_query_params(
 	query_params += "&confirmed=%s" % ("true" if confirmed_reads else "false")
 	if light_mode:
 		query_params += "&light=true"
+	if not session_id.is_empty():
+		query_params += "&session_id=%s" % session_id
 	return query_params
 
 
@@ -1075,8 +1100,15 @@ static func build_socket_url(base_url: String, version: String, database_name: S
 
 
 ## Initiates a WebSocket connection to the SpacetimeDB [param database_name]
-## at [param base_url] using the given [param connection_id].
-func connect_to_database(base_url: String, database_name: String, connection_id: String) -> void:
+## at [param base_url] using the given [param connection_id]. A non-empty
+## [param session_id] rides along as the [code]session_id[/code] query parameter — see
+## [method build_query_params].
+func connect_to_database(
+	base_url: String,
+	database_name: String,
+	connection_id: String,
+	session_id: String = "",
+) -> void:
 	if _is_connected:
 		_print_log("SpacetimeDBConnection: Already connected.")
 		return
@@ -1121,6 +1153,7 @@ func connect_to_database(base_url: String, database_name: String, connection_id:
 		preferred_compression,
 		_options.confirmed_reads,
 		_options.light_mode,
+		session_id,
 	)
 
 	if OS.get_name() == "Web":

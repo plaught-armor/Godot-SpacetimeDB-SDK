@@ -2,7 +2,28 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
-## [Unreleased]
+## [Unreleased] — 3.0.0
+
+### Breaking
+- **The server floor is now SpacetimeDB 2.10.2.** Auto-reconnect relies on the logical
+  session (`session_id`) and the batch subscribe messages (`SubscribeBatch` /
+  `SubscribeBatchApplied`) that 2.10.2 added. For servers from 2.2.0 to below 2.10.2,
+  use an SDK `2.x` release.
+
+### Added
+- **Auto-reconnect keeps one server session.** With `auto_reconnect` on, the client
+  draws a random 128-bit session id at every `connect_db()` and sends it as the
+  `session_id` query parameter on that connect and on each of its automatic
+  reconnects. The connection id still changes on every socket. A fresh `connect_db()`
+  gets a new session id, and with `auto_reconnect` off no session id is sent.
+- **A reconnect that the server refuses with 4000 "session busy" is retried without
+  counting.** The server refuses a new socket for a session while it is still tearing
+  down the socket that session held before. On a reconnect attempt the client now
+  retries at the initial delay and does not count the refusal against
+  `max_reconnect_attempts`. The free retries are capped at
+  `SpacetimeDBClient.MAX_SESSION_BUSY_RETRIES` (10) per reconnect cycle. Past the cap a
+  refusal counts as an ordinary failed attempt, so a session that another process
+  holds for good still ends the cycle.
 
 ### Fixed
 - **A submodule mounted under a camelCase name now works on SpacetimeDB 2.10.2+.**

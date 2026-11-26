@@ -334,7 +334,12 @@ class _FakeConn:
 		is_live = false
 
 
-	func connect_to_database(_url: String, _db_name: String, _conn_id: String) -> void:
+	func connect_to_database(
+		_url: String,
+		_db_name: String,
+		_conn_id: String,
+		_session_id: String = "",
+	) -> void:
 		connect_calls += 1
 
 

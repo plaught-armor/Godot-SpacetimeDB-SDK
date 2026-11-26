@@ -175,6 +175,11 @@ var _local_db: LocalDatabase
 var _rest_api: SpacetimeDBRestAPI # Optional, for token/REST calls
 # --- State ---
 var _connection_id: PackedByteArray
+# The logical session this client object holds on the server, as 32 hex characters.
+# Drawn once per connect_db() and kept across that session's automatic reconnects, so the
+# server can refuse a reconnect that would overlap the socket it replaces (close 4000).
+# Sent only while auto_reconnect is on — see _socket_session_id.
+var _session_id: String = ""
 var _identity: PackedByteArray
 var _token: String
 var _is_initialized: bool = false
@@ -219,6 +224,17 @@ const DEFAULT_RECONNECT_INITIAL_DELAY: float = 1.0
 ## Ceiling the escalating backoff saturates at. See
 ## [member SpacetimeDBConnectionOptions.reconnect_max_delay].
 const DEFAULT_RECONNECT_MAX_DELAY: float = 30.0
+
+## How many session-busy refusals ([constant SpacetimeDBConnection.CLOSE_SESSION_BUSY]) one
+## reconnect cycle answers for free: retried at the initial delay and not counted against
+## [member SpacetimeDBConnectionOptions.max_reconnect_attempts]. The server only refuses
+## while the socket this one replaces is still being torn down on its side, which takes
+## as long as that socket's [code]client_disconnected[/code] reducer — normally well under
+## one initial delay, so 10 retries (about 10 seconds at the default delay) is generous.
+## Past the cap a refusal counts as an ordinary failed attempt: the backoff escalates and
+## max_reconnect_attempts bounds the cycle, so a session that stays busy (a second process
+## sharing the token and session, say) still ends rather than retrying forever.
+const MAX_SESSION_BUSY_RETRIES: int = 10
 ## Per-attempt multiplier. See
 ## [member SpacetimeDBConnectionOptions.reconnect_backoff_multiplier].
 const DEFAULT_BACKOFF_MULTIPLIER: float = 2.0
@@ -265,6 +281,14 @@ var _max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS
 ## the socket dropped from a local freeze, not a network fault). Consumed on the
 ## first scheduled attempt.
 var _reconnect_immediate: bool = false
+## Set when the next reconnect answers a session-busy refusal
+## ([constant SpacetimeDBConnection.CLOSE_SESSION_BUSY]): that attempt waits the initial
+## delay rather than the escalated one. Consumed on the first scheduled attempt, like
+## [member _reconnect_immediate].
+var _reconnect_session_busy: bool = false
+## Session-busy refusals answered in the current reconnect cycle — see
+## [constant MAX_SESSION_BUSY_RETRIES]. Reset when a cycle starts.
+var _session_busy_retries: int = 0
 # `disconnected` means "terminally disconnected" (not a transient drop that
 # auto-reconnect recovers), so it must fire at most once per session. Two pairs would
 # otherwise fire it twice: a server close plus a cleanup disconnect_db(), and an exhausted
@@ -550,6 +574,8 @@ func connect_db(
 	# as deleted and re-arms database_initialized.
 	_session_intent += 1
 	var intent: int = _session_intent
+	# A new logical session, so a new id; the reconnects of this one reuse it.
+	_session_id = _generate_connection_id()
 	# The reconnect cycle _cancel_reconnection just abandoned may have been carrying
 	# handles. They end here rather than there so their `end` signals fall under the same
 	# countermand check as the wipe below — see _cancel_reconnection.
@@ -1277,6 +1303,15 @@ func _generate_connection_id() -> String:
 	return random_bytes.hex_encode() # Return as hex string
 
 
+# The session id for the socket about to open: the session's own id while auto_reconnect
+# is on, empty otherwise. Read at each open, like the rest of the options, so the official
+# SDKs' rule holds — a client that never reconnects never claims a server session.
+func _socket_session_id() -> String:
+	if connection_options and connection_options.auto_reconnect:
+		return _session_id
+	return ""
+
+
 func _on_token_received(received_token: String) -> void:
 	# Every token this client connects with funnels through here — from the options, from
 	# token_save_path, or from the REST identity endpoint — and none of the three is
@@ -1299,7 +1334,7 @@ func _on_token_received(received_token: String) -> void:
 	_rest_api.set_token(self._token) # REST API might also need it
 
 	# Now attempt to connect WebSocket
-	_connection.connect_to_database(base_url, database_name, conn_id)
+	_connection.connect_to_database(base_url, database_name, conn_id, _socket_session_id())
 
 
 func _on_token_request_failed(error_code: int, _response_body: String) -> void:
@@ -2275,6 +2310,17 @@ func _on_connection_disconnected() -> void:
 	# _start_reconnection() early-returns on the RECONNECTING state and the machine wedges
 	# — no timer, no reconnect_failed.
 	if _reconnect_state == _ReconnectState.RECONNECTING:
+		if _is_free_session_busy_retry():
+			_session_busy_retries += 1
+			print_log(
+				"SpacetimeDBClient: Reconnect attempt %d refused, session busy (4000) — retry %d/%d at the initial delay, not counted."
+				% [_reconnect_attempt, _session_busy_retries, MAX_SESSION_BUSY_RETRIES]
+			)
+			# Re-scheduled under its own number, the way _on_app_resumed does it.
+			_reconnect_attempt = maxi(_reconnect_attempt - 1, 0)
+			_reconnect_session_busy = true
+			_schedule_next_reconnect_attempt()
+			return
 		print_log(
 			"SpacetimeDBClient: Reconnect attempt %d closed by server, scheduling next."
 			% _reconnect_attempt
@@ -2285,6 +2331,18 @@ func _on_connection_disconnected() -> void:
 		_start_reconnection()
 	else:
 		_emit_disconnected()
+
+
+## True when the close that just ended a reconnect attempt was a session-busy refusal the
+## cycle still answers for free (see [constant MAX_SESSION_BUSY_RETRIES]). Only a reconnect
+## attempt gets here: the server refuses right after the upgrade, before the identity
+## token, so the cycle is still RECONNECTING.
+func _is_free_session_busy_retry() -> bool:
+	if _connection == null:
+		return false
+	if _connection.last_close_code != SpacetimeDBConnection.CLOSE_SESSION_BUSY:
+		return false
+	return _session_busy_retries < MAX_SESSION_BUSY_RETRIES
 
 
 func _on_connection_error(code: int, reason: String) -> void:
@@ -2340,6 +2398,8 @@ func _start_reconnection(immediate: bool = false) -> void:
 	_reconnect_state = _ReconnectState.RECONNECTING
 	_reconnect_attempt = 0
 	_reconnect_immediate = immediate
+	_reconnect_session_busy = false
+	_session_busy_retries = 0
 	# Supersede any in-flight resubscribe cycle so its late settles bail (see _resubscribe_epoch).
 	_resubscribe_epoch += 1
 
@@ -2390,8 +2450,10 @@ func _schedule_next_reconnect_attempt() -> void:
 		return
 
 	_reconnect_attempt += 1
-	var backoff: float = 0.0 if _reconnect_immediate else _calculate_backoff(_reconnect_attempt)
+	var backoff_attempt: int = 1 if _reconnect_session_busy else _reconnect_attempt
+	var backoff: float = 0.0 if _reconnect_immediate else _calculate_backoff(backoff_attempt)
 	_reconnect_immediate = false # one-shot: only the first stall-induced attempt skips backoff
+	_reconnect_session_busy = false # one-shot, the same way
 	var max_str: String = str(max_attempts) if max_attempts > 0 else "inf"
 	print_log(
 		"SpacetimeDBClient: Reconnect attempt %d/%s in %.2f seconds."
@@ -2498,7 +2560,7 @@ func _attempt_reconnect() -> void:
 	_connection.set_token(_token)
 
 	print_log("SpacetimeDBClient: Attempting reconnect (attempt %d)." % _reconnect_attempt)
-	_connection.connect_to_database(base_url, database_name, conn_id)
+	_connection.connect_to_database(base_url, database_name, conn_id, _socket_session_id())
 
 
 # Everything the dying session left in flight, dropped so none of it lands in the mirror
@@ -2639,6 +2701,7 @@ func _cancel_reconnection() -> void:
 	_reconnect_state = _ReconnectState.IDLE
 	_reconnect_attempt = 0
 	_reconnect_immediate = false
+	_reconnect_session_busy = false
 	_resubscribe_epoch += 1 # supersede any in-flight resubscribe settles
 	# The saved handles are deliberately NOT ended here. Ending them emits `end`, which is
 	# game code, and this runs at the top of connect_db and disconnect_db before either has

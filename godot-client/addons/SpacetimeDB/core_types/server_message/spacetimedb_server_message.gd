@@ -19,6 +19,7 @@ enum Type {
 	ONE_OFF_QUERY_RESPONSE = 0x05,
 	REDUCER_RESULT = 0x06,
 	PROCEDURE_RESULT = 0x07,
+	SUBSCRIBE_BATCH_APPLIED = 0x08,
 }
 
 ## Back-compat consts so existing code referencing SpacetimeDBServerMessage.SUBSCRIBE_APPLIED etc. still works.
@@ -30,6 +31,7 @@ const TRANSACTION_UPDATE: int = Type.TRANSACTION_UPDATE
 const ONE_OFF_QUERY_RESPONSE: int = Type.ONE_OFF_QUERY_RESPONSE
 const REDUCER_RESULT: int = Type.REDUCER_RESULT
 const PROCEDURE_RESULT: int = Type.PROCEDURE_RESULT
+const SUBSCRIBE_BATCH_APPLIED: int = Type.SUBSCRIBE_BATCH_APPLIED
 
 const _MSG_PATH: String = SpacetimeDBPaths.ADDON_PATH + "/core_types/server_message/"
 
@@ -53,4 +55,6 @@ static func get_script_path(msg_type: int) -> String:
 		return _MSG_PATH + "reducer_result.gd"
 	if msg_type == Type.PROCEDURE_RESULT:
 		return _MSG_PATH + "procedure_result.gd"
+	if msg_type == Type.SUBSCRIBE_BATCH_APPLIED:
+		return _MSG_PATH + "subscribe_batch_applied.gd"
 	return ""

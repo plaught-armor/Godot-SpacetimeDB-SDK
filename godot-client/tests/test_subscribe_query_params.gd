@@ -83,6 +83,37 @@ func _initialize() -> void:
 		"?connection_id=abc123&compression=Gzip&confirmed=false&light=true",
 	)
 
+	# session_id (2.10.2+) rides last, only when the client claims a session; the
+	# server parses it as 32 hex characters, so it is written verbatim.
+	f += _check(
+		"session id appended",
+		SpacetimeDBConnection.build_query_params(
+			CID,
+			SpacetimeDBConnection.CompressionPreference.NONE,
+			true,
+			true,
+			"0123456789abcdef0123456789abcdef",
+		),
+		(
+			"?connection_id=abc123&compression=None&confirmed=true&light=true"
+			+ "&session_id=0123456789abcdef0123456789abcdef"
+		),
+	)
+	f += _check(
+		"empty session id leaves the parameter off",
+		(
+			"session_id"
+			in SpacetimeDBConnection.build_query_params(
+				CID,
+				SpacetimeDBConnection.CompressionPreference.NONE,
+				true,
+				false,
+				"",
+			)
+		),
+		false,
+	)
+
 	# No token parameter here on any platform — Web appends it at the call site,
 	# and leaking it into this string would put the auth token in every log line
 	# that prints the target URL.

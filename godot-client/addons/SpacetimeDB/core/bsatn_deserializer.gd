@@ -1400,37 +1400,78 @@ func _read_subscripton_applied_message(spb: StreamPeerBuffer) -> SubscribeApplie
 	if has_error():
 		return null
 
+	if not _read_query_rows(spb, "SubscribeApplied", resource.tables):
+		return null
+	return resource
+
+
+## wire:QueryRows { tables: Array[SingleTableRows{table:string, rows:BsatnRowList}] }
+## Appends one inserts-only [TableUpdateData] per table to [param out]. A table with no
+## schema is read past and dropped. [param context] names the message in the warning.
+## Returns [code]false[/code] on a parse error ([method has_error] carries why).
+func _read_query_rows(spb: StreamPeerBuffer, context: String, out: Array[TableUpdateData]) -> bool:
 	var table_count: int = read_u32_le(spb)
 	if has_error():
-		return null
-
+		return false
+	# Bounded by the buffer: every table consumes at least its 4-byte name length, so a
+	# huge count fails on the first short read instead of spinning.
 	for _i: int in table_count:
-		if has_error():
-			return null
 		var table_name: String = read_string_with_u32_len(spb)
 		if has_error():
-			return null
-
+			return false
 		var table_update: TableUpdateData = TableUpdateData.new()
 		table_update.table_name = table_name
-
-		var table_name_lower: StringName = table_name.to_lower()
-		var row_schema_script: GDScript = _schema.get_table(table_name_lower)
-
+		var row_schema_script: GDScript = _schema.get_table(table_name.to_lower())
 		if row_schema_script:
 			var inserts: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name)
 			if has_error():
-				return null
+				return false
 			table_update.inserts.assign(inserts)
 		else:
 			if debug_mode:
-				push_warning("No schema for '%s' in SubscribeApplied, skipping rows." % table_name)
+				push_warning("No schema for '%s' in %s, skipping rows." % [table_name, context])
 			read_bsatn_row_list(spb)
 			if has_error():
+				return false
+		out.append(table_update)
+	return true
+
+
+## wire:SubscribeBatchApplied { request_id: u32, results: Array[SubscribeSetResult] }
+## SubscribeSetResult { query_set_id: QuerySetId{id:u32}, outcome: SubscribeSetOutcome }
+## SubscribeSetOutcome: tag 0 = Applied(QueryRows), tag 1 = Error(string)
+func _read_subscribe_batch_applied_message(spb: StreamPeerBuffer) -> SubscribeBatchAppliedMessage:
+	var resource: SubscribeBatchAppliedMessage = SubscribeBatchAppliedMessage.new()
+	resource.request_id = read_u32_le(spb)
+	if has_error():
+		return null
+	var result_count: int = read_u32_le(spb)
+	if has_error():
+		return null
+	# Bounded by the buffer: every result consumes at least 5 bytes (id + tag).
+	for _i: int in result_count:
+		var result: SubscribeSetResultData = SubscribeSetResultData.new()
+		result.query_set_id = read_u32_le(spb)
+		if has_error():
+			return null
+		var outcome_tag: int = read_u8(spb)
+		if has_error():
+			return null
+		if outcome_tag == 0:
+			if not _read_query_rows(spb, "SubscribeBatchApplied", result.tables):
 				return null
-
-		resource.tables.append(table_update)
-
+		elif outcome_tag == 1:
+			result.is_error = true
+			result.error_message = read_string_with_u32_len(spb)
+			if has_error():
+				return null
+		else:
+			_set_error(
+				"Invalid SubscribeSetOutcome tag %d in SubscribeBatchApplied (expected 0=Applied, 1=Error)" % outcome_tag,
+				spb.get_position() - 1,
+			)
+			return null
+		resource.results.append(result)
 	return resource
 
 
@@ -1561,31 +1602,8 @@ func _read_one_off_query_result_message(spb: StreamPeerBuffer) -> OneOffQueryRes
 		return null
 
 	if result_tag == 0: # Ok(QueryRows)
-		var table_count: int = read_u32_le(spb)
-		if has_error():
+		if not _read_query_rows(spb, "OneOffQueryResult", resource.tables):
 			return null
-		for _i: int in table_count:
-			if has_error():
-				return null
-			var table_name: String = read_string_with_u32_len(spb)
-			if has_error():
-				return null
-			var table_update: TableUpdateData = TableUpdateData.new()
-			table_update.table_name = table_name
-			var table_name_lower: StringName = table_name.to_lower()
-			var row_schema_script: GDScript = _schema.get_table(table_name_lower)
-			if row_schema_script:
-				var inserts: Array[Resource] = _read_bsatn_row_list_as_resources(spb, row_schema_script, table_name)
-				if has_error():
-					return null
-				table_update.inserts.assign(inserts)
-			else:
-				if debug_mode:
-					push_warning("No schema for '%s' in OneOffQueryResult, skipping rows." % table_name)
-				read_bsatn_row_list(spb)
-				if has_error():
-					return null
-			resource.tables.append(table_update)
 	elif result_tag == 1: # Err(string)
 		resource.is_error = true
 		resource.error_message = read_string_with_u32_len(spb)
@@ -1730,6 +1748,8 @@ func _parse_message_from_stream(spb: StreamPeerBuffer) -> SpacetimeDBServerMessa
 		result = _read_reducer_result_message(spb)
 	elif msg_type == SpacetimeDBServerMessage.PROCEDURE_RESULT:
 		result = _read_procedure_result_message(spb)
+	elif msg_type == SpacetimeDBServerMessage.SUBSCRIBE_BATCH_APPLIED:
+		result = _read_subscribe_batch_applied_message(spb)
 	else:
 		_set_error("Unknown server message type: 0x%02X" % msg_type, start_pos)
 		return null
