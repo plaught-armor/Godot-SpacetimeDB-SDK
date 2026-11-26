@@ -305,6 +305,11 @@ var _reconnect_session_busy: bool = false
 ## Session-busy refusals answered in the current reconnect cycle — see
 ## [constant MAX_SESSION_BUSY_RETRIES]. Reset when a cycle starts.
 var _session_busy_retries: int = 0
+## Set from a reconnect's IdentityToken until its replay settles. The cycle reads IDLE in that
+## window, but it still owns the session: a game that heard [signal reconnecting] is waiting
+## for [signal reconnected] or [signal reconnect_failed], and a close that ends the session
+## there has to give it the second one. Cleared wherever the cycle ends.
+var _reconnect_replay_open: bool = false
 # `disconnected` means "terminally disconnected" (not a transient drop that
 # auto-reconnect recovers), so it must fire at most once per session. Two pairs would
 # otherwise fire it twice: a server close plus a cleanup disconnect_db(), and an exhausted
@@ -481,6 +486,11 @@ func initialize_and_connect() -> void:
 		return
 
 	_disconnected_emitted = false # re-arm the terminal signal for this session
+	# connect_db has already made this session's id. auto_connect and a direct call come
+	# straight here, and without an id their socket would claim no server session, so the
+	# server could not hold it across a reconnect.
+	if _session_id.is_empty():
+		_session_id = _generate_connection_id()
 	print_log("SpacetimeDBClient: Initializing...")
 
 	# 1. Load Schema
@@ -2050,13 +2060,10 @@ func _parse_packet_and_get_resource(bsatn_bytes: PackedByteArray) -> Array[Space
 	# it would leave the mirror wrong with nothing to say so. The packets parsed before this
 	# one were delivered whole and stay delivered.
 	#
-	# With auto-reconnect on, the drop is an ordinary failed connection and the cycle that
-	# follows is bounded by SpacetimeDBConnectionOptions.max_reconnect_attempts. The attempt
-	# count only resets once a reconnect's resubscribe has settled (_finish_resubscribe),
-	# not when the new socket's identity arrives, so a server that fails the same parse on
-	# every replay exhausts the cycle and reports reconnect_failed instead of reconnecting
-	# forever. A fault that arrives after a replay settled starts a fresh count: that
-	# session was established, and the next cycle is a new drop.
+	# The drop is terminal, as it is in the official SDKs: a new socket would replay the
+	# same subscriptions and meet the same message, so auto-reconnect does not retry it.
+	# The game hears connection_error naming the fault, then reconnect_failed if a reconnect
+	# cycle owned the session, then disconnected (see _on_connection_error).
 	return []
 
 
@@ -2322,11 +2329,13 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				% _saved_subscriptions.size()
 			)
 			_reconnect_state = _ReconnectState.IDLE
-			# _reconnect_attempt is NOT reset here. A socket that opens and then fails its
-			# replay (a protocol violation, a message that cannot be parsed) has not
-			# reconnected anything, and resetting on the identity would let a server that
-			# does that every time cycle without bound. _finish_resubscribe resets it once
-			# the replay has settled; until then the next drop carries the count on.
+			_reconnect_replay_open = true
+			# The server accepted the socket, so the count starts over here, as it does in the
+			# official SDKs. A replay that then fails on a bad message or a protocol
+			# violation does not loop on this reset: those end the session for good (see
+			# _on_connection_error). Any other drop before the replay settles starts a new
+			# cycle from 1.
+			_reconnect_attempt = 0
 			# Even with nothing saved: the reconcile is what drops the old session's rows.
 			_resubscribe_saved_queries()
 	else:
@@ -2387,7 +2396,7 @@ func _on_connection_disconnected() -> void:
 			"SpacetimeDBClient: close code %d is terminal, not reconnecting."
 			% _connection.last_close_code
 		)
-		_give_up_reconnection(_reconnect_state == _ReconnectState.RECONNECTING)
+		_give_up_reconnection(_reconnect_cycle_owns_session())
 		return
 
 	# A graceful server close (normal WS code) during a reconnect attempt routes here, not
@@ -2423,6 +2432,7 @@ func _on_connection_disconnected() -> void:
 ## [signal disconnected]. Shared by an exhausted cycle and a terminal close.
 func _give_up_reconnection(cycle_failed: bool) -> void:
 	_reconnect_state = _ReconnectState.IDLE
+	_reconnect_replay_open = false
 	_reconnect_attempt = 0
 	# Nothing will restore these now, so they end rather than staying suspended — a
 	# handle that reads neither active nor ended is the one shape a caller cannot act
@@ -2431,6 +2441,14 @@ func _give_up_reconnection(cycle_failed: bool) -> void:
 	if cycle_failed:
 		reconnect_failed.emit()
 	_emit_disconnected()
+
+
+## True while a reconnect cycle answers for the session: an attempt is pending or connecting,
+## or its socket is open and the replay has not settled yet (see
+## [member _reconnect_replay_open]). An end of the session then owes the game
+## [signal reconnect_failed].
+func _reconnect_cycle_owns_session() -> bool:
+	return _reconnect_state == _ReconnectState.RECONNECTING or _reconnect_replay_open
 
 
 ## True when the close that just ended a reconnect attempt was a session-busy refusal the
@@ -2448,6 +2466,9 @@ func _is_free_session_busy_retry() -> bool:
 func _on_connection_error(code: int, reason: String) -> void:
 	_response_wait_aborted.emit()
 	_fail_pending_calls_disconnected() # awaiters get DISCONNECTED, not a late TIMEOUT
+	if code == SpacetimeDBConnection.ERR_PROTOCOL_VIOLATION:
+		_end_on_protocol_violation(code, reason)
+		return
 	if _reconnect_state == _ReconnectState.RECONNECTING:
 		print_log(
 			"SpacetimeDBClient: Reconnect attempt %d failed: %s (code %d)"
@@ -2462,6 +2483,23 @@ func _on_connection_error(code: int, reason: String) -> void:
 		_start_reconnection()
 	else:
 		connection_error.emit(code, reason)
+
+
+## Ends the session for good after a message that could not be parsed or a protocol
+## violation (see [method SpacetimeDBConnection.abort_protocol_violation]). Not retried: a
+## new socket would replay the same subscriptions and meet the same message, which is how
+## the official SDKs treat it too. [signal connection_error] carries the fault, then
+## [signal reconnect_failed] if a reconnect cycle owned the session, then
+## [signal disconnected]. A handler that calls connect_db or disconnect_db from
+## connection_error has already decided what happens next, so nothing more is emitted.
+func _end_on_protocol_violation(code: int, reason: String) -> void:
+	var cycle_owned: bool = _reconnect_cycle_owns_session()
+	var intent: int = _session_intent
+	connection_error.emit(code, reason)
+	if intent != _session_intent:
+		return
+	print_log("SpacetimeDBClient: protocol violation is terminal, not reconnecting.")
+	_give_up_reconnection(cycle_owned)
 
 
 ## Handles a stall-induced abnormal close. The socket really did close, but the
@@ -2496,9 +2534,8 @@ func _start_reconnection(immediate: bool = false) -> void:
 	_resolve_reconnect_pacing(connection_options)
 
 	_reconnect_state = _ReconnectState.RECONNECTING
-	# Not reset: it is already 0 unless the last cycle's socket opened but its replay never
-	# settled, and that count is the one this cycle has to go on from (see the IdentityToken
-	# handler). Every path that ends a cycle — settled, cancelled, exhausted — zeroes it.
+	# Not reset: it is already 0. The server's identity zeroes it (see the IdentityToken
+	# handler), and so does every path that ends a cycle — cancelled or exhausted.
 	_reconnect_immediate = immediate
 	_reconnect_session_busy = false
 	_session_busy_retries = 0
@@ -2640,12 +2677,15 @@ func _attempt_reconnect() -> void:
 		provider = connection_options.token_provider
 	if not provider.is_null() and token_needs_refresh(_token, Time.get_unix_time_from_system()):
 		var serial: int = _reconnect_attempt_serial
-		var refreshed: bool = await _refresh_token_from_provider(provider)
+		var refreshed: bool = await _refresh_token_from_provider(provider, serial)
 		if not _reconnect_attempt_still_current(serial):
 			print_log("SpacetimeDBClient: Reconnect superseded while the token was refreshed.")
 			return
 		if not refreshed:
-			_give_up_reconnection(true)
+			# One failed attempt, as in the official SDKs: the provider may be down for a
+			# moment, so the next attempt asks it again after the usual backoff, and
+			# max_reconnect_attempts bounds the cycle.
+			_schedule_next_reconnect_attempt()
 			return
 
 	if not _connection or _token.is_empty():
@@ -2721,12 +2761,21 @@ static func token_claims(token: String) -> Dictionary:
 # Asks the provider for a new token and adopts it. False, with the reason reported, when it
 # gave nothing usable: no String, an empty one, or one token_reject_reason refuses. The
 # provider may be a coroutine; awaiting a plain return value just yields it.
-func _refresh_token_from_provider(provider: Callable) -> bool:
+#
+# False with nothing stored and nothing reported when the attempt that read [param serial]
+# was superseded during the await. The game may have called disconnect_db (which wiped the
+# token) or connect_db with another account's token meanwhile, and adopting this result would
+# put the old token back in memory, on disk and in the REST client. A failure report would
+# land in the newer session as an error it did not cause. The caller sees the same
+# supersession and returns.
+func _refresh_token_from_provider(provider: Callable, serial: int) -> bool:
 	if not provider.is_valid():
 		_report_token_provider_failure("it is no longer valid (its object was freed)")
 		return false
 	print_log("SpacetimeDBClient: Asking token_provider for a new token before reconnecting.")
 	var result: Variant = await provider.call()
+	if not _reconnect_attempt_still_current(serial):
+		return false
 	if not result is String:
 		_report_token_provider_failure("it returned %s, not a String" % type_string(typeof(result)))
 		return false
@@ -2739,7 +2788,10 @@ func _refresh_token_from_provider(provider: Callable) -> bool:
 
 
 func _report_token_provider_failure(reason: String) -> void:
-	push_error("SpacetimeDBClient: token_provider failed — %s. Not reconnecting." % reason)
+	push_error(
+		"SpacetimeDBClient: token_provider failed — %s. Counted as a failed reconnect attempt."
+		% reason
+	)
 	connection_error.emit(ERR_UNAUTHORIZED, "Token provider failed: %s" % reason)
 
 
@@ -2891,9 +2943,10 @@ func _end_subscription(sub: SpacetimeDBSubscription) -> void:
 
 func _cancel_reconnection() -> void:
 	# Before the IDLE check: between a reconnect's identity and its settled replay the
-	# cycle reads IDLE but still carries its attempt count, and a connect_db or
-	# disconnect_db made then starts over.
+	# cycle reads IDLE but its replay is still open, and a connect_db or disconnect_db made
+	# then starts over.
 	_reconnect_attempt = 0
+	_reconnect_replay_open = false
 	if _reconnect_state == _ReconnectState.IDLE:
 		return
 
@@ -3182,8 +3235,7 @@ func _finish_resubscribe(epoch: int) -> void:
 		return
 	# Supersede this cycle so the watchdog or a late answer can't re-fire reconnected.
 	_resubscribe_epoch += 1
-	# The reconnect is complete only now, so only now does the next drop start a new count.
-	_reconnect_attempt = 0
+	_reconnect_replay_open = false
 	# Cleared, not ended: every entry that was restored is live again in current/pending,
 	# and the ones that were not have already ended.
 	_saved_subscriptions.clear()

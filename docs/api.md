@@ -323,20 +323,26 @@ After `reconnect_failed`, the cache keeps the last state it had, the same as aft
 
 ### What ends a session without a reconnect
 
-- **A server message that cannot be parsed.** Nothing from that packet is delivered, every
-  packet after it is dropped unread, and the socket is closed as a protocol violation
-  (`connection_error` with `ERR_INVALID_DATA`). With `auto_reconnect` on this counts as a
-  failed connection, so a reconnect follows.
+- **A server message that cannot be parsed, or a protocol violation.** For a bad message,
+  nothing from that packet is delivered and every packet after it is dropped unread. A
+  protocol violation is an answer this client cannot reconcile with what it asked for,
+  such as a reconnect's replay answer with the wrong request id. Either way the socket is
+  dropped and no reconnect follows, with `auto_reconnect` on or off: a new socket would
+  replay the same subscriptions and meet the same message. `connection_error` fires with
+  `SpacetimeDBConnection.ERR_PROTOCOL_VIOLATION` and a reason that names the fault. If a
+  reconnect cycle owned the session, `reconnect_failed` follows. `disconnected` fires
+  last. A `connection_error` handler that calls `connect_db()` or `disconnect_db()` has
+  already decided what happens next, so neither signal follows in that case.
 - **A close with code 1002, 1003, 1007 or 1008.** These mean the server rejected what
   this client sent, so a new socket would meet the same close. No reconnect follows: a
   cycle in progress ends with `reconnect_failed`, then `disconnected` fires. The error log
   names the code and the server's reason.
 
-A reconnect counts as done only once its subscriptions are restored, not when the new
-socket opens. A server that accepts the socket and then fails the replay every time (a
-protocol violation or a message that cannot be parsed) uses up `max_reconnect_attempts`
-and ends with `reconnect_failed`. A failure after a restore succeeded starts a fresh
-count, since that session was established.
+The attempt count starts over when the server accepts a reconnect's socket (its identity
+arrives), as it does in the official SDKs. A drop after that, even one before the
+replay settles, starts a new cycle from attempt 1. A terminal close in that window still
+ends with `reconnect_failed`, because the cycle that the game heard `reconnecting` for
+has not finished.
 
 ## Generated `ModuleClient` class
 
@@ -1055,7 +1061,8 @@ func _ready() -> void:
     _client.connect_db("http://127.0.0.1:3000", "my_db", options)
 
 
-# Awaited by the client. An empty return ends the reconnect cycle.
+# Awaited by the client. An empty return fails this reconnect attempt; the next one
+# asks again.
 # _get_steam_ticket() stands in for your GodotSteam ticket fetch; see
 # spacetimeauth-godotsteam.md.
 func _fetch_token() -> String:
@@ -1073,9 +1080,13 @@ func _fetch_token() -> String:
 ```
 
 A provider that returns an empty token, anything that is not a `String`, or a token with
-a control character ends the cycle. There is no further attempt. `connection_error`
-fires with `ERR_UNAUTHORIZED` and the reason, then `reconnect_failed`, then
-`disconnected`. A provider whose object was freed ends the cycle the same way.
+a control character fails that attempt, as in the official SDKs. `connection_error`
+fires with `ERR_UNAUTHORIZED` and the reason, the attempt does not connect, and the next
+one is scheduled after the usual backoff, which asks the provider again. Each failure
+counts against `max_reconnect_attempts`, so a provider that keeps failing ends the cycle
+with `reconnect_failed` and then `disconnected`. A provider whose object was freed fails
+each attempt the same way. A result that arrives after the attempt was superseded, by
+`disconnect_db()`, `connect_db()` or a later attempt, is dropped with no error.
 
 The check is proactive only. The provider is not called when the server rejects a token
 mid-session or at the handshake; such an attempt fails like any other and the next

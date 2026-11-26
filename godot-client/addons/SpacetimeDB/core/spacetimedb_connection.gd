@@ -199,6 +199,11 @@ const MAX_INTERVAL_SECONDS: float = 86400.0
 ## is still accepted — that is the documented way to turn keepalive off.
 const MIN_HEARTBEAT_SECONDS: float = 1.0
 
+## The [signal connection_error] code of [method abort_protocol_violation]. Nothing else
+## on this class reports it, so the client can tell a violation, which is terminal, from
+## a failed connection, which reconnects.
+const ERR_PROTOCOL_VIOLATION: int = ERR_INVALID_DATA
+
 var version: String = "v1"
 ## Sub-protocol the server selected during the handshake (e.g. "v3.bsatn.spacetimedb").
 var negotiated_protocol: String = ""
@@ -591,9 +596,9 @@ func _abort_on_dropped_message() -> void:
 
 
 ## Drops the socket because the server sent something this client cannot reconcile with
-## what it asked for — an answer to a request it never made, say. Reported as
-## [signal connection_error] with [constant ERR_INVALID_DATA], so auto-reconnect treats it
-## like any other failed connection.[br]
+## what it asked for — an answer to a request it never made, or a message it cannot
+## parse. Reported as [signal connection_error] with [constant ERR_PROTOCOL_VIOLATION] and
+## a reason that names the fault. The client treats that code as terminal: no reconnect.[br]
 ## [b]Internal — called by [SpacetimeDBClient].[/b]
 func abort_protocol_violation(reason: String) -> void:
 	push_error("SpacetimeDBConnection: protocol violation, dropping the connection: %s" % reason)
@@ -603,7 +608,7 @@ func abort_protocol_violation(reason: String) -> void:
 	_connection_requested = false
 	_connect_started_ms = -1
 	set_physics_process(false)
-	connection_error.emit(ERR_INVALID_DATA, "Protocol violation: %s" % reason)
+	connection_error.emit(ERR_PROTOCOL_VIOLATION, "Protocol violation: %s" % reason)
 
 
 ## The target URL with its query string cut off. On Web the token travels in that
