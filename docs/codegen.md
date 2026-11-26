@@ -66,7 +66,7 @@ The saved plugin configuration lives outside the generated tree, at `res://addon
 ## Namespaced submodules
 
 A module can register another module under a namespace (SpacetimeDB 2.8.1+, authored
-today only by the TypeScript server SDK). The server registers a submodule's tables and
+by the TypeScript server SDK, and by the C# one from 2.13.0). The server registers a submodule's tables and
 reducers under a dotted name — `lib.lib_data`, `auth.baz.baz_items` — and namespaces
 nest, so a name can carry more than one dot.
 
@@ -85,6 +85,10 @@ var row: MyModLibLibData = SpacetimeDB.MyMod.db.lib.lib_data.first_by_id(7)
 await SpacetimeDB.MyMod.reducers.auth.baz.baz_insert(3).wait_for_response()
 SpacetimeDB.MyMod.subscribe(["SELECT * FROM lib.lib_data"])
 ```
+
+From SpacetimeDB 2.10.2 the server case-converts a namespace like a table name, so a
+submodule mounted as `bazStore` is addressed on the wire as `baz_store`. The SDK reads
+the canonical name from the schema, so nothing changes in your code.
 
 Each namespace becomes an inner class on the db, reducers and procedures facades, so
 `db.lib` and `reducers.lib` are typed and autocomplete like any other generated member.

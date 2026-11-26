@@ -5,6 +5,30 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 ## [Unreleased]
 
 ### Fixed
+- **A submodule mounted under a camelCase name now works on SpacetimeDB 2.10.2+.**
+  From 2.10.2 the server case-converts a namespace the way it does a table name, so a
+  submodule mounted as `bazStore` is registered as `baz_store`, and its table as
+  `auth.baz_store.baz_items`. The SDK built wire names from the name as the module
+  wrote it, so every subscription and reducer call for such a submodule addressed a
+  name the server does not have. The schema carries the canonical name as a
+  `Namespace` entry in the parent module's `ExplicitNames`, and the wire names now use
+  it. Generated identifiers still follow the module's own spelling. A server older than
+  2.10.2 sends no such entry and registers the namespace as written, which is the
+  fallback. A namespace that is already lowercase (`lib`, `auth.baz`) is unaffected.
+- **Schema sections that only configure the server are no longer reported as skipped.**
+  `CaseConversionPolicy` (sent by a 2.14.1+ server for every module and submodule),
+  `Environment` (2.11+, emitted by every TypeScript and C# module and submodule, even
+  an empty one), `Outboxes` (2.12+) and `TableCachePolicies` (2.16+) declare nothing a
+  client reaches. Each used to print a "skipped section" line per module on every
+  codegen run, as if tables or reducers were missing, and land in
+  `SpacetimeParsedSchema.skipped_sections`.
+- **A table that gained a column no longer logs a warning for every row.** A module may
+  append columns to a published table. A client whose bindings predate the column
+  receives rows longer than it reads, and from 2.16 the protocol states that the client
+  must skip those bytes using the row boundaries the server sends. The SDK already
+  decoded each row from its own boundary, so the values were right, but it printed a
+  warning per row of every message. The skip is now silent, as in the official SDKs
+  (SpacetimeDB PR #6091). A row that reads past its boundary is still an error.
 - **A row that moves between two of your subscriptions in one transaction is now an
   update, not a despawn and a respawn.** The server sends one query set per subscription,
   and the SDK applied them one after another, so a row leaving area A and entering area B
@@ -28,6 +52,11 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   messages one at a time.
 
 ### Changed
+- **Verified against SpacetimeDB 2.16.3.** Every live suite in `integration-tests/`
+  passes against a 2.16.3 server: types 6/6, behavior 15/15, enum-with-payload 1/1,
+  anonymous `Result<T, E>` 2/2, PK-less refcount 3/3, reconnect identity 1/1 and
+  submodules 8/8. The tested range is now 2.2.0–2.16.3. The submodule test module
+  now builds against npm `spacetimedb@2.16.*`.
 - `row_transactions_completed` fires once per table per server message. It used to fire
   once per query set, so a transaction touching one table through two subscriptions
   fired it twice.

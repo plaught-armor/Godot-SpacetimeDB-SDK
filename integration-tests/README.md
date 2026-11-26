@@ -69,9 +69,12 @@ above (publish `blackholio`, then `--script verify_live_reconnect.gd`).
 
 ## Last verified
 
-Against SpacetimeDB **2.10.0** (CLI 2.10.0), schema v10, Rust modules built against the
-crates.io `spacetimedb = "2.10.0"` bindings and the TypeScript module against npm
-`spacetimedb@2.10.0`:
+Against SpacetimeDB **2.16.3** (CLI 2.16.3; the server log reports
+`spacetimedb-standalone version: 2.16.3`), schema v10, on an `--in-memory` server. The
+committed `Cargo.toml` files still pin `spacetimedb = "2.10.0"` (`blackholio-server`
+pins `2.5.0`); for this run each Rust module was built from a copy pinned to the
+crates.io `spacetimedb = "2.16.3"` bindings, which need rustc 1.97 or newer. The
+TypeScript module was built against npm `spacetimedb@2.16.*` (resolved 2.16.3):
 
 - Types suite: 6/6 — `u128`/`i128`/`u256`/`i256` (byte-exact), `Uuid` (byte-exact, reuses the `u128` wire path), `ScheduleAt` (Interval + micros).
 - Behavior suite: 15/15 — cache trio (G1/G2/G3), TimeDuration, default_values, fallible-reducer error message.
@@ -86,13 +89,13 @@ The harness subscribes, calls `add_shape`, and confirms `shape` deserializes to 
 `Resource` (so the generated `@export var shape: VsumShape` field is legal and the
 type instantiates for the nested-resource → is-RustEnum read path).
 
-**Last verified (2.10.0):** `shape` → `value=0` (Circle), `data=7`. Write path
+**Last verified (2.16.3):** `shape` → `value=0` (Circle), `data=7`. Write path
 (enum reducer args / client inserts) covered by the `test_rust_enum_roundtrip` unit test.
 
 The same module's `res_row.r: Result<i32, String>` covers **anonymous inline
 Result<T, E> columns** (`verify_live_result.gd`). The parser synthesizes a named
 `VsumResultI32String` RustEnum type per distinct `Result<T, E>` (Options `{ok, err}`,
-`ENUM_OPTIONS [i32, string]`), so it rides the same enum path. **Last verified (2.10.0):**
+`ENUM_OPTIONS [i32, string]`), so it rides the same enum path. **Last verified (2.16.3):**
 `Ok(42)` → `value=0, data=42`; `Err("bad")` → `value=1, data="bad"`. Parser synthesis
 guarded by the `test_result_synthesis` unit test.
 
@@ -101,8 +104,10 @@ guarded by the `test_result_synthesis` unit test.
 A **TypeScript** module (namespaced submodules can only be authored by the TypeScript
 server SDK) covering what implementing them has to get right:
 
-- `lib` and `auth` are first-level namespaces, and `auth` nests `baz`, so a table arrives
-  under a name carrying more than one dot (`auth.baz.baz_items`).
+- `lib` and `auth` are first-level namespaces, and `auth` nests the `baz` module under the
+  camelCase mount `bazStore`, so a table arrives under a name carrying more than one dot
+  (`auth.baz_store.baz_items`), spelled with the canonical namespace a 2.10.2+ server
+  registers rather than the written one.
 - Each module declares its own product type at typespace index 0 with a different shape
   (`RootPoint { x: u64 }` vs `LibPoint { a: string, b: string }`), so a parser that
   resolved submodule type refs against the root typespace binds rows to the wrong type.
@@ -110,7 +115,7 @@ server SDK) covering what implementing them has to get right:
 
 The harness subscribes by dotted name, calls a submodule and a nested-submodule reducer,
 and reads the rows back through the namespace facades (`db.lib.lib_data`,
-`db.auth.baz.baz_items`).
+`db.auth.baz_store.baz_items`).
 
 ```sh
 npm install --prefix integration-tests/verify_submodule_module
