@@ -701,6 +701,10 @@ func disconnect_db() -> void:
 	# connecting the socket this call just asked to close. See _session_intent.
 	_session_intent += 1
 	_token = ""
+	# The session this id names is over. connect_db draws a new one anyway, but a direct
+	# initialize_and_connect() only draws when the id is empty, and would otherwise claim
+	# this ended session again. Reconnects never come through here, so they keep theirs.
+	_session_id = ""
 	# Close the socket whenever the peer is live — including mid-handshake
 	# (STATE_CONNECTING), which is_connected_db() misses because it tracks STATE_OPEN
 	# only. A handshake left running can emit connected after the user asked to stop, or
@@ -2598,9 +2602,7 @@ func _schedule_next_reconnect_attempt() -> void:
 	var tree: SceneTree = get_tree()
 	if not tree:
 		printerr("SpacetimeDBClient: Cannot schedule reconnect — not in scene tree.")
-		_reconnect_state = _ReconnectState.IDLE
-		reconnect_failed.emit()
-		_emit_disconnected()
+		_give_up_reconnection(true)
 		return
 
 	# Wall clock (ignore_time_scale), like every other timer in the SDK: a backoff is a
@@ -2611,9 +2613,7 @@ func _schedule_next_reconnect_attempt() -> void:
 		_reconnect_timer.timeout.connect(_attempt_reconnect, CONNECT_ONE_SHOT)
 	else:
 		printerr("SpacetimeDBClient: Failed to create reconnect timer.")
-		_reconnect_state = _ReconnectState.IDLE
-		reconnect_failed.emit()
-		_emit_disconnected()
+		_give_up_reconnection(true)
 
 
 ## True when regaining focus should pull a waiting reconnect attempt forward: the
@@ -2690,9 +2690,7 @@ func _attempt_reconnect() -> void:
 
 	if not _connection or _token.is_empty():
 		printerr("SpacetimeDBClient: Cannot reconnect — missing connection or token.")
-		_reconnect_state = _ReconnectState.IDLE
-		reconnect_failed.emit()
-		_emit_disconnected()
+		_give_up_reconnection(true)
 		return
 
 	_prepare_for_reconnect()

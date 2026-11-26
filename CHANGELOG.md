@@ -2,7 +2,7 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
-## [Unreleased] — 3.0.0
+## [3.0.0] - 2026-11-25
 
 ### Breaking
 - **The server floor is now SpacetimeDB 2.10.2.** Auto-reconnect relies on the logical
@@ -57,6 +57,8 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   `session_id` query parameter on that connect and on each of its automatic
   reconnects. The connection id still changes on every socket. A fresh `connect_db()`
   gets a new session id, and with `auto_reconnect` off no session id is sent.
+  `disconnect_db()` ends the session id, so the next session draws a new one however
+  it starts, including through a direct `initialize_and_connect()`.
 - **A reconnect that the server refuses with 4000 "session busy" is retried without
   counting.** The server refuses a new socket for a session while it is still tearing
   down the socket that session held before. On a reconnect attempt the client now
@@ -67,6 +69,14 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   holds for good still ends the cycle.
 
 ### Fixed
+- **A reconnect cycle that gives up before it opens a socket now ends like one that ran
+  out of attempts.** When no token was left to reconnect with, or the client had left
+  the scene tree, or the backoff timer could not be made, the cycle stopped with
+  `reconnect_failed` and `disconnected` but left its attempt count in place, so the
+  next cycle started part-way through `max_reconnect_attempts`. These exits now go
+  through the same give-up as an exhausted cycle: the count is reset, the replay
+  window is closed and the subscriptions the cycle was carrying end. The signals are
+  unchanged: `reconnect_failed`, then `disconnected`, each once.
 - **A submodule mounted under a camelCase name now works on SpacetimeDB 2.10.2+.**
   From 2.10.2 the server case-converts a namespace the way it does a table name, so a
   submodule mounted as `bazStore` is registered as `baz_store`, and its table as
@@ -117,7 +127,8 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 - **Verified against SpacetimeDB 2.16.3.** Every live suite in `integration-tests/`
   passes against a 2.16.3 server: types 6/6, behavior 15/15, enum-with-payload 1/1,
   anonymous `Result<T, E>` 2/2, PK-less refcount 3/3, reconnect identity 1/1 and
-  submodules 8/8. The tested range is now 2.2.0–2.16.3. The submodule test module
+  submodules 8/8. With the floor at 2.10.2, the tested range is now 2.10.2–2.16.3. The
+  submodule test module
   now builds against npm `spacetimedb@2.16.*`.
 - `row_transactions_completed` fires once per table per server message. It used to fire
   once per query set, so a transaction touching one table through two subscriptions
@@ -129,8 +140,8 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 - New `LocalDatabase.apply_transaction_update` and `LocalDatabase.apply_table_updates`
   apply a whole message; `apply_table_update` still works and treats its one table
   update as a message.
-- Verified the SDK end-to-end against **SpacetimeDB 2.10.0**; the tested range is now
-  `2.2.0`–`2.10.0`, covering 2.9.0 and 2.10.0. No code change was needed. Nothing the
+- Verified the SDK end-to-end against **SpacetimeDB 2.10.0**, covering 2.9.0 and
+  2.10.0, before the floor moved to 2.10.2. No code change was needed. Nothing the
   client parses changed: `crates/client-api-messages` is byte-identical from `v2.7.0`
   through `v2.10.0`, the schema-definition crates (`crates/lib/src/db/raw_def`,
   `crates/schema`) are untouched, `crates/sats` changes only its proptests, and the

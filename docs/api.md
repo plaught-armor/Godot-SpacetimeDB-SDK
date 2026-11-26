@@ -1,5 +1,7 @@
 # API Reference
 
+> Requires **SpacetimeDB 2.10.2+** (v3 BSATN protocol, schema v10, logical sessions for auto-reconnect) and **Godot 4.6+**. Tested with `SpacetimeDB 2.10.2`–`2.16.3` and Godot `4.6-stable`, `4.7-stable` and `4.8-beta`. For servers from 2.2.0 to below 2.10.2 use an SDK `2.x` release; for servers below 2.2.0 use an SDK `1.x` release.
+
 ## `SpacetimeDBClient` class
 
 **Inherits:** Node
