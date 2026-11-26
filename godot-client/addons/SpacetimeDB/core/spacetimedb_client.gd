@@ -2640,7 +2640,7 @@ func _attempt_reconnect() -> void:
 		provider = connection_options.token_provider
 	if not provider.is_null() and token_needs_refresh(_token, Time.get_unix_time_from_system()):
 		var serial: int = _reconnect_attempt_serial
-		var refreshed: bool = await _refresh_token_from_provider(provider)
+		var refreshed: bool = await _refresh_token_from_provider(provider, serial)
 		if not _reconnect_attempt_still_current(serial):
 			print_log("SpacetimeDBClient: Reconnect superseded while the token was refreshed.")
 			return
@@ -2721,12 +2721,21 @@ static func token_claims(token: String) -> Dictionary:
 # Asks the provider for a new token and adopts it. False, with the reason reported, when it
 # gave nothing usable: no String, an empty one, or one token_reject_reason refuses. The
 # provider may be a coroutine; awaiting a plain return value just yields it.
-func _refresh_token_from_provider(provider: Callable) -> bool:
+#
+# False with nothing stored and nothing reported when the attempt that read [param serial]
+# was superseded during the await. The game may have called disconnect_db (which wiped the
+# token) or connect_db with another account's token meanwhile, and adopting this result would
+# put the old token back in memory, on disk and in the REST client. A failure report would
+# land in the newer session as an error it did not cause. The caller sees the same
+# supersession and returns.
+func _refresh_token_from_provider(provider: Callable, serial: int) -> bool:
 	if not provider.is_valid():
 		_report_token_provider_failure("it is no longer valid (its object was freed)")
 		return false
 	print_log("SpacetimeDBClient: Asking token_provider for a new token before reconnecting.")
 	var result: Variant = await provider.call()
+	if not _reconnect_attempt_still_current(serial):
+		return false
 	if not result is String:
 		_report_token_provider_failure("it returned %s, not a String" % type_string(typeof(result)))
 		return false

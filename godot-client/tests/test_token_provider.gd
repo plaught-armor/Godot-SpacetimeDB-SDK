@@ -10,6 +10,9 @@
 #    connect.
 # 5. No provider: the attempt connects with the token it has, expired or not.
 # 6. A cycle cancelled while the provider is still working does not connect.
+# 7. A result that arrives after its attempt was superseded is dropped: a disconnect_db made
+#    during the await keeps the token wiped (in memory and on disk) and hears no error, and
+#    a connect_db made during it keeps the newer session's token.
 #
 # Driven through the real reconnect path with a stub connection. The client is in the tree
 # because the reconnect scheduler needs get_tree(); its delays are long enough that no
@@ -24,6 +27,7 @@ extends SceneTree
 const _DELAY: float = 600.0
 const _FRESH_TOKEN: String = "fresh.token.value"
 const _HOUR: float = 3600.0
+const _ACCOUNT_B: String = "account.b.token"
 
 var _total: int = 0
 var _provider_calls: int = 0
@@ -44,6 +48,7 @@ func _initialize() -> void:
 	f += await _test_provider_fails()
 	f += await _test_no_provider()
 	f += await _test_cancelled_during_provider()
+	f += await _test_stale_result_dropped()
 	if f == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:
@@ -215,6 +220,72 @@ func _test_cancelled_during_provider() -> int:
 	return f
 
 
+func _test_stale_result_dropped() -> int:
+	var f: int = 0
+	var path: String = "user://test_token_provider_stale.json"
+	DirAccess.remove_absolute(path)
+
+	# disconnect_db while the provider works, which then succeeds.
+	var client: SpacetimeDBClient = await _make_client(Callable(self, "_provide"))
+	client.token_save_path = path
+	client.save_token = true
+	client._token = ""
+	_provider_result = _FRESH_TOKEN
+	_provider_gate = true
+	_errors.clear()
+	client._start_reconnection()
+	client._attempt_reconnect() # parks on the gate
+	await process_frame
+	client.disconnect_db()
+	_gate_opened.emit()
+	await process_frame
+	f += _check_b("logout mid-provider: token stays wiped", client._token.is_empty(), true)
+	f += _check_b("logout mid-provider: nothing saved", FileAccess.file_exists(path), false)
+	f += _check_i("logout mid-provider: no error", _errors.size(), 0)
+	_free_client(client)
+
+	# disconnect_db while the provider works, which then fails.
+	var failing: SpacetimeDBClient = await _make_client(Callable(self, "_provide"))
+	failing._token = ""
+	_provider_result = ""
+	_provider_gate = true
+	_errors.clear()
+	failing._start_reconnection()
+	failing._attempt_reconnect()
+	await process_frame
+	failing.disconnect_db()
+	_gate_opened.emit()
+	await process_frame
+	f += _check_i("logout mid-provider, provider fails: no error", _errors.size(), 0)
+	_free_client(failing)
+
+	# connect_db with another account's token while the provider works.
+	var switched: SpacetimeDBClient = await _make_client(Callable(self, "_provide"))
+	var switched_conn: _StubConn = switched._connection
+	switched._token = ""
+	_provider_result = _FRESH_TOKEN
+	_provider_gate = true
+	switched._start_reconnection()
+	switched._attempt_reconnect()
+	await process_frame
+	var options: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
+	options.save_token = false
+	options.threading = false
+	options.auto_reconnect = false
+	options.token = _ACCOUNT_B
+	switched.connect_db("http://localhost:3000", "test_mod", options)
+	_gate_opened.emit()
+	await process_frame
+	f += _check_s("account switch mid-provider: B's token kept", switched._token, _ACCOUNT_B)
+	f += _check_s("and B's token connected", switched_conn.last_token, _ACCOUNT_B)
+	_free_client(switched)
+
+	_provider_result = _FRESH_TOKEN
+	_provider_gate = false
+	DirAccess.remove_absolute(path)
+	return f
+
+
 func _check_terminal(label: String, client: SpacetimeDBClient) -> int:
 	var f: int = 0
 	var conn: _StubConn = client._connection
@@ -318,6 +389,15 @@ func _check_i(label: String, actual: int, expected: int) -> int:
 	return 1
 
 
+func _check_s(label: String, actual: String, expected: String) -> int:
+	_total += 1
+	if actual == expected:
+		print("PASS  %s" % label)
+		return 0
+	printerr("FAIL  %s: expected %s, got %s" % [label, expected, actual])
+	return 1
+
+
 func _check_b(label: String, actual: bool, expected: bool) -> int:
 	_total += 1
 	if actual == expected:
@@ -349,6 +429,10 @@ class _StubConn:
 
 	func set_token(token: String) -> void:
 		last_token = token
+
+
+	func apply_options(_options: SpacetimeDBConnectionOptions) -> void:
+		pass
 
 
 	func connect_to_database(
