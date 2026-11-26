@@ -1598,40 +1598,48 @@ func _thread_loop() -> void:
 			_deserializer.reset_stream_state()
 			last_epoch = batch_epoch
 
-		# Parse all packets without holding any lock
-		var local_results: Array[SpacetimeDBServerMessage] = []
-		var fault: String = ""
-		for packet: PackedByteArray in local_packets:
-			var payload: PackedByteArray = _decompress_and_parse(packet)
-			local_results.append_array(_parse_packet_and_get_resource(payload))
-			fault = _last_parse_error()
-			if not fault.is_empty():
-				break
+		_parse_packet_batch(local_packets, batch_epoch)
 
-		# Recorded for the main thread, which owns the socket and drops it. Only for the
-		# session the packet belongs to: a fault from a dead session has nothing to close.
+
+# The worker's parse of one pulled batch, on the worker thread. Split out of _thread_loop
+# so the tests can run it synchronously against a chosen epoch: whether a fault or a result
+# from a session that ended mid-parse is kept is decided here, and a live thread cannot be
+# made to lose that race on demand.
+func _parse_packet_batch(local_packets: Array[PackedByteArray], batch_epoch: int) -> void:
+	# Parse all packets without holding any lock
+	var local_results: Array[SpacetimeDBServerMessage] = []
+	var fault: String = ""
+	for packet: PackedByteArray in local_packets:
+		var payload: PackedByteArray = _decompress_and_parse(packet)
+		local_results.append_array(_parse_packet_and_get_resource(payload))
+		fault = _last_parse_error()
 		if not fault.is_empty():
-			_packet_mutex.lock()
-			if batch_epoch == _session_epoch and _parse_fault.is_empty():
-				_parse_fault = fault
-			_packet_mutex.unlock()
+			break
 
-		# Flush parsed results in one lock acquisition — but only if a reconnect
-		# hasn't bumped the session epoch while we were parsing, otherwise these
-		# results belong to a dead session and must not touch the fresh database.
-		if not local_results.is_empty():
-			_packet_mutex.lock()
-			var still_current: bool = batch_epoch == _session_epoch
-			_packet_mutex.unlock()
-			if still_current:
-				_result_mutex.lock()
-				_result_queue.append_array(local_results)
-				_result_mutex.unlock()
-			else:
-				print_log(
-					"SpacetimeDBClient: discarded %d stale results from a prior session."
-					% local_results.size()
-				)
+	# Recorded for the main thread, which owns the socket and drops it. Only for the
+	# session the packet belongs to: a fault from a dead session has nothing to close.
+	if not fault.is_empty():
+		_packet_mutex.lock()
+		if batch_epoch == _session_epoch and _parse_fault.is_empty():
+			_parse_fault = fault
+		_packet_mutex.unlock()
+
+	# Flush parsed results in one lock acquisition — but only if a reconnect
+	# hasn't bumped the session epoch while we were parsing, otherwise these
+	# results belong to a dead session and must not touch the fresh database.
+	if not local_results.is_empty():
+		_packet_mutex.lock()
+		var still_current: bool = batch_epoch == _session_epoch
+		_packet_mutex.unlock()
+		if still_current:
+			_result_mutex.lock()
+			_result_queue.append_array(local_results)
+			_result_mutex.unlock()
+		else:
+			print_log(
+				"SpacetimeDBClient: discarded %d stale results from a prior session."
+				% local_results.size()
+			)
 
 
 func _process_results_asynchronously() -> void:

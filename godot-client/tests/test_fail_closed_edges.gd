@@ -1,7 +1,9 @@
 # Unit test for the three fail-closed edges of a session.
 #
 # 1. A packet that fails to parse delivers nothing, abandons the stream until the session
-#    boundary, and drops the socket once, from the main thread.
+#    boundary, and drops the socket once, from the main thread. Checked on both parse
+#    paths: inline (threading off) and on the worker thread (the default), where a fault
+#    or a result from a session that ended mid-parse is also dropped.
 # 2. Close codes 1002, 1003, 1007 and 1008 say the server rejected what this client sent:
 #    no reconnect follows them, inside a cycle or out of one, and close_diagnostic names
 #    the code.
@@ -22,6 +24,8 @@ extends SceneTree
 
 const _DELAY: float = 600.0
 const _MAX_ATTEMPTS: int = 3
+# Bound on the wait for the worker thread, in 5 ms polls (2 s).
+const _WORKER_POLLS: int = 400
 var _terminal_codes: PackedInt32Array = [1002, 1003, 1007, 1008]
 # Compression tag 0 (none) and two payload bytes the stub deserializer never reads.
 var _packet: PackedByteArray = [0, 1, 2]
@@ -35,6 +39,7 @@ var _disconnected_count: int = 0
 func _initialize() -> void:
 	var f: int = 0
 	f += await _test_parse_failure_fails_closed()
+	f += await _test_threaded_parse_failure_fails_closed()
 	f += await _test_terminal_close_in_cycle()
 	f += await _test_terminal_close_outside_cycle()
 	f += _test_terminal_close_diagnostic()
@@ -87,6 +92,119 @@ func _test_parse_failure_fails_closed() -> int:
 	f += _check_i("and not dropped", conn.violations.size(), 1)
 	_free_client(client)
 	return f
+
+
+# The same contract on the worker thread. The packets go through the real
+# _on_websocket_message_received and the real worker; the waits poll the queues under their
+# locks with no frame in between, so _physics_process never drains a result away. The stale
+# epoch case runs the worker's batch parse directly, because a live thread cannot be made to
+# lose that race on demand.
+func _test_threaded_parse_failure_fails_closed() -> int:
+	var f: int = 0
+	var client: SpacetimeDBClient = await _make_client()
+	var conn: _StubConn = client._connection
+	var deserializer: _StubDeserializer = _StubDeserializer.new()
+	client._deserializer = deserializer
+	client.use_threading = true
+	client._setup_threading()
+	f += _check_b("the worker runs", client.deserializer_worker.is_alive(), true)
+
+	# One pull of three packets whose second is bad: the first is delivered, nothing from the
+	# second is, and the third is never parsed.
+	deserializer.fail_at = 2
+	client._packet_mutex.lock()
+	client._packet_queue.append(_packet)
+	client._packet_queue.append(_packet)
+	client._packet_queue.append(_packet)
+	client._packet_mutex.unlock()
+	client._packet_semaphore.post()
+	_wait_for_fault(client)
+	f += _check_b("threaded: the fault is recorded", _fault(client).is_empty(), false)
+	f += _check_i("threaded: only the packet before it is delivered", _results(client), 1)
+	f += _check_i("threaded: the packet after it is not parsed", deserializer.calls, 2)
+
+	# Pulled while the fault is set: discarded unparsed.
+	deserializer.fail_at = 0
+	client._on_websocket_message_received(_packet)
+	_wait_for_empty_queue(client)
+	OS.delay_msec(50) # room for a parse that should not happen
+	f += _check_i("threaded: a later pull is discarded", deserializer.calls, 2)
+	f += _check_i("threaded: and delivers nothing", _results(client), 1)
+
+	f += _check_i("threaded: the worker never drops the socket", conn.violations.size(), 0)
+	client._close_on_parse_fault()
+	client._close_on_parse_fault()
+	f += _check_i("threaded: the main thread drops it once", conn.violations.size(), 1)
+
+	# A fault from a batch pulled before the session boundary is the dead session's: it must
+	# not close the new one. Same for its results. The worker sits on its semaphore, so the
+	# deserializer is free to use from here.
+	client._drop_dead_session_traffic()
+	var stale_epoch: int = client._session_epoch - 1
+	var batch: Array[PackedByteArray] = [_packet]
+	deserializer.fail_at = deserializer.calls + 1
+	client._parse_packet_batch(batch, stale_epoch)
+	f += _check_b("stale epoch: its fault is ignored", _fault(client).is_empty(), true)
+	client._parse_packet_batch(batch, stale_epoch)
+	f += _check_i("stale epoch: its results are dropped", _results(client), 0)
+	client._close_on_parse_fault()
+	f += _check_i("stale epoch: the new session is not dropped", conn.violations.size(), 1)
+
+	# Control: the same fault in the current epoch is kept.
+	deserializer.fail_at = deserializer.calls + 1
+	client._parse_packet_batch(batch, client._session_epoch)
+	f += _check_b("current epoch: its fault is kept", _fault(client).is_empty(), false)
+
+	# And the worker serves the next session once the boundary clears the fault.
+	client._drop_dead_session_traffic()
+	deserializer.fail_at = 0
+	client._on_websocket_message_received(_packet)
+	_wait_for_results(client, 1)
+	f += _check_i("threaded: the next session is delivered", _results(client), 1)
+	_free_client(client)
+	return f
+
+
+func _fault(client: SpacetimeDBClient) -> String:
+	client._packet_mutex.lock()
+	var fault: String = client._parse_fault
+	client._packet_mutex.unlock()
+	return fault
+
+
+func _results(client: SpacetimeDBClient) -> int:
+	client._result_mutex.lock()
+	var size: int = client._result_queue.size()
+	client._result_mutex.unlock()
+	return size
+
+
+func _queued(client: SpacetimeDBClient) -> int:
+	client._packet_mutex.lock()
+	var size: int = client._packet_queue.size()
+	client._packet_mutex.unlock()
+	return size
+
+
+func _wait_for_fault(client: SpacetimeDBClient) -> void:
+	for i: int in _WORKER_POLLS:
+		if not _fault(client).is_empty():
+			return
+		OS.delay_msec(5)
+
+
+func _wait_for_empty_queue(client: SpacetimeDBClient) -> void:
+	for i: int in _WORKER_POLLS:
+		if _queued(client) == 0:
+			return
+		OS.delay_msec(5)
+
+
+func _wait_for_results(client: SpacetimeDBClient, count: int) -> void:
+	for i: int in _WORKER_POLLS:
+		if _results(client) >= count:
+			return
+		OS.delay_msec(5)
 
 
 func _test_terminal_close_in_cycle() -> int:
@@ -332,14 +450,16 @@ class _StubConn:
 		violations.append(reason)
 
 
-# Returns one whole message per call, and with [member fail] set also leaves a parse error,
-# the shape of a packet whose later message is corrupt. Skips the parent _init.
+# Returns one whole message per call, and with [member fail] set (or on call number
+# [member fail_at]) also leaves a parse error, the shape of a packet whose later message is
+# corrupt. Skips the parent _init.
 class _StubDeserializer:
 	extends BSATNDeserializer
 
 	const ERROR_TEXT: String = "stub parse failure"
 
 	var fail: bool = false
+	var fail_at: int = 0
 	var calls: int = 0
 
 
@@ -352,7 +472,7 @@ class _StubDeserializer:
 	) -> Array[SpacetimeDBServerMessage]:
 		calls += 1
 		clear_error()
-		if fail:
+		if fail or calls == fail_at:
 			_set_error(ERROR_TEXT)
 		var out: Array[SpacetimeDBServerMessage] = [IdentityTokenMessage.new()]
 		return out
