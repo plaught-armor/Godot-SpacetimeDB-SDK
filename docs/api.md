@@ -1014,6 +1014,7 @@ class SpacetimeDBConnectionOptions:
     var reconnect_backoff_multiplier: float = 2.0
     var reconnect_jitter_fraction: float = 0.5 # 0.0–1.0
     var reconnect_on_app_resume: bool = true
+    var token_provider: Callable = Callable() # () -> String, may be a coroutine
     var process_while_paused: bool = true
 ```
 
@@ -1026,6 +1027,7 @@ class SpacetimeDBConnectionOptions:
 | `reconnect_backoff_multiplier` | Multiplier applied to the delay after each failed attempt. |
 | `reconnect_jitter_fraction` | Random jitter applied to each delay (`0.0` none, `1.0` full delay range). Prevents a thundering herd. |
 | `reconnect_on_app_resume` | When `true` (default), regaining focus fires a pending attempt immediately. |
+| `token_provider` | Called before a reconnect attempt whose token is close to expiry. Returns the new token. Unset (default) means the current token is used. |
 | `process_while_paused` | When `true` (default), the client keeps processing while the scene tree is paused. |
 
 **`reconnect_on_app_resume`.** A backgrounded app's frame loop is throttled (a web tab)
@@ -1033,6 +1035,53 @@ or stopped (a suspended mobile app), which stalls the `SceneTreeTimer` the backo
 on. Without this, a drop that happens off-screen would sit unreconnected well after the
 player is back. The re-fired attempt is scheduled under its own number, so
 `max_reconnect_attempts` still bounds the cycle.
+
+**`token_provider`.** Before each reconnect attempt the client reads the current
+token's `exp` claim. If it is less than max(30 s, 5% of `exp - iat`) away, already past,
+or missing, the client calls the provider and awaits it, so the provider can be a
+coroutine that fetches a token over the network. The new token is used for that attempt
+and every later one, and is saved when `save_token` is on. A token further from expiry is
+used as it is, without calling the provider.
+
+```gdscript
+@onready var _client: SpacetimeDBClient = $SpacetimeDBClient
+@onready var _auth: SpacetimeAuth = $SpacetimeAuth
+
+
+func _ready() -> void:
+    var options: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
+    options.auto_reconnect = true
+    options.token_provider = _fetch_token
+    _client.connect_db("http://127.0.0.1:3000", "my_db", options)
+
+
+# Awaited by the client. An empty return ends the reconnect cycle.
+# _get_steam_ticket() stands in for your GodotSteam ticket fetch; see
+# spacetimeauth-godotsteam.md.
+func _fetch_token() -> String:
+    var ticket: PackedByteArray = await _get_steam_ticket()
+    var fields: Dictionary[String, Variant] = {
+        "steam_ticket": ticket.hex_encode(),
+        "steam_app_id": str(STEAM_APP_ID),
+    }
+    var result: SpacetimeAuthResult = await _auth.exchange(
+        "urn:spacetimeauth:steam-ticket", fields, CLIENT_ID
+    )
+    if not result.error.is_empty():
+        return ""
+    return result.id_token
+```
+
+A provider that returns an empty token, anything that is not a `String`, or a token with
+a control character ends the cycle. There is no further attempt. `connection_error`
+fires with `ERR_UNAUTHORIZED` and the reason, then `reconnect_failed`, then
+`disconnected`. A provider whose object was freed ends the cycle the same way.
+
+The check is proactive only. The provider is not called when the server rejects a token
+mid-session or at the handshake; such an attempt fails like any other and the next
+attempt checks the token again. It is not called by `connect_db()` either. A token
+with no `exp` claim makes every reconnect call the provider. A server that mints tokens
+itself issues them without `exp`, so such a token gets a provider call on every attempt.
 
 **`process_while_paused`.** The socket is polled from `_physics_process`, and that poll
 is what sends the keepalive ping, reads inbound frames and flushes outbound ones. On the

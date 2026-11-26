@@ -35,6 +35,15 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
   up `max_reconnect_attempts` and the cycle ends with `reconnect_failed`.
 
 ### Added
+- **`SpacetimeDBConnectionOptions.token_provider`.** An optional `Callable` that
+  returns a fresh token for a reconnect, and may be a coroutine. Before each
+  reconnect attempt, the client calls it when the current token's `exp` is less than
+  max(30 s, 5% of `exp - iat`) away, already past, or missing. A provider that returns
+  an empty or unusable token, or whose object was freed, ends the cycle with
+  `connection_error` (`ERR_UNAUTHORIZED`), `reconnect_failed` and `disconnected`.
+  The check runs only before an attempt: a token the server rejects does not trigger
+  it. Without a provider, reconnect behaves as before. New static helpers
+  `SpacetimeDBClient.token_claims()` and `SpacetimeDBClient.token_needs_refresh()`.
 - **Auto-reconnect keeps one server session.** With `auto_reconnect` on, the client
   draws a random 128-bit session id at every `connect_db()` and sends it as the
   `session_id` query parameter on that connect and on each of its automatic

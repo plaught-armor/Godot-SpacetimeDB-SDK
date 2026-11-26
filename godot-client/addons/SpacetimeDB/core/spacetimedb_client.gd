@@ -251,6 +251,12 @@ const DEFAULT_BACKOFF_MULTIPLIER: float = 2.0
 ## Attempts before the cycle gives up. See
 ## [member SpacetimeDBConnectionOptions.max_reconnect_attempts].
 const DEFAULT_MAX_RECONNECT_ATTEMPTS: int = 10
+## Least time before a token's [code]exp[/code] at which a reconnect asks
+## [member SpacetimeDBConnectionOptions.token_provider] for a new one, in seconds.
+const TOKEN_REFRESH_MIN_MARGIN_SECONDS: float = 30.0
+## Share of a token's lifetime ([code]exp - iat[/code]) that a reconnect treats as too close
+## to expiry, when that is more than [constant TOKEN_REFRESH_MIN_MARGIN_SECONDS].
+const TOKEN_REFRESH_LIFETIME_FRACTION: float = 0.05
 ## Share of the delay used as random jitter. See
 ## [member SpacetimeDBConnectionOptions.reconnect_jitter_fraction]. Unlike its siblings this
 ## is not a fallback — the resolver clamps rather than refusing — but the member default has
@@ -364,6 +370,10 @@ var _resubscribe_sets: Dictionary[int, SpacetimeDBSubscription] = { }
 ## [member _reconnect_state] after the subscription ends its preparation reports.
 var _session_intent: int = 0
 var _reconnect_timer: SceneTreeTimer = null
+## Bumped each time an attempt is scheduled. An attempt that awaits the token provider
+## compares it on the way back: a different number means another attempt has been
+## scheduled since, so this one has been superseded.
+var _reconnect_attempt_serial: int = 0
 ## Set when a reconnect cycle was in flight as the client left the tree, so
 ## [method _enter_tree] can pick it up again. See [method _suspend_reconnection].
 var _reconnect_suspended: bool = false
@@ -1308,16 +1318,22 @@ func _on_token_received(received_token: String) -> void:
 		return
 
 	print_log("SpacetimeDBClient: Token acquired.")
-	self._token = received_token
-	if save_token:
-		_save_token(received_token)
+	_store_token(received_token)
 	var conn_id: String = _generate_connection_id()
-	# Pass token to components that need it
 	_connection.set_token(self._token)
-	_rest_api.set_token(self._token) # REST API might also need it
 
 	# Now attempt to connect WebSocket
 	_connection.connect_to_database(base_url, database_name, conn_id, _socket_session_id())
+
+
+# Makes [param token] the one this client connects with: kept, persisted when
+# save_token is on, and handed to the REST API. The caller has already checked it.
+func _store_token(token: String) -> void:
+	self._token = token
+	if save_token:
+		_save_token(token)
+	if _rest_api:
+		_rest_api.set_token(token) # REST API might also need it
 
 
 func _on_token_request_failed(error_code: int, _response_body: String) -> void:
@@ -2529,6 +2545,7 @@ func _schedule_next_reconnect_attempt() -> void:
 		return
 
 	_reconnect_attempt += 1
+	_reconnect_attempt_serial += 1
 	var backoff_attempt: int = 1 if _reconnect_session_busy else _reconnect_attempt
 	var backoff: float = 0.0 if _reconnect_immediate else _calculate_backoff(backoff_attempt)
 	_reconnect_immediate = false # one-shot: only the first stall-induced attempt skips backoff
@@ -2618,6 +2635,19 @@ func _attempt_reconnect() -> void:
 	if _reconnect_state != _ReconnectState.RECONNECTING:
 		return
 
+	var provider: Callable = Callable()
+	if connection_options:
+		provider = connection_options.token_provider
+	if not provider.is_null() and token_needs_refresh(_token, Time.get_unix_time_from_system()):
+		var serial: int = _reconnect_attempt_serial
+		var refreshed: bool = await _refresh_token_from_provider(provider)
+		if not _reconnect_attempt_still_current(serial):
+			print_log("SpacetimeDBClient: Reconnect superseded while the token was refreshed.")
+			return
+		if not refreshed:
+			_give_up_reconnection(true)
+			return
+
 	if not _connection or _token.is_empty():
 		printerr("SpacetimeDBClient: Cannot reconnect — missing connection or token.")
 		_reconnect_state = _ReconnectState.IDLE
@@ -2640,6 +2670,88 @@ func _attempt_reconnect() -> void:
 
 	print_log("SpacetimeDBClient: Attempting reconnect (attempt %d)." % _reconnect_attempt)
 	_connection.connect_to_database(base_url, database_name, conn_id, _socket_session_id())
+
+
+## True when [param token] should be replaced before it is connected with at
+## [param now_unix] (seconds since the epoch): its [code]exp[/code] claim is less than
+## max([constant TOKEN_REFRESH_MIN_MARGIN_SECONDS], [constant TOKEN_REFRESH_LIFETIME_FRACTION]
+## of [code]exp - iat[/code]) away, or already past. A token with no readable
+## [code]exp[/code] (not a JWT, or one that never expires) also answers true: nothing says
+## it is still good.
+static func token_needs_refresh(token: String, now_unix: float) -> bool:
+	var claims: Dictionary = token_claims(token)
+	var expiry: Variant = claims.get("exp")
+	if not (expiry is float or expiry is int):
+		return true
+	var margin: float = TOKEN_REFRESH_MIN_MARGIN_SECONDS
+	var iat: Variant = claims.get("iat")
+	if (iat is float or iat is int) and float(expiry) > float(iat):
+		margin = maxf(margin, TOKEN_REFRESH_LIFETIME_FRACTION * (float(expiry) - float(iat)))
+	return now_unix >= float(expiry) - margin
+
+
+## The claims of a JWT, decoded from its payload segment without checking the signature
+## (the server does that). Empty when [param token] is not a three-segment JWT whose payload
+## is base64url JSON naming an object.
+static func token_claims(token: String) -> Dictionary:
+	var parts: PackedStringArray = token.split(".")
+	if parts.size() != 3:
+		return {}
+	var segment: String = parts[1]
+	# Checked first: Marshalls logs an engine error for text that is not base64.
+	for i: int in segment.length():
+		var c: int = segment.unicode_at(i)
+		var is_alnum: bool = (
+			(c >= 0x30 and c <= 0x39) or (c >= 0x41 and c <= 0x5A) or (c >= 0x61 and c <= 0x7A)
+		)
+		if not is_alnum and c != 0x2D and c != 0x5F:
+			return {}
+	if segment.is_empty() or segment.length() % 4 == 1:
+		return {}
+	segment = segment.replace("-", "+").replace("_", "/")
+	segment += "=".repeat((4 - segment.length() % 4) % 4)
+	var json: JSON = JSON.new()
+	if json.parse(Marshalls.base64_to_raw(segment).get_string_from_utf8()) != OK:
+		return {}
+	if not json.data is Dictionary:
+		return {}
+	return json.data
+
+
+# Asks the provider for a new token and adopts it. False, with the reason reported, when it
+# gave nothing usable: no String, an empty one, or one token_reject_reason refuses. The
+# provider may be a coroutine; awaiting a plain return value just yields it.
+func _refresh_token_from_provider(provider: Callable) -> bool:
+	if not provider.is_valid():
+		_report_token_provider_failure("it is no longer valid (its object was freed)")
+		return false
+	print_log("SpacetimeDBClient: Asking token_provider for a new token before reconnecting.")
+	var result: Variant = await provider.call()
+	if not result is String:
+		_report_token_provider_failure("it returned %s, not a String" % type_string(typeof(result)))
+		return false
+	var reason: String = SpacetimeDBConnection.token_reject_reason(result)
+	if not reason.is_empty():
+		_report_token_provider_failure("its token was refused: %s" % reason)
+		return false
+	_store_token(result)
+	return true
+
+
+func _report_token_provider_failure(reason: String) -> void:
+	push_error("SpacetimeDBClient: token_provider failed — %s. Not reconnecting." % reason)
+	connection_error.emit(ERR_UNAUTHORIZED, "Token provider failed: %s" % reason)
+
+
+# Whether the attempt that read [param serial] before an await is still the one to run: the
+# cycle is still going, no later attempt was scheduled, and the client is still in the tree
+# (one that left it mid-await is suspended, and its re-entry schedules a fresh attempt).
+func _reconnect_attempt_still_current(serial: int) -> bool:
+	return (
+		_reconnect_state == _ReconnectState.RECONNECTING
+		and serial == _reconnect_attempt_serial
+		and is_inside_tree()
+	)
 
 
 # Everything the dying session left in flight, dropped so none of it lands in the mirror

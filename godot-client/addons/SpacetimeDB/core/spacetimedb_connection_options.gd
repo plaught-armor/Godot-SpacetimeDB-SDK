@@ -222,6 +222,25 @@ var reconnect_jitter_fraction: float = SpacetimeDBClient.DEFAULT_JITTER_FRACTION
 ## barely ticks. The attempt counter is not reset, so [member max_reconnect_attempts]
 ## still bounds the cycle.
 var reconnect_on_app_resume: bool = true
+## Supplies a fresh auth token for a reconnect. Called with no arguments, it returns the
+## token as a [String], and may be a coroutine (it is awaited).
+##
+## Asked before each reconnect attempt whose current token is close to expiry: its
+## [code]exp[/code] claim is less than max(30 s, 5% of [code]exp - iat[/code]) away, or
+## past, or the token has no readable [code]exp[/code] at all. A token further from expiry
+## is reconnected with as it is.
+##
+## The check is proactive only. The provider is not called when the server rejects a token
+## mid-session or at the handshake; such an attempt fails like any other and the next one
+## checks again. Nor is it called by [method SpacetimeDBClient.connect_db].
+##
+## A provider that returns anything but a non-empty, usable [String] ends the cycle: no
+## further attempt, [signal SpacetimeDBClient.connection_error] with
+## [constant ERR_UNAUTHORIZED] and the reason, then
+## [signal SpacetimeDBClient.reconnect_failed] and
+## [signal SpacetimeDBClient.disconnected]. So does a provider whose object was freed.
+## Unset (the default) means the token the client already has is used as before.
+var token_provider: Callable = Callable()
 
 ## Whether the client keeps running while the [SceneTree] is paused.
 ##
