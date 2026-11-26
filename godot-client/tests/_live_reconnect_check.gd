@@ -27,11 +27,18 @@
 # server, so that lives behind _live_abnormal_drop.sh, which sets STDB_KILL_SERVER
 # and kills the server when this harness prints its cue.
 #
-# Also writes tests/fixtures/wire_resubscribe.bin — the frames the server sends
-# while recovering — so the offline suite gets a permanent artifact out of the run.
+# STDB_SESSION_BUSY=1 makes the reconnect meet a real session-busy refusal (close 4000).
+# Right after the drop, a second socket with the same token and session id connects and
+# holds the session, so the client's first reconnect attempt is refused. The refusal also
+# stops the second socket's server-side actor, which frees the session, and the retry gets in.
+#
+# Also writes tests/fixtures/wire_subscribe_batch.bin — the frames the server sends
+# while recovering — so the offline suite gets a permanent artifact out of the run. The
+# older wire_resubscribe.bin, from the per-handle Subscribe the SDK sent before 3.0, is
+# kept: it is still the only real-bytes SubscribeApplied.
 extends Node
 
-const RESUB_PATH: String = "res://tests/fixtures/wire_resubscribe.bin"
+const RESUB_PATH: String = "res://tests/fixtures/wire_subscribe_batch.bin"
 # C1: never const a Packed*Array.
 var _queries: PackedStringArray = ["SELECT * FROM config"]
 ## Long enough to cover the reconnect delay below plus a resubscribe round trip.
@@ -46,6 +53,20 @@ const KILL_CUE: String = "[live-reconnect] KILL_THE_SERVER_NOW"
 ## closing the socket here, so the abnormal-closure branch runs.
 var _kill_mode: bool = not OS.get_environment("STDB_KILL_SERVER").is_empty()
 var _abnormal_close_seen: bool = false
+## Set in the environment: a second socket takes the session over during the drop.
+var _busy_mode: bool = not OS.get_environment("STDB_SESSION_BUSY").is_empty()
+## How long after the drop the second socket connects. Shorter than the reconnect delay
+## below, so it holds the session by the time the client's first attempt arrives.
+const RIVAL_DELAY_SECONDS: float = 0.3
+## The second socket of busy mode.
+var _rival: SpacetimeDBConnection = null
+var _rival_connected: bool = false
+## The highest attempt number `reconnecting` reported. A refusal for a busy session is
+## retried under the same number, so busy mode still recovers on attempt 1.
+var _max_attempt_seen: int = 0
+## Row events for the config table from the drop onward. The row is unchanged across
+## the outage, so the reconcile must report nothing for it.
+var _config_events: PackedStringArray = []
 ## The handle taken before the drop — the object the whole contract is about.
 var _sub: SpacetimeDBSubscription = null
 ## Sampled inside `reconnecting`, which is the only moment the suspended state is
@@ -75,6 +96,9 @@ func _ready() -> void:
 	if _kill_mode:
 		# The server goes away for a while, so allow enough attempts to outlast it.
 		options.max_reconnect_attempts = 30
+	if _busy_mode:
+		# Long enough for the second socket to be in place before the first attempt.
+		options.reconnect_initial_delay = 2.0
 	SpacetimeDB.Blackholio.reconnecting.connect(_on_reconnecting)
 	SpacetimeDB.Blackholio.reconnected.connect(_on_reconnected)
 	SpacetimeDB.Blackholio.connection_error.connect(_on_connection_error)
@@ -83,8 +107,9 @@ func _ready() -> void:
 	SpacetimeDB.Blackholio.connect_db("http://127.0.0.1:3000", "blackholio", options)
 
 
-func _on_reconnecting(_attempt: int, _max_attempts: int) -> void:
+func _on_reconnecting(attempt: int, _max_attempts: int) -> void:
 	_reconnecting_seen += 1
+	_max_attempt_seen = maxi(_max_attempt_seen, attempt)
 	# Sticky: a kill-mode run makes many attempts, and the handle is suspended for all
 	# of them. One sample that ever saw it is the evidence; a later attempt cannot
 	# un-see it.
@@ -123,6 +148,7 @@ func _run(_identity: PackedByteArray, _token: String) -> void:
 	# Capture what the server sends during the recovery, from the drop onward.
 	_file = FileAccess.open(RESUB_PATH, FileAccess.WRITE)
 	SpacetimeDB.Blackholio._connection.message_received.connect(_on_packet)
+	_watch_config_rows()
 
 	if _kill_mode:
 		# The driver script is waiting on this line before it kills the server. A
@@ -134,6 +160,8 @@ func _run(_identity: PackedByteArray, _token: String) -> void:
 		# STATE_CLOSED, exactly as it would for a graceful server-side close, so
 		# this enters _on_connection_disconnected and auto-reconnect with it.
 		SpacetimeDB.Blackholio._connection._websocket.close(1000, "harness drop")
+		if _busy_mode:
+			get_tree().create_timer(RIVAL_DELAY_SECONDS).timeout.connect(_connect_rival)
 
 	var recovered: bool = await _wait_for_reconnect()
 	_check("reconnected within %.0fs" % _recovery_timeout(), recovered, true)
@@ -146,6 +174,18 @@ func _run(_identity: PackedByteArray, _token: String) -> void:
 		# The point of this mode: a killed server produces an abnormal closure, which
 		# is a different branch from the graceful close the default run exercises.
 		_check("the drop was reported as an abnormal closure", _abnormal_close_seen, true)
+	if _busy_mode:
+		_check("a second socket took the session during the drop", _rival_connected, true)
+		_check(
+			"the reconnect was refused as session busy at least once",
+			SpacetimeDB.Blackholio._session_busy_retries >= 1,
+			true,
+		)
+		_check("the refusal was not counted as an attempt", _max_attempt_seen, 1)
+		# Nothing is checked on the second socket after this. The refusal stops its
+		# server-side actor (ConnectionSuperseded), which is what frees the session for
+		# the retry, but on 2.16.3 the socket itself is left open until it next sends,
+		# so from this side it still reads as OPEN.
 	# The handle contract, against a real socket. Suspended for the whole outage and
 	# never ended: a drop is not the subscription being over.
 	_check("the handle was suspended while reconnecting", _suspended_while_reconnecting, true)
@@ -164,10 +204,11 @@ func _run(_identity: PackedByteArray, _token: String) -> void:
 		true,
 	)
 	_check("the server confirmed it a second time", _applied_seen, 2)
-	# The real question: did the resubscribe actually refill the cache the reconnect
-	# cleared, or did it just reopen a socket? _prepare_for_reconnect calls
-	# clear_local_db(), and only a SubscribeApplied refills it.
-	_check("config row is back in the cache", SpacetimeDB.Blackholio.db.config.count(), 1)
+	# The cache is kept across the drop and reconciled against the new snapshot, so the
+	# row is still there; and since it did not change on the server, the reconcile must
+	# not report it at all, neither as a delete and re-insert nor as an update.
+	_check("config row is still in the cache", SpacetimeDB.Blackholio.db.config.count(), 1)
+	_check("the unchanged row fired no row event", ", ".join(_config_events), "")
 
 	# Everything the fixture needs is captured; the reducer call below is a
 	# liveness check, not part of the recovery, so keep its frames out.
@@ -196,6 +237,39 @@ func _run(_identity: PackedByteArray, _token: String) -> void:
 	_check("the rows it owned left the cache", SpacetimeDB.Blackholio.db.config.count(), 0)
 
 	_finish()
+
+
+func _watch_config_rows() -> void:
+	var client: SpacetimeDBClient = SpacetimeDB.Blackholio
+	client.row_inserted.connect(_on_row_event.bind("insert").unbind(1))
+	client.row_updated.connect(_on_row_event.bind("update").unbind(2))
+	client.row_before_delete.connect(_on_row_event.bind("before_delete").unbind(1))
+	client.row_deleted.connect(_on_row_event.bind("delete").unbind(1))
+
+
+func _on_row_event(table_name: StringName, kind: String) -> void:
+	if table_name == &"config":
+		_config_events.append(kind)
+
+
+func _connect_rival() -> void:
+	var client: SpacetimeDBClient = SpacetimeDB.Blackholio
+	var options: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
+	options.compression = SpacetimeDBConnection.CompressionPreference.NONE
+	_rival = SpacetimeDBConnection.new(options, "blackholio")
+	add_child(_rival)
+	_rival.connected.connect(_on_rival_connected)
+	_rival.set_token(client.get_token())
+	_rival.connect_to_database(
+		"http://127.0.0.1:3000",
+		"blackholio",
+		client._generate_connection_id(),
+		client._socket_session_id(),
+	)
+
+
+func _on_rival_connected() -> void:
+	_rival_connected = true
 
 
 func _recovery_timeout() -> float:

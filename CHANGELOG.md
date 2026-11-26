@@ -2,7 +2,61 @@
 
 All notable changes to the SpacetimeDB Godot SDK will be documented in this file.
 
-## [Unreleased]
+## [Unreleased] — 3.0.0
+
+### Breaking
+- **The server floor is now SpacetimeDB 2.10.2.** Auto-reconnect relies on the logical
+  session (`session_id`) and the batch subscribe messages (`SubscribeBatch` /
+  `SubscribeBatchApplied`) that 2.10.2 added. For servers from 2.2.0 to below 2.10.2,
+  use an SDK `2.x` release.
+- **A reconnect no longer reports every row as deleted and inserted again.** The local
+  cache is kept across the drop, and the saved subscriptions are restored with one
+  `SubscribeBatch`. Its answer is applied as one message against the cached rows, the way
+  the official SDKs reconcile: a row that did not change fires nothing, a changed row
+  fires one `on_update`, and only a row that is really gone fires `on_before_delete` /
+  `on_delete`. Code that relied on the old teardown and rebuild (respawning everything
+  from `on_insert` after a reconnect) now receives only the changes. An answer that does
+  not match the request (wrong request id, or result sets other than the ones sent) is a
+  protocol violation, and the socket is dropped. See "Row callbacks across a reconnect"
+  in `docs/api.md`.
+- **A server message that cannot be parsed ends the session.** Before, the messages read
+  before the failure were still delivered and the rest of the packet was skipped. Now
+  nothing from the packet is delivered, the packets after it are dropped, and the socket
+  is closed as a protocol violation. Auto-reconnect treats that close as a failed
+  connection.
+- **Close codes 1002, 1003, 1007 and 1008 are terminal.** They mean the server rejected
+  what this client sent, and a new socket would meet the same close. Auto-reconnect no
+  longer retries them: a cycle in progress ends with `reconnect_failed`, then
+  `disconnected` fires, and the error log names the code.
+- **A reconnect attempt counts until its subscriptions are restored.** The attempt
+  counter used to reset as soon as the new socket's identity arrived. A server that
+  accepted the socket and then failed the replay every time made the client reconnect
+  forever. The counter now resets only once the restore has settled, so that server uses
+  up `max_reconnect_attempts` and the cycle ends with `reconnect_failed`.
+
+### Added
+- **`SpacetimeDBConnectionOptions.token_provider`.** An optional `Callable` that
+  returns a fresh token for a reconnect, and may be a coroutine. Before each
+  reconnect attempt, the client calls it when the current token's `exp` is less than
+  max(30 s, 5% of `exp - iat`) away, already past, or missing. A provider that returns
+  an empty or unusable token, or whose object was freed, ends the cycle with
+  `connection_error` (`ERR_UNAUTHORIZED`), `reconnect_failed` and `disconnected`.
+  The check runs only before an attempt: a token the server rejects does not trigger
+  it. Without a provider, reconnect behaves as before. New static helpers
+  `SpacetimeDBClient.token_claims()` and `SpacetimeDBClient.token_needs_refresh()`.
+- **Auto-reconnect keeps one server session.** With `auto_reconnect` on, the client
+  draws a random 128-bit session id at every `connect_db()` and sends it as the
+  `session_id` query parameter on that connect and on each of its automatic
+  reconnects. The connection id still changes on every socket. A fresh `connect_db()`
+  gets a new session id, and with `auto_reconnect` off no session id is sent.
+- **A reconnect that the server refuses with 4000 "session busy" is retried without
+  counting.** The server refuses a new socket for a session while it is still tearing
+  down the socket that session held before. On a reconnect attempt the client now
+  retries at the initial delay and does not count the refusal against
+  `max_reconnect_attempts`. The free retries are capped at
+  `SpacetimeDBClient.MAX_SESSION_BUSY_RETRIES` (10) per reconnect cycle. Past the cap a
+  refusal counts as an ordinary failed attempt, so a session that another process
+  holds for good still ends the cycle.
 
 ### Fixed
 - **A submodule mounted under a camelCase name now works on SpacetimeDB 2.10.2+.**

@@ -133,7 +133,7 @@ func _on_subscription_ended() -> void:
 
 Do **not** call `subscribe()` again in response to `reconnected` — the SDK has already restored the query, and subscribing a second time duplicates the query set on the server. `end` fires only when a subscription really is over: an unsubscribe, a server-side subscription error, a terminal `disconnect_db()` or exhausted reconnect, or a re-subscribe whose send failed.
 
-The mirror is wiped and re-filled across a reconnect, so every row is reported deleted and then inserted again. Row listeners see that as ordinary traffic; code that caches a row object should re-read it rather than hold it.
+The mirror is kept across a reconnect and reconciled against the server's fresh snapshot once the restored subscriptions are answered: a row that did not change fires nothing, a changed row fires one update, and only a row that is really gone fires a delete. See [Row callbacks across a reconnect](api.md#row-callbacks-across-a-reconnect).
 
 ## Listen for Data Changes
 

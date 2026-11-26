@@ -294,24 +294,49 @@ so every callback of the current message still sees it exactly as described abov
 
 ### Row callbacks across a reconnect
 
-Each reconnection attempt resets the local cache before resubscribing, and the reset is
-reported: every cached row fires `row_before_delete` / `row_deleted` (and its per-table
-`on_delete` listeners), followed by one `row_transactions_completed` per non-empty
-table. The resubscribe then re-delivers the rows that still exist as inserts.
+The local cache is kept across a reconnect and reconciled against the new session's
+snapshot, the way the official SDKs do. The SDK restores every saved subscription with one
+`SubscribeBatch`, and the server's answer is applied as one message against what was cached:
 
-So a reconnect looks like a full teardown and rebuild to row listeners, not a diff. That
-is deliberate: the resubscribe only carries rows that still exist, so a row deleted
-server-side while the client was away has nothing left to announce it — without the
-teardown, anything you spawned for that row would stay alive for the rest of the session.
-Spawn per `on_insert` and free per `on_delete` and this takes care of itself. Key what you
-spawn by primary key: a row that survives the reconnect arrives as an insert again, not an
-update.
+- a row that is still there and unchanged fires nothing;
+- a row whose columns changed fires one `row_updated` (and its `on_update` listeners);
+- a row that is gone fires `row_before_delete` / `row_deleted`;
+- a new row fires `row_inserted`;
 
-The wipe is the last step of the reconnect preparation. Handles the reconnect carries
-are already suspended by the time it runs, so no `end` fires for them; a handle the
-reconnect is *not* carrying — one whose unsubscribe was in flight when the socket died —
-is ended just before the wipe, so an `end` handler still sees the pre-drop rows and the
-`row_deleted` run for those same rows follows immediately after.
+followed by one `row_transactions_completed` per table that changed. Then each restored
+handle emits `applied`, a set the server rejected emits `end`, and `reconnected` fires last.
+
+Until the answer arrives, the cache still holds the rows from before the drop and nothing
+is reported for them. If the server does not answer within the resubscribe timeout, the
+stale rows are dropped (reported as deletes) and `reconnected` fires anyway; a late answer
+still applies its rows and fires each handle's `applied`.
+
+Rows of a table without a primary key are matched by value, so a changed row there is a
+delete of the old row plus an insert of the new one.
+
+A handle the reconnect is *not* carrying (one whose unsubscribe was in flight when the
+socket died) is ended during the reconnect preparation. Its rows stay until the reconcile,
+which deletes them unless a restored subscription still covers them.
+
+After `reconnect_failed`, the cache keeps the last state it had, the same as after
+`disconnect_db()`. It is not cleared.
+
+### What ends a session without a reconnect
+
+- **A server message that cannot be parsed.** Nothing from that packet is delivered, every
+  packet after it is dropped unread, and the socket is closed as a protocol violation
+  (`connection_error` with `ERR_INVALID_DATA`). With `auto_reconnect` on this counts as a
+  failed connection, so a reconnect follows.
+- **A close with code 1002, 1003, 1007 or 1008.** These mean the server rejected what
+  this client sent, so a new socket would meet the same close. No reconnect follows: a
+  cycle in progress ends with `reconnect_failed`, then `disconnected` fires. The error log
+  names the code and the server's reason.
+
+A reconnect counts as done only once its subscriptions are restored, not when the new
+socket opens. A server that accepts the socket and then fails the replay every time (a
+protocol violation or a message that cannot be parsed) uses up `max_reconnect_attempts`
+and ends with `reconnect_failed`. A failure after a restore succeeded starts a fresh
+count, since that session was established.
 
 ## Generated `ModuleClient` class
 
@@ -742,7 +767,7 @@ When `true`, the server waits for each transaction to be durably committed befor
 sending its update (read-after-commit). Higher latency, stronger durability.
 
 The default is `true` because that is what the server applies to a v3 connection
-that does not ask, on every supported server version (2.2.0 through 2.16.3). The
+that does not ask, on every supported server version (2.10.2 through 2.16.3). The
 Rust and C# SDKs send the parameter only when the caller sets it, so this is the
 guarantee they connect with too. This SDK always sends the value, so a change to
 the server's default cannot move an existing game's consistency guarantee.
@@ -989,18 +1014,20 @@ class SpacetimeDBConnectionOptions:
     var reconnect_backoff_multiplier: float = 2.0
     var reconnect_jitter_fraction: float = 0.5 # 0.0–1.0
     var reconnect_on_app_resume: bool = true
+    var token_provider: Callable = Callable() # () -> String, may be a coroutine
     var process_while_paused: bool = true
 ```
 
 | Name | Description |
 | --- | --- |
 | `auto_reconnect` | Whether to reconnect automatically on disconnect. Must be `true` for any of the rest to apply. |
-| `max_reconnect_attempts` | Maximum reconnection attempts. `0` for infinite retries. |
+| `max_reconnect_attempts` | Maximum reconnection attempts. `0` for infinite retries. An attempt whose socket opens but whose subscription restore fails still counts. |
 | `reconnect_initial_delay` | Delay before the first reconnection attempt, in seconds. |
 | `reconnect_max_delay` | Maximum delay between reconnection attempts, in seconds. |
 | `reconnect_backoff_multiplier` | Multiplier applied to the delay after each failed attempt. |
 | `reconnect_jitter_fraction` | Random jitter applied to each delay (`0.0` none, `1.0` full delay range). Prevents a thundering herd. |
 | `reconnect_on_app_resume` | When `true` (default), regaining focus fires a pending attempt immediately. |
+| `token_provider` | Called before a reconnect attempt whose token is close to expiry. Returns the new token. Unset (default) means the current token is used. |
 | `process_while_paused` | When `true` (default), the client keeps processing while the scene tree is paused. |
 
 **`reconnect_on_app_resume`.** A backgrounded app's frame loop is throttled (a web tab)
@@ -1008,6 +1035,53 @@ or stopped (a suspended mobile app), which stalls the `SceneTreeTimer` the backo
 on. Without this, a drop that happens off-screen would sit unreconnected well after the
 player is back. The re-fired attempt is scheduled under its own number, so
 `max_reconnect_attempts` still bounds the cycle.
+
+**`token_provider`.** Before each reconnect attempt the client reads the current
+token's `exp` claim. If it is less than max(30 s, 5% of `exp - iat`) away, already past,
+or missing, the client calls the provider and awaits it, so the provider can be a
+coroutine that fetches a token over the network. The new token is used for that attempt
+and every later one, and is saved when `save_token` is on. A token further from expiry is
+used as it is, without calling the provider.
+
+```gdscript
+@onready var _client: SpacetimeDBClient = $SpacetimeDBClient
+@onready var _auth: SpacetimeAuth = $SpacetimeAuth
+
+
+func _ready() -> void:
+    var options: SpacetimeDBConnectionOptions = SpacetimeDBConnectionOptions.new()
+    options.auto_reconnect = true
+    options.token_provider = _fetch_token
+    _client.connect_db("http://127.0.0.1:3000", "my_db", options)
+
+
+# Awaited by the client. An empty return ends the reconnect cycle.
+# _get_steam_ticket() stands in for your GodotSteam ticket fetch; see
+# spacetimeauth-godotsteam.md.
+func _fetch_token() -> String:
+    var ticket: PackedByteArray = await _get_steam_ticket()
+    var fields: Dictionary[String, Variant] = {
+        "steam_ticket": ticket.hex_encode(),
+        "steam_app_id": str(STEAM_APP_ID),
+    }
+    var result: SpacetimeAuthResult = await _auth.exchange(
+        "urn:spacetimeauth:steam-ticket", fields, CLIENT_ID
+    )
+    if not result.error.is_empty():
+        return ""
+    return result.id_token
+```
+
+A provider that returns an empty token, anything that is not a `String`, or a token with
+a control character ends the cycle. There is no further attempt. `connection_error`
+fires with `ERR_UNAUTHORIZED` and the reason, then `reconnect_failed`, then
+`disconnected`. A provider whose object was freed ends the cycle the same way.
+
+The check is proactive only. The provider is not called when the server rejects a token
+mid-session or at the handshake; such an attempt fails like any other and the next
+attempt checks the token again. It is not called by `connect_db()` either. A token
+with no `exp` claim makes every reconnect call the provider. A server that mints tokens
+itself issues them without `exp`, so such a token gets a provider call on every attempt.
 
 **`process_while_paused`.** The socket is polled from `_physics_process`, and that poll
 is what sends the keepalive ping, reads inbound frames and flushes outbound ones. On the

@@ -83,7 +83,7 @@ func _test_the_reconnect_restores_the_same_handle() -> void:
 
 	client._start_reconnection()
 	client._prepare_for_reconnect()
-	client._resubscribe_saved_queries()
+	_land(client)
 
 	_check_b(
 		"the restored handle is the caller's own object",
@@ -94,8 +94,8 @@ func _test_the_reconnect_restores_the_same_handle() -> void:
 	_check_b("it carries a fresh query set id", sub.query_id != id_before, true)
 	_check_b("and it is registered under that id", client.pending_subscriptions.has(sub.query_id), true)
 
-	# The server confirming, which is what SubscribeApplied does to a pending handle.
-	sub.applied.emit()
+	# The server confirming the batch.
+	_answer(client)
 	_check_b("the server's confirmation makes it active again", sub.active, true)
 	_check_i("and `applied` fired a second time", _applies, 2)
 	_check_i("the cycle is finished with it", client._saved_subscriptions.size(), 0)
@@ -112,8 +112,8 @@ func _test_unsubscribe_works_after_a_reconnect() -> void:
 
 	client._start_reconnection()
 	client._prepare_for_reconnect()
-	client._resubscribe_saved_queries()
-	sub.applied.emit()
+	_land(client)
+	_answer(client)
 
 	var conn: _FakeConn = client._connection as _FakeConn
 	conn.sent = 0
@@ -141,14 +141,15 @@ func _test_unsubscribe_while_suspended_cancels_the_restore() -> void:
 
 	var conn: _FakeConn = client._connection as _FakeConn
 	conn.sent = 0
-	client._resubscribe_saved_queries()
-	_check_i("only the query still wanted is re-sent", conn.sent, 1)
+	_land(client)
+	_check_i("one SubscribeBatch goes out", conn.sent, 1)
+	_check_i("carrying only the query still wanted", client._resubscribe_sets.size(), 1)
 	_check_b("the kept handle is restored", kept.suspended, false)
 	_check_b("the cancelled one is not", client.pending_subscriptions.values().has(dropped), false)
 
-	# The cycle completes on a count of settles, so a set it will never send has to be out
-	# of the total too — otherwise only the watchdog ever finishes it.
-	kept.applied.emit()
+	# The answer has to match the sets sent exactly, so the cancelled one must be out of
+	# the batch, or the server's answer would read as a protocol violation.
+	_answer(client)
 	_check_i("and the cycle still completes", client._saved_subscriptions.size(), 0)
 
 	_teardown(client)
@@ -184,7 +185,7 @@ func _test_a_failed_resubscribe_send_ends_the_handle() -> void:
 	client._prepare_for_reconnect()
 	var conn: _FakeConn = client._connection as _FakeConn
 	conn.send_error = ERR_UNAVAILABLE
-	client._resubscribe_saved_queries()
+	_land(client)
 
 	_check_b("a failed re-subscribe ends the handle", sub.ended, true)
 	_check_i("and emits `end`, not just a return code", _ends, 1)
@@ -193,13 +194,10 @@ func _test_a_failed_resubscribe_send_ends_the_handle() -> void:
 	_teardown(client)
 
 
-# The re-subscribe pass emits `end` on a failed send, and that is game code: a handler is
-# free to unsubscribe a sibling still waiting its turn in the same synchronous loop. The
-# loop must notice. Without the re-check, mark_reattached() no-ops on the ended handle
-# (state) while the send still goes out and still registers it (map) — pending_subscriptions
-# ends up holding an ENDED handle under an id that handle does not carry, which nothing can
-# settle and nothing can unsubscribe, and a Subscribe goes out for a query the caller just
-# dropped.
+# A failed batch ends every handle it carried, and `end` is game code: a handler is free to
+# unsubscribe a sibling from the same batch. That sibling has to read as already over —
+# otherwise its unsubscribe() goes out on the socket for a set the server never took, and
+# its `end` fires a second time when the settle reaches it.
 func _test_an_end_handler_can_cancel_a_sibling_mid_loop() -> void:
 	var client: SpacetimeDBClient = _client()
 	var failing: SpacetimeDBSubscription = _live_subscription(client, 7)
@@ -209,18 +207,18 @@ func _test_an_end_handler_can_cancel_a_sibling_mid_loop() -> void:
 	client._prepare_for_reconnect()
 
 	var conn: _FakeConn = client._connection as _FakeConn
-	conn.fail_next = 1 # the first re-send only, so the loop reaches the second item
-	failing.end.connect(func() -> void: sibling.unsubscribe())
+	conn.fail_next = 1 # the batch only; a later Unsubscribe would go through
+	var sibling_unsubscribe: PackedInt64Array = [-1]
+	failing.end.connect(func() -> void: sibling_unsubscribe[0] = sibling.unsubscribe())
 
-	var ids_before: int = client._next_query_id
-	client._resubscribe_saved_queries()
+	_land(client)
 
 	_check_b("the failing handle ended", failing.ended, true)
-	_check_b("its handler's cancellation took effect", sibling.ended, true)
-	_check_i("nothing was registered for the cancelled query", client.pending_subscriptions.size(), 0)
-	_check_i("and no Subscribe went out for it", conn.sent, 0)
-	_check_i("nor was a query id taken for it", client._next_query_id - ids_before, 1)
-	# The cancelled set still counts toward the cycle, or only the watchdog finishes it.
+	_check_b("the sibling ended too", sibling.ended, true)
+	_check_i("its unsubscribe found it over", sibling_unsubscribe[0], ERR_DOES_NOT_EXIST)
+	_check_i("and nothing went out for it", conn.sent, 0)
+	_check_i("each handle ended once", _ends, 2)
+	_check_i("nothing is left registered", client.pending_subscriptions.size(), 0)
 	_check_i("the cycle still completed", client._saved_subscriptions.size(), 0)
 
 	_teardown(client)
@@ -312,6 +310,25 @@ func _live_subscription(client: SpacetimeDBClient, query_id: int) -> SpacetimeDB
 	sub.applied.connect(_on_applied)
 	_applies += 1 # the confirmation above, counted before the listener was attached
 	return sub
+
+
+# What the IdentityToken handler does once the new socket is up: the cycle is over and the
+# reconcile starts.
+func _land(client: SpacetimeDBClient) -> void:
+	client._reconnect_state = SpacetimeDBClient._ReconnectState.IDLE
+	client._reconnect_attempt = 0
+	client._resubscribe_saved_queries()
+
+
+# The server's SubscribeBatchApplied for the outstanding batch, every set applied empty.
+func _answer(client: SpacetimeDBClient) -> void:
+	var message: SubscribeBatchAppliedMessage = SubscribeBatchAppliedMessage.new()
+	message.request_id = client._resubscribe_request_id
+	for query_id: int in client._resubscribe_sets:
+		var result: SubscribeSetResultData = SubscribeSetResultData.new()
+		result.query_set_id = query_id
+		message.results.append(result)
+	client._handle_parsed_message(message)
 
 
 func _teardown(client: SpacetimeDBClient) -> void:

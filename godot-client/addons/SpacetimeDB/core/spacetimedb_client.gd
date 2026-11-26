@@ -116,6 +116,15 @@ var _thread_should_exit: bool = false
 ## packets parsed under a prior session are discarded instead of being applied to
 ## the fresh post-reconnect database.
 var _session_epoch: int = 0
+## Why this session's inbound stream was abandoned, or empty while it is sound. Set by
+## whichever thread parses (the worker, under _packet_mutex, when threading is on) and acted
+## on by the main thread, which owns the socket: see [method _close_on_parse_fault]. Cleared
+## only at a session boundary, by [method _drop_dead_session_traffic], so every packet that
+## arrives after the bad one is dropped unparsed until then.
+var _parse_fault: String = ""
+## Main-thread only. Set once [method _close_on_parse_fault] has dropped the socket for the
+## current fault, so the close is made once rather than every frame until the boundary.
+var _parse_fault_closed: bool = false
 # Per-frame apply drain limits: time budget (primary) + message ceiling
 # (bounded-loop backstop). Set from SpacetimeDBConnectionOptions in connect_db.
 # _frame_budget_us is mutated by _auto_tune_budget when auto-tuning is on.
@@ -135,8 +144,9 @@ const _MAX_PENDING_CALLS: int = SpacetimeDBStats.MAX_PENDING
 ## Cap on subscriptions awaiting their first [code]SubscribeApplied[/code].
 ##
 ## Runaway backstop, not a working limit: it counts subscribes IN FLIGHT, so a game
-## issuing hundreds in one frame stays well under it, and the reconnect's resubscribe
-## loop is exempt (see [method _subscribe_uncapped]). It matters because a never-applied
+## issuing hundreds in one frame stays well under it, and the reconnect's SubscribeBatch
+## does not pass through it (it restores what the server already acknowledged, not a
+## backlog). It matters because a never-applied
 ## subscription is SAVED at the next drop and re-sent on the reconnect, so a server that
 ## stops answering Subscribe turns into an unbounded outbound burst when the socket breaks
 ## (measured, `tests/_probe_long_session.gd`: 200 unanswered subscribes produced 200
@@ -175,6 +185,11 @@ var _local_db: LocalDatabase
 var _rest_api: SpacetimeDBRestAPI # Optional, for token/REST calls
 # --- State ---
 var _connection_id: PackedByteArray
+# The logical session this client object holds on the server, as 32 hex characters.
+# Drawn once per connect_db() and kept across that session's automatic reconnects, so the
+# server can refuse a reconnect that would overlap the socket it replaces (close 4000).
+# Sent only while auto_reconnect is on — see _socket_session_id.
+var _session_id: String = ""
 var _identity: PackedByteArray
 var _token: String
 var _is_initialized: bool = false
@@ -219,12 +234,29 @@ const DEFAULT_RECONNECT_INITIAL_DELAY: float = 1.0
 ## Ceiling the escalating backoff saturates at. See
 ## [member SpacetimeDBConnectionOptions.reconnect_max_delay].
 const DEFAULT_RECONNECT_MAX_DELAY: float = 30.0
+
+## How many session-busy refusals ([constant SpacetimeDBConnection.CLOSE_SESSION_BUSY]) one
+## reconnect cycle answers for free: retried at the initial delay and not counted against
+## [member SpacetimeDBConnectionOptions.max_reconnect_attempts]. The server only refuses
+## while the socket this one replaces is still being torn down on its side, which takes
+## as long as that socket's [code]client_disconnected[/code] reducer — normally well under
+## one initial delay, so 10 retries (about 10 seconds at the default delay) is generous.
+## Past the cap a refusal counts as an ordinary failed attempt: the backoff escalates and
+## max_reconnect_attempts bounds the cycle, so a session that stays busy (a second process
+## sharing the token and session, say) still ends rather than retrying forever.
+const MAX_SESSION_BUSY_RETRIES: int = 10
 ## Per-attempt multiplier. See
 ## [member SpacetimeDBConnectionOptions.reconnect_backoff_multiplier].
 const DEFAULT_BACKOFF_MULTIPLIER: float = 2.0
 ## Attempts before the cycle gives up. See
 ## [member SpacetimeDBConnectionOptions.max_reconnect_attempts].
 const DEFAULT_MAX_RECONNECT_ATTEMPTS: int = 10
+## Least time before a token's [code]exp[/code] at which a reconnect asks
+## [member SpacetimeDBConnectionOptions.token_provider] for a new one, in seconds.
+const TOKEN_REFRESH_MIN_MARGIN_SECONDS: float = 30.0
+## Share of a token's lifetime ([code]exp - iat[/code]) that a reconnect treats as too close
+## to expiry, when that is more than [constant TOKEN_REFRESH_MIN_MARGIN_SECONDS].
+const TOKEN_REFRESH_LIFETIME_FRACTION: float = 0.05
 ## Share of the delay used as random jitter. See
 ## [member SpacetimeDBConnectionOptions.reconnect_jitter_fraction]. Unlike its siblings this
 ## is not a fallback — the resolver clamps rather than refusing — but the member default has
@@ -265,15 +297,23 @@ var _max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS
 ## the socket dropped from a local freeze, not a network fault). Consumed on the
 ## first scheduled attempt.
 var _reconnect_immediate: bool = false
+## Set when the next reconnect answers a session-busy refusal
+## ([constant SpacetimeDBConnection.CLOSE_SESSION_BUSY]): that attempt waits the initial
+## delay rather than the escalated one. Consumed on the first scheduled attempt, like
+## [member _reconnect_immediate].
+var _reconnect_session_busy: bool = false
+## Session-busy refusals answered in the current reconnect cycle — see
+## [constant MAX_SESSION_BUSY_RETRIES]. Reset when a cycle starts.
+var _session_busy_retries: int = 0
 # `disconnected` means "terminally disconnected" (not a transient drop that
 # auto-reconnect recovers), so it must fire at most once per session. Two pairs would
 # otherwise fire it twice: a server close plus a cleanup disconnect_db(), and an exhausted
 # reconnect plus disconnect_db(). Re-armed on a fresh connect.
 var _disconnected_emitted: bool = false
-## Watchdog bound for a resubscribe cycle: if the server accepts the Subscribe but
-## never delivers a settle (SubscribeApplied/SubscriptionError) for some query set,
-## the cycle would never complete and `reconnected` would never fire. After this it
-## is force-completed (epoch-guarded, so a finished/superseded cycle is a no-op).
+## Watchdog bound for a resubscribe cycle: if the server accepts the reconnect's
+## SubscribeBatch but never answers it, the cycle would never complete and `reconnected`
+## would never fire. After this it is force-completed (epoch-guarded, so a
+## finished/superseded cycle is a no-op).
 const RESUBSCRIBE_TIMEOUT_SECONDS: float = 15.0
 
 ## Key the token store keeps a pre-store token under — the single bare token a file
@@ -310,19 +350,30 @@ var _subscribe_backlog_reported: bool = false
 ## How many times a backlog has been reported this session. Diagnostics only; it exists so
 ## a test can pin that a repeat is suppressed, which the flag alone cannot show.
 var _subscribe_backlog_reports: int = 0
-## Bumped on every new reconnect cycle (start/cancel/resubscribe). A resubscribe
-## settle-callback captures the epoch live when it was armed and bails if the epoch
-## has since moved on, so a superseded cycle's late `applied`/`end` can't clear the
-## saved queries or spuriously emit `reconnected` on a cycle that already moved past it.
+## Bumped on every new reconnect cycle (start/cancel/resubscribe). The watchdog and the
+## batch answer capture the epoch the batch went out under and bail if it has since moved
+## on, so a superseded cycle can't clear the saved queries or spuriously emit
+## `reconnected` on a cycle that already moved past it.
 var _resubscribe_epoch: int = 0
+## The reconnect's outstanding SubscribeBatch: its request id (-1 when none), the epoch it
+## went out under, and the handles it re-registered, by query set id. Its answer is checked
+## against these before anything is applied. Cleared when the answer arrives and at every
+## session boundary (see [method _take_live_subscriptions]).
+var _resubscribe_request_id: int = -1
+var _resubscribe_request_epoch: int = 0
+var _resubscribe_sets: Dictionary[int, SpacetimeDBSubscription] = { }
 ## Bumped by every call that states what the caller wants the connection to be doing —
 ## [method connect_db] and [method disconnect_db]. [method connect_db] captures it before
 ## reporting its cache wipe, which is game code, and stops if the number has moved by the
 ## time the wipe returns: a listener that disconnected or started its own connect has
 ## replaced this call's intent. [method _attempt_reconnect] makes the same re-check against
-## [member _reconnect_state] after its own wipe.
+## [member _reconnect_state] after the subscription ends its preparation reports.
 var _session_intent: int = 0
 var _reconnect_timer: SceneTreeTimer = null
+## Bumped each time an attempt is scheduled. An attempt that awaits the token provider
+## compares it on the way back: a different number means another attempt has been
+## scheduled since, so this one has been superseded.
+var _reconnect_attempt_serial: int = 0
 ## Set when a reconnect cycle was in flight as the client left the tree, so
 ## [method _enter_tree] can pick it up again. See [method _suspend_reconnection].
 var _reconnect_suspended: bool = false
@@ -356,6 +407,7 @@ func _apply_process_mode() -> void:
 
 # --- WebSocket Message Handling ---
 func _physics_process(_delta: float) -> void:
+	_close_on_parse_fault()
 	_process_results_asynchronously()
 
 
@@ -550,6 +602,8 @@ func connect_db(
 	# as deleted and re-arms database_initialized.
 	_session_intent += 1
 	var intent: int = _session_intent
+	# A new logical session, so a new id; the reconnects of this one reuse it.
+	_session_id = _generate_connection_id()
 	# The reconnect cycle _cancel_reconnection just abandoned may have been carrying
 	# handles. They end here rather than there so their `end` signals fall under the same
 	# countermand check as the wipe below — see _cancel_reconnection.
@@ -565,7 +619,7 @@ func connect_db(
 	# Reporting the wipe runs game code, so a listener may have called disconnect_db() or
 	# started its own connect_db(). Either supersedes this call: finishing would open a
 	# socket the listener asked to close, or clobber the newer call's host and options.
-	# Same countermand check _attempt_reconnect makes after its wipe.
+	# Same countermand check _attempt_reconnect makes after its preparation.
 	if intent != _session_intent:
 		print_log(
 			"SpacetimeDBClient: connect_db superseded while the wipe and subscription "
@@ -737,36 +791,6 @@ func subscribe(queries: PackedStringArray) -> SpacetimeDBSubscription:
 		_report_subscribe_backlog()
 		return SpacetimeDBSubscription.fail(ERR_BUSY)
 	_subscribe_backlog_reported = false
-	return _subscribe_uncapped(queries)
-
-
-# The subscribe path without the pending cap, which only the reconnect's resubscribe loop
-# uses. That loop issues every saved set in one synchronous pass, so pending climbs to the
-# whole set by construction and the cap would refuse the tail of the game's OWN
-# previously-acknowledged state (measured: 4116 live subscriptions, 20 query sets gone,
-# `reconnected` emitted as if it had worked). What it re-sends is bounded by what the
-# server already acknowledged, which is not the backlog the cap exists to catch.
-#
-# A parameter rather than a flag on the client: a flag would exempt whatever ran while it
-# was set (the loop reaches game code through `reconnected`), and a fault inside the loop
-# would leave it exempt for the rest of the session.
-#
-# `existing` is the suspended handle a reconnect is restoring. Passing it re-registers the
-# caller's own object under the new query set id, so the handle the game has held since
-# before the drop goes on working — including its unsubscribe. Every return path hands
-# `existing` back when it is given, failures included.
-func _subscribe_uncapped(
-		queries: PackedStringArray,
-		existing: SpacetimeDBSubscription = null,
-) -> SpacetimeDBSubscription:
-	# A handle that ended between being chosen for restore and reaching this call — the
-	# caller unsubscribed it from inside an `end` handler the same loop emitted. Refused
-	# before an id is taken or anything is sent: mark_reattached() below no-ops on an ended
-	# handle but the send does not, which would leave pending_subscriptions holding an
-	# ENDED handle under an id it does not carry, and nothing can settle or unsubscribe
-	# that.
-	if existing != null and existing.ended:
-		return existing
 
 	# 1. Generate a request ID
 	var request_id: int = _next_request_id
@@ -787,19 +811,14 @@ func _subscribe_uncapped(
 			"SpacetimeDBClient: Failed to serialize Subscribe message: %s"
 			% _serializer.get_last_error()
 		)
-		if existing != null:
-			existing.error = ERR_PARSE_ERROR
-			existing.mark_ended()
-			return existing
 		return SpacetimeDBSubscription.fail(ERR_PARSE_ERROR)
 
-	# 4. Create subscription handle, or re-register the one a reconnect is restoring
-	var subscription: SpacetimeDBSubscription
-	if existing != null:
-		existing.mark_reattached(query_id)
-		subscription = existing
-	else:
-		subscription = SpacetimeDBSubscription.create(self, query_id, queries)
+	# 4. Create subscription handle
+	var subscription: SpacetimeDBSubscription = SpacetimeDBSubscription.create(
+		self,
+		query_id,
+		queries,
+	)
 
 	# 5. Send the binary message via WebSocket
 	if _connection and _connection.is_websocket_active():
@@ -1277,6 +1296,15 @@ func _generate_connection_id() -> String:
 	return random_bytes.hex_encode() # Return as hex string
 
 
+# The session id for the socket about to open: the session's own id while auto_reconnect
+# is on, empty otherwise. Read at each open, like the rest of the options, so the official
+# SDKs' rule holds — a client that never reconnects never claims a server session.
+func _socket_session_id() -> String:
+	if connection_options and connection_options.auto_reconnect:
+		return _session_id
+	return ""
+
+
 func _on_token_received(received_token: String) -> void:
 	# Every token this client connects with funnels through here — from the options, from
 	# token_save_path, or from the REST identity endpoint — and none of the three is
@@ -1290,16 +1318,22 @@ func _on_token_received(received_token: String) -> void:
 		return
 
 	print_log("SpacetimeDBClient: Token acquired.")
-	self._token = received_token
-	if save_token:
-		_save_token(received_token)
+	_store_token(received_token)
 	var conn_id: String = _generate_connection_id()
-	# Pass token to components that need it
 	_connection.set_token(self._token)
-	_rest_api.set_token(self._token) # REST API might also need it
 
 	# Now attempt to connect WebSocket
-	_connection.connect_to_database(base_url, database_name, conn_id)
+	_connection.connect_to_database(base_url, database_name, conn_id, _socket_session_id())
+
+
+# Makes [param token] the one this client connects with: kept, persisted when
+# save_token is on, and handed to the REST API. The caller has already checked it.
+func _store_token(token: String) -> void:
+	self._token = token
+	if save_token:
+		_save_token(token)
+	if _rest_api:
+		_rest_api.set_token(token) # REST API might also need it
 
 
 func _on_token_request_failed(error_code: int, _response_body: String) -> void:
@@ -1543,8 +1577,12 @@ func _on_websocket_message_received(raw_bytes: PackedByteArray) -> void:
 		_packet_queue.append(raw_bytes)
 		_packet_mutex.unlock()
 		_packet_semaphore.post()
-	else:
-		_result_queue.append_array(_parse_packet_and_get_resource(_decompress_and_parse(raw_bytes)))
+	elif _parse_fault.is_empty():
+		var parsed: Array[SpacetimeDBServerMessage] = _parse_packet_and_get_resource(
+			_decompress_and_parse(raw_bytes)
+		)
+		_parse_fault = _last_parse_error()
+		_result_queue.append_array(parsed)
 
 
 func _thread_loop() -> void:
@@ -1556,7 +1594,10 @@ func _thread_loop() -> void:
 
 		# Drain all pending packets in one lock acquisition
 		_packet_mutex.lock()
-		if _packet_queue.is_empty():
+		# A stream already abandoned stays abandoned until the session boundary clears the
+		# fault: what follows a bad message is not worth parsing.
+		if _packet_queue.is_empty() or not _parse_fault.is_empty():
+			_packet_queue.clear()
 			_packet_mutex.unlock()
 			continue
 		var local_packets: Array[PackedByteArray] = []
@@ -1573,28 +1614,48 @@ func _thread_loop() -> void:
 			_deserializer.reset_stream_state()
 			last_epoch = batch_epoch
 
-		# Parse all packets without holding any lock
-		var local_results: Array[SpacetimeDBServerMessage] = []
-		for packet: PackedByteArray in local_packets:
-			var payload: PackedByteArray = _decompress_and_parse(packet)
-			local_results.append_array(_parse_packet_and_get_resource(payload))
+		_parse_packet_batch(local_packets, batch_epoch)
 
-		# Flush parsed results in one lock acquisition — but only if a reconnect
-		# hasn't bumped the session epoch while we were parsing, otherwise these
-		# results belong to a dead session and must not touch the fresh database.
-		if not local_results.is_empty():
-			_packet_mutex.lock()
-			var still_current: bool = batch_epoch == _session_epoch
-			_packet_mutex.unlock()
-			if still_current:
-				_result_mutex.lock()
-				_result_queue.append_array(local_results)
-				_result_mutex.unlock()
-			else:
-				print_log(
-					"SpacetimeDBClient: discarded %d stale results from a prior session."
-					% local_results.size()
-				)
+
+# The worker's parse of one pulled batch, on the worker thread. Split out of _thread_loop
+# so the tests can run it synchronously against a chosen epoch: whether a fault or a result
+# from a session that ended mid-parse is kept is decided here, and a live thread cannot be
+# made to lose that race on demand.
+func _parse_packet_batch(local_packets: Array[PackedByteArray], batch_epoch: int) -> void:
+	# Parse all packets without holding any lock
+	var local_results: Array[SpacetimeDBServerMessage] = []
+	var fault: String = ""
+	for packet: PackedByteArray in local_packets:
+		var payload: PackedByteArray = _decompress_and_parse(packet)
+		local_results.append_array(_parse_packet_and_get_resource(payload))
+		fault = _last_parse_error()
+		if not fault.is_empty():
+			break
+
+	# Recorded for the main thread, which owns the socket and drops it. Only for the
+	# session the packet belongs to: a fault from a dead session has nothing to close.
+	if not fault.is_empty():
+		_packet_mutex.lock()
+		if batch_epoch == _session_epoch and _parse_fault.is_empty():
+			_parse_fault = fault
+		_packet_mutex.unlock()
+
+	# Flush parsed results in one lock acquisition — but only if a reconnect
+	# hasn't bumped the session epoch while we were parsing, otherwise these
+	# results belong to a dead session and must not touch the fresh database.
+	if not local_results.is_empty():
+		_packet_mutex.lock()
+		var still_current: bool = batch_epoch == _session_epoch
+		_packet_mutex.unlock()
+		if still_current:
+			_result_mutex.lock()
+			_result_queue.append_array(local_results)
+			_result_mutex.unlock()
+		else:
+			print_log(
+				"SpacetimeDBClient: discarded %d stale results from a prior session."
+				% local_results.size()
+			)
 
 
 func _process_results_asynchronously() -> void:
@@ -1978,15 +2039,58 @@ func _parse_packet_and_get_resource(bsatn_bytes: PackedByteArray) -> Array[Space
 		bsatn_bytes
 	)
 
-	if _deserializer.has_error():
-		printerr(
-			"SpacetimeDBClient: Failed to parse BSATN packet: ",
-			_deserializer.get_last_error(),
+	if not _deserializer.has_error():
+		return result
+	# Nothing from the packet is delivered, and the stream is abandoned: the caller reads
+	# the error (_last_parse_error, which logs it) and records it as the session's fault,
+	# and the main thread drops the socket (_close_on_parse_fault). The messages
+	# read before the failure are whole, but a server that sent one message this client
+	# cannot read has already broken the stream the mirror is built from — the bad message
+	# may have been the transaction that the next ones build on, so applying what surrounds
+	# it would leave the mirror wrong with nothing to say so. The packets parsed before this
+	# one were delivered whole and stay delivered.
+	#
+	# With auto-reconnect on, the drop is an ordinary failed connection and the cycle that
+	# follows is bounded by SpacetimeDBConnectionOptions.max_reconnect_attempts. The attempt
+	# count only resets once a reconnect's resubscribe has settled (_finish_resubscribe),
+	# not when the new socket's identity arrives, so a server that fails the same parse on
+	# every replay exhausts the cycle and reports reconnect_failed instead of reconnecting
+	# forever. A fault that arrives after a replay settled starts a fresh count: that
+	# session was established, and the next cycle is a new drop.
+	return []
+
+
+## The parse error the last [method _parse_packet_and_get_resource] call left, or empty.
+## Logs and consumes it, so call it once per parse. Read on the thread that made the call:
+## the deserializer belongs to it.
+func _last_parse_error() -> String:
+	if _deserializer == null or not _deserializer.has_error():
+		return ""
+	var error: String = _deserializer.get_last_error()
+	printerr("SpacetimeDBClient: Failed to parse BSATN packet: ", error)
+	return error
+
+
+## Drops the socket once the parser has abandoned the inbound stream (see
+## [member _parse_fault]). Main thread only: the worker cannot touch the socket, so it
+## records the fault and this picks it up on the next physics frame.
+func _close_on_parse_fault() -> void:
+	if _parse_fault_closed:
+		return
+	var fault: String = _parse_fault
+	if use_threading:
+		if _packet_mutex == null:
+			return
+		_packet_mutex.lock()
+		fault = _parse_fault
+		_packet_mutex.unlock()
+	if fault.is_empty():
+		return
+	_parse_fault_closed = true
+	if _connection != null:
+		_connection.abort_protocol_violation(
+			"a server message could not be parsed (%s)" % fault
 		)
-	# Whatever parsed is still delivered. A packet carries several complete server
-	# messages and the failure is at one of them; the ones read before it are whole and
-	# ordered, so dropping them would discard uncorrupted updates on top of the loss.
-	return result
 
 
 func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
@@ -2122,6 +2226,9 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 			pending_subscriptions.erase(qid)
 			current_subscriptions[qid] = sub
 			sub.applied.emit()
+	elif message is SubscribeBatchAppliedMessage:
+		_stats.record_response(message.request_id)
+		_on_subscribe_batch_applied(message)
 	elif message is SubscriptionErrorMessage:
 		printerr("SpacetimeDBClient: Subscription error: %s" % message.error_message)
 		# The error IS the response to that subscribe, so it has to retire the send. The id
@@ -2215,11 +2322,13 @@ func _handle_parsed_message(message: SpacetimeDBServerMessage) -> void:
 				% _saved_subscriptions.size()
 			)
 			_reconnect_state = _ReconnectState.IDLE
-			_reconnect_attempt = 0
-			if _saved_subscriptions.is_empty():
-				reconnected.emit()
-			else:
-				_resubscribe_saved_queries()
+			# _reconnect_attempt is NOT reset here. A socket that opens and then fails its
+			# replay (a protocol violation, a message that cannot be parsed) has not
+			# reconnected anything, and resetting on the identity would let a server that
+			# does that every time cycle without bound. _finish_resubscribe resets it once
+			# the replay has settled; until then the next drop carries the count on.
+			# Even with nothing saved: the reconcile is what drops the old session's rows.
+			_resubscribe_saved_queries()
 	else:
 		print_log("SpacetimeDBClient: Unhandled message type: " + message.get_class())
 
@@ -2270,11 +2379,33 @@ func _on_connection_disconnected() -> void:
 	# instead of self-stamping TIMEOUT. The request ids won't survive the reconnect.
 	_fail_pending_calls_disconnected()
 
+	# A close that says the server rejected what this client sent is not retried: a new
+	# socket would send the same bytes and meet the same close, so a cycle would only spend
+	# its attempts on it. The connection has already reported the code (close_diagnostic).
+	if _connection != null and SpacetimeDBConnection.is_terminal_close(_connection.last_close_code):
+		print_log(
+			"SpacetimeDBClient: close code %d is terminal, not reconnecting."
+			% _connection.last_close_code
+		)
+		_give_up_reconnection(_reconnect_state == _ReconnectState.RECONNECTING)
+		return
+
 	# A graceful server close (normal WS code) during a reconnect attempt routes here, not
 	# through _on_connection_error (code -1 only). Without this branch
 	# _start_reconnection() early-returns on the RECONNECTING state and the machine wedges
 	# — no timer, no reconnect_failed.
 	if _reconnect_state == _ReconnectState.RECONNECTING:
+		if _is_free_session_busy_retry():
+			_session_busy_retries += 1
+			print_log(
+				"SpacetimeDBClient: Reconnect attempt %d refused, session busy (4000) — retry %d/%d at the initial delay, not counted."
+				% [_reconnect_attempt, _session_busy_retries, MAX_SESSION_BUSY_RETRIES]
+			)
+			# Re-scheduled under its own number, the way _on_app_resumed does it.
+			_reconnect_attempt = maxi(_reconnect_attempt - 1, 0)
+			_reconnect_session_busy = true
+			_schedule_next_reconnect_attempt()
+			return
 		print_log(
 			"SpacetimeDBClient: Reconnect attempt %d closed by server, scheduling next."
 			% _reconnect_attempt
@@ -2285,6 +2416,33 @@ func _on_connection_disconnected() -> void:
 		_start_reconnection()
 	else:
 		_emit_disconnected()
+
+
+## Ends the session for good: no further attempt, the saved handles end, and the game hears
+## [signal reconnect_failed] (when [param cycle_failed], i.e. a cycle was running) and then
+## [signal disconnected]. Shared by an exhausted cycle and a terminal close.
+func _give_up_reconnection(cycle_failed: bool) -> void:
+	_reconnect_state = _ReconnectState.IDLE
+	_reconnect_attempt = 0
+	# Nothing will restore these now, so they end rather than staying suspended — a
+	# handle that reads neither active nor ended is the one shape a caller cannot act
+	# on.
+	_end_saved_subscriptions()
+	if cycle_failed:
+		reconnect_failed.emit()
+	_emit_disconnected()
+
+
+## True when the close that just ended a reconnect attempt was a session-busy refusal the
+## cycle still answers for free (see [constant MAX_SESSION_BUSY_RETRIES]). Only a reconnect
+## attempt gets here: the server refuses right after the upgrade, before the identity
+## token, so the cycle is still RECONNECTING.
+func _is_free_session_busy_retry() -> bool:
+	if _connection == null:
+		return false
+	if _connection.last_close_code != SpacetimeDBConnection.CLOSE_SESSION_BUSY:
+		return false
+	return _session_busy_retries < MAX_SESSION_BUSY_RETRIES
 
 
 func _on_connection_error(code: int, reason: String) -> void:
@@ -2338,8 +2496,12 @@ func _start_reconnection(immediate: bool = false) -> void:
 	_resolve_reconnect_pacing(connection_options)
 
 	_reconnect_state = _ReconnectState.RECONNECTING
-	_reconnect_attempt = 0
+	# Not reset: it is already 0 unless the last cycle's socket opened but its replay never
+	# settled, and that count is the one this cycle has to go on from (see the IdentityToken
+	# handler). Every path that ends a cycle — settled, cancelled, exhausted — zeroes it.
 	_reconnect_immediate = immediate
+	_reconnect_session_busy = false
+	_session_busy_retries = 0
 	# Supersede any in-flight resubscribe cycle so its late settles bail (see _resubscribe_epoch).
 	_resubscribe_epoch += 1
 
@@ -2379,19 +2541,15 @@ func _schedule_next_reconnect_attempt() -> void:
 
 	if max_attempts > 0 and _reconnect_attempt >= max_attempts:
 		print_log("SpacetimeDBClient: All %d reconnect attempts exhausted." % max_attempts)
-		_reconnect_state = _ReconnectState.IDLE
-		_reconnect_attempt = 0
-		# Nothing will restore these now, so they end rather than staying suspended — a
-		# handle that reads neither active nor ended is the one shape a caller cannot act
-		# on.
-		_end_saved_subscriptions()
-		reconnect_failed.emit()
-		_emit_disconnected()
+		_give_up_reconnection(true)
 		return
 
 	_reconnect_attempt += 1
-	var backoff: float = 0.0 if _reconnect_immediate else _calculate_backoff(_reconnect_attempt)
+	_reconnect_attempt_serial += 1
+	var backoff_attempt: int = 1 if _reconnect_session_busy else _reconnect_attempt
+	var backoff: float = 0.0 if _reconnect_immediate else _calculate_backoff(backoff_attempt)
 	_reconnect_immediate = false # one-shot: only the first stall-induced attempt skips backoff
+	_reconnect_session_busy = false # one-shot, the same way
 	var max_str: String = str(max_attempts) if max_attempts > 0 else "inf"
 	print_log(
 		"SpacetimeDBClient: Reconnect attempt %d/%s in %.2f seconds."
@@ -2477,6 +2635,19 @@ func _attempt_reconnect() -> void:
 	if _reconnect_state != _ReconnectState.RECONNECTING:
 		return
 
+	var provider: Callable = Callable()
+	if connection_options:
+		provider = connection_options.token_provider
+	if not provider.is_null() and token_needs_refresh(_token, Time.get_unix_time_from_system()):
+		var serial: int = _reconnect_attempt_serial
+		var refreshed: bool = await _refresh_token_from_provider(provider)
+		if not _reconnect_attempt_still_current(serial):
+			print_log("SpacetimeDBClient: Reconnect superseded while the token was refreshed.")
+			return
+		if not refreshed:
+			_give_up_reconnection(true)
+			return
+
 	if not _connection or _token.is_empty():
 		printerr("SpacetimeDBClient: Cannot reconnect — missing connection or token.")
 		_reconnect_state = _ReconnectState.IDLE
@@ -2486,36 +2657,121 @@ func _attempt_reconnect() -> void:
 
 	_prepare_for_reconnect()
 
-	# Re-checked because _prepare_for_reconnect reports the cache wipe to row listeners,
-	# and a listener is game code: one that calls disconnect_db() has cancelled this
+	# Re-checked because _prepare_for_reconnect emits `end` on handles that are not coming
+	# back, and a listener is game code: one that calls disconnect_db() has cancelled this
 	# cycle, and opening the socket anyway would be reconnecting against the caller's
 	# wishes.
 	if _reconnect_state != _ReconnectState.RECONNECTING:
-		print_log("SpacetimeDBClient: Reconnect cancelled while the cache wipe was reported.")
+		print_log("SpacetimeDBClient: Reconnect cancelled while subscription ends were reported.")
 		return
 
 	var conn_id: String = _generate_connection_id()
 	_connection.set_token(_token)
 
 	print_log("SpacetimeDBClient: Attempting reconnect (attempt %d)." % _reconnect_attempt)
-	_connection.connect_to_database(base_url, database_name, conn_id)
+	_connection.connect_to_database(base_url, database_name, conn_id, _socket_session_id())
+
+
+## True when [param token] should be replaced before it is connected with at
+## [param now_unix] (seconds since the epoch): its [code]exp[/code] claim is less than
+## max([constant TOKEN_REFRESH_MIN_MARGIN_SECONDS], [constant TOKEN_REFRESH_LIFETIME_FRACTION]
+## of [code]exp - iat[/code]) away, or already past. A token with no readable
+## [code]exp[/code] (not a JWT, or one that never expires) also answers true: nothing says
+## it is still good.
+static func token_needs_refresh(token: String, now_unix: float) -> bool:
+	var claims: Dictionary = token_claims(token)
+	var expiry: Variant = claims.get("exp")
+	if not (expiry is float or expiry is int):
+		return true
+	var margin: float = TOKEN_REFRESH_MIN_MARGIN_SECONDS
+	var iat: Variant = claims.get("iat")
+	if (iat is float or iat is int) and float(expiry) > float(iat):
+		margin = maxf(margin, TOKEN_REFRESH_LIFETIME_FRACTION * (float(expiry) - float(iat)))
+	return now_unix >= float(expiry) - margin
+
+
+## The claims of a JWT, decoded from its payload segment without checking the signature
+## (the server does that). Empty when [param token] is not a three-segment JWT whose payload
+## is base64url JSON naming an object.
+static func token_claims(token: String) -> Dictionary:
+	var parts: PackedStringArray = token.split(".")
+	if parts.size() != 3:
+		return {}
+	var segment: String = parts[1]
+	# Checked first: Marshalls logs an engine error for text that is not base64.
+	for i: int in segment.length():
+		var c: int = segment.unicode_at(i)
+		var is_alnum: bool = (
+			(c >= 0x30 and c <= 0x39) or (c >= 0x41 and c <= 0x5A) or (c >= 0x61 and c <= 0x7A)
+		)
+		if not is_alnum and c != 0x2D and c != 0x5F:
+			return {}
+	if segment.is_empty() or segment.length() % 4 == 1:
+		return {}
+	segment = segment.replace("-", "+").replace("_", "/")
+	segment += "=".repeat((4 - segment.length() % 4) % 4)
+	var json: JSON = JSON.new()
+	if json.parse(Marshalls.base64_to_raw(segment).get_string_from_utf8()) != OK:
+		return {}
+	if not json.data is Dictionary:
+		return {}
+	return json.data
+
+
+# Asks the provider for a new token and adopts it. False, with the reason reported, when it
+# gave nothing usable: no String, an empty one, or one token_reject_reason refuses. The
+# provider may be a coroutine; awaiting a plain return value just yields it.
+func _refresh_token_from_provider(provider: Callable) -> bool:
+	if not provider.is_valid():
+		_report_token_provider_failure("it is no longer valid (its object was freed)")
+		return false
+	print_log("SpacetimeDBClient: Asking token_provider for a new token before reconnecting.")
+	var result: Variant = await provider.call()
+	if not result is String:
+		_report_token_provider_failure("it returned %s, not a String" % type_string(typeof(result)))
+		return false
+	var reason: String = SpacetimeDBConnection.token_reject_reason(result)
+	if not reason.is_empty():
+		_report_token_provider_failure("its token was refused: %s" % reason)
+		return false
+	_store_token(result)
+	return true
+
+
+func _report_token_provider_failure(reason: String) -> void:
+	push_error("SpacetimeDBClient: token_provider failed — %s. Not reconnecting." % reason)
+	connection_error.emit(ERR_UNAUTHORIZED, "Token provider failed: %s" % reason)
+
+
+# Whether the attempt that read [param serial] before an await is still the one to run: the
+# cycle is still going, no later attempt was scheduled, and the client is still in the tree
+# (one that left it mid-await is suspended, and its re-entry schedules a fresh attempt).
+func _reconnect_attempt_still_current(serial: int) -> bool:
+	return (
+		_reconnect_state == _ReconnectState.RECONNECTING
+		and serial == _reconnect_attempt_serial
+		and is_inside_tree()
+	)
 
 
 # Everything the dying session left in flight, dropped so none of it lands in the mirror
 # the next session is about to fill: packets not yet parsed, results parsed but not
 # drained, the batch a frame was midway through, and the parse state of the packet the
-# socket died partway into. Runs no game code, so a caller can call it before its own wipe
-# (which does) and know the queues are already settled.
+# socket died partway into. Runs no game code, so a caller can call it before anything
+# that does (a wipe, a subscription end) and know the queues are already settled.
 #
 # Both session boundaries need this — the automatic one in _prepare_for_reconnect and the
 # manual one in connect_db.
 func _drop_dead_session_traffic() -> void:
+	# The next session's stream starts sound, whichever thread parses it.
+	_parse_fault_closed = false
 	if use_threading and _packet_mutex:
 		_packet_mutex.lock()
 		# Bump the epoch under the same lock the worker drains under, so any batch
 		# it has already pulled will fail its post-parse epoch check and be dropped.
 		_session_epoch += 1
 		_packet_queue.clear()
+		_parse_fault = ""
 		_packet_mutex.unlock()
 
 		_result_mutex.lock()
@@ -2529,6 +2785,7 @@ func _drop_dead_session_traffic() -> void:
 		# worker's epoch check prevents on the threaded side. The deserializer reset is
 		# belt and braces — the parse loop clears its error at every message.
 		_result_queue.clear()
+		_parse_fault = ""
 		if _deserializer:
 			_deserializer.reset_stream_state()
 
@@ -2553,15 +2810,13 @@ func _prepare_for_reconnect() -> void:
 
 	_drop_dead_session_traffic()
 
-	# The cache wipe goes LAST, because it is the step most likely to be observed from game
-	# code: clear_local_db reports every cached row as deleted, and a listener that reads
-	# client state (or calls back in) has to see the finished reconnect-prep state.
-	# Reporting the rows is the point — the resubscribe only re-delivers rows that still
-	# exist, so a row deleted server-side while the client was away would otherwise leave a
-	# consumer keyed by primary key holding what it spawned for that row for the rest of
-	# the session. Rows that do come back arrive as inserts again.
+	# The rows are NOT wiped. They stay in the mirror until the new session's snapshot
+	# arrives, and are reconciled against it then (see _settle_reconnect): a row still
+	# there fires nothing, a changed one fires one update, and only a row that is really
+	# gone fires a delete. What ends here is the old session's per-query membership, since
+	# query ids restart at 0 above, and any batch the old session left queued.
 	if _local_db:
-		_local_db.clear_local_db()
+		_local_db.begin_reconnect_session()
 
 
 # Empties the subscription bookkeeping and hands back the handles that were in it, for
@@ -2583,6 +2838,9 @@ func _take_live_subscriptions() -> Array[SpacetimeDBSubscription]:
 	_unsubscribing_query_ids.clear()
 	# The backlog those refusals were about is gone with the map.
 	_subscribe_backlog_reported = false
+	# A reconnect batch still in flight belonged to the socket that is gone.
+	_resubscribe_request_id = -1
+	_resubscribe_sets = { }
 	return taken
 
 
@@ -2632,13 +2890,17 @@ func _end_subscription(sub: SpacetimeDBSubscription) -> void:
 
 
 func _cancel_reconnection() -> void:
+	# Before the IDLE check: between a reconnect's identity and its settled replay the
+	# cycle reads IDLE but still carries its attempt count, and a connect_db or
+	# disconnect_db made then starts over.
+	_reconnect_attempt = 0
 	if _reconnect_state == _ReconnectState.IDLE:
 		return
 
 	print_log("SpacetimeDBClient: Cancelling reconnection.")
 	_reconnect_state = _ReconnectState.IDLE
-	_reconnect_attempt = 0
 	_reconnect_immediate = false
+	_reconnect_session_busy = false
 	_resubscribe_epoch += 1 # supersede any in-flight resubscribe settles
 	# The saved handles are deliberately NOT ended here. Ending them emits `end`, which is
 	# game code, and this runs at the top of connect_db and disconnect_db before either has
@@ -2685,88 +2947,69 @@ func _suspend_reconnection() -> void:
 	_reconnect_timer = null
 
 
+# Restores the saved handles on the new socket with ONE SubscribeBatch, the way the
+# official SDKs do (2.10.2+). One request rather than a Subscribe per handle, so the server
+# answers with one SubscribeBatchApplied holding every set's rows, and the mirror can be
+# reconciled against the whole new snapshot in a single message: a row that is still there
+# fires nothing, a changed row fires one update, and only a row that is really gone fires a
+# delete. Each handle is re-registered under a fresh id and goes on being the caller's.
+#
+# Always runs on a reconnect, even with nothing saved: the reconcile is what drops the rows
+# the dead session left behind, and with no sets it applies an empty snapshot, which
+# deletes every row no new-session subscription holds.
 func _resubscribe_saved_queries() -> void:
 	_resubscribe_epoch += 1
 	var epoch: int = _resubscribe_epoch
-	# Snapshot so a re-entrant _start_reconnection rebuilding _saved_subscriptions (on a
-	# drop mid-resubscribe) can't disturb this loop. Ended handles — the ones the caller
-	# unsubscribed while suspended — are dropped from the snapshot rather than skipped
-	# inside the loop: the cycle completes on a count of settles, so one that will never be
-	# sent has to be out of the total or the cycle only finishes on its watchdog.
-	var restoring: Array[SpacetimeDBSubscription] = []
-	for saved: SpacetimeDBSubscription in _saved_subscriptions:
-		if not saved.ended:
-			restoring.append(saved)
-	var total_sets: int = restoring.size()
-	# A one-int box the settle callbacks below share and bump. `Array[int]` only because
-	# `_on_resubscribe_watchdog` takes that type: a PackedInt32Array boxes just as well
-	# (measured on 4.8.dev), since packed arrays are passed by reference too.
-	var applied_count: Array[int] = [0] # gdlint: ignore[S6]
-
-	if total_sets == 0:
-		_finish_resubscribe(epoch)
+	var sets: Array[SubscribeSetData] = []
+	var by_query_id: Dictionary[int, SpacetimeDBSubscription] = { }
+	# Ended handles (unsubscribed while suspended) are not restored.
+	for sub: SpacetimeDBSubscription in _saved_subscriptions:
+		if sub.ended:
+			continue
+		var query_id: int = _next_query_id
+		_next_query_id += 1
+		var query_strings: Array[String] = [] # gdlint: ignore[S6] SubscribeSetData's type
+		query_strings.assign(sub.queries)
+		sets.append(SubscribeSetData.new(query_id, query_strings))
+		by_query_id[query_id] = sub
+	if sets.is_empty():
+		_settle_reconnect(epoch, [], PackedInt64Array(), PackedInt64Array(), { })
 		return
 
-	# One line for the lot rather than one per set: a large saved set that fails to send
-	# would otherwise write thousands of lines in a single frame.
-	var send_failures: int = 0
-	var first_failure: Error = OK
-	for sub: SpacetimeDBSubscription in restoring:
-		# Re-checked per item, not trusted from the snapshot: the failure branch below emits
-		# `end`, and a handler is free to unsubscribe a sibling still waiting its turn in
-		# this loop. Counted as settled rather than skipped, or the cycle would only
-		# complete on its watchdog.
-		if sub.ended:
-			applied_count[0] += 1
-			if applied_count[0] >= total_sets:
-				_finish_resubscribe(epoch)
-			continue
-
-		# Uncapped, and re-registering the caller's own handle: see _subscribe_uncapped.
-		_subscribe_uncapped(sub.queries, sub)
-		if sub.error != OK:
-			send_failures += 1
-			if first_failure == OK:
-				first_failure = sub.error
-			# Signalled, unlike the same failure on a first subscribe, where the returned
-			# handle carries it. The game has held this one since before the drop, so `end`
-			# is the only way it hears that the subscription is over. mark_ended() inside
-			# the send path already moved the state; this is the notification.
-			sub.end.emit()
-			applied_count[0] += 1
-			if applied_count[0] >= total_sets:
-				_finish_resubscribe(epoch)
-			continue
-
-		var settled: Array[bool] = [false]
-		var on_settled: Callable = func() -> void:
-			# Bail if this sub already settled, or a newer reconnect cycle superseded us.
-			if settled[0] or epoch != _resubscribe_epoch:
-				return
-			settled[0] = true
-			applied_count[0] += 1
-			print_log(
-				"SpacetimeDBClient: Re-subscription settled (%d/%d)."
-				% [applied_count[0], total_sets]
-			)
-			if applied_count[0] >= total_sets:
-				_finish_resubscribe(epoch)
-		sub.applied.connect(on_settled, CONNECT_ONE_SHOT)
-		sub.end.connect(on_settled, CONNECT_ONE_SHOT)
-
-	if send_failures > 0:
+	# Registered before the send so a failed send settles through the same path as a
+	# server-side error. No game code runs until _settle_reconnect.
+	for query_id: int in by_query_id:
+		by_query_id[query_id].mark_reattached(query_id)
+		pending_subscriptions[query_id] = by_query_id[query_id]
+	var request_id: int = _next_request_id
+	_next_request_id += 1
+	var err: Error = _send_subscribe_batch(SubscribeBatchMessage.new(request_id, sets))
+	if err != OK:
 		push_error(
 			(
-				"SpacetimeDBClient: %d of %d saved subscriptions could not be re-sent on "
-				+ "reconnect (first error: %s). Those queries are gone for this session."
+				"SpacetimeDBClient: the reconnect's SubscribeBatch could not be sent (%s). "
+				+ "Its %d query sets are gone for this session."
 			)
-			% [send_failures, total_sets, error_string(first_failure)]
+			% [error_string(err), sets.size()]
 		)
+		var failed: Dictionary[int, String] = { }
+		for query_id: int in by_query_id:
+			by_query_id[query_id].error = err
+			failed[query_id] = "SubscribeBatch send failed: %s" % error_string(err)
+		_settle_reconnect(epoch, [], PackedInt64Array(), PackedInt64Array(), failed)
+		return
+	_resubscribe_request_id = request_id
+	_resubscribe_request_epoch = epoch
+	_resubscribe_sets = by_query_id
+	_stats.record_send(request_id, SpacetimeDBStats.Category.SUBSCRIBE)
+	print_log(
+		"SpacetimeDBClient: SubscribeBatch sent, request %d, %d query sets."
+		% [request_id, sets.size()]
+	)
 
-	# Watchdog: a server that accepts a Subscribe but never settles one set would otherwise
-	# hang the cycle. Epoch-guarded via _finish_resubscribe, so a settled or superseded
-	# cycle is a no-op. Routed through a bound method-ref, not a lambda, so the Callable
-	# carries Godot's freed-instance check for a client freed before the timer fires.
+	# Watchdog: a server that accepts the batch but never answers would otherwise hang the
+	# cycle. Routed through a bound method-ref, not a lambda, so the Callable carries
+	# Godot's freed-instance check for a client freed before the timer fires.
 	var tree: SceneTree = get_tree()
 	if tree:
 		# Wall clock — see the reconnect timer above.
@@ -2776,30 +3019,160 @@ func _resubscribe_saved_queries() -> void:
 			false,
 			true,
 		)
-		watchdog \
-				.timeout \
-				.connect(
-			_on_resubscribe_watchdog.bind(epoch, applied_count, total_sets),
-			CONNECT_ONE_SHOT,
+		watchdog.timeout.connect(_on_resubscribe_watchdog.bind(epoch), CONNECT_ONE_SHOT)
+
+
+func _send_subscribe_batch(payload: SubscribeBatchMessage) -> Error:
+	var message_bytes: PackedByteArray = _serializer.serialize_client_message(
+		SpacetimeDBClientMessage.SUBSCRIBE_BATCH,
+		payload,
+	)
+	if _serializer.has_error():
+		printerr(
+			"SpacetimeDBClient: Failed to serialize SubscribeBatch: %s"
+			% _serializer.get_last_error()
 		)
+		return ERR_PARSE_ERROR
+	if _connection == null or not _connection.is_websocket_active():
+		return ERR_CONNECTION_ERROR
+	return _connection.send_bytes(message_bytes)
 
 
-# Watchdog timeout for a resubscribe cycle. Bound with the cycle's captured epoch,
-# shared applied-count, and total set count. Force-completes the cycle only if it is
-# still current and unsettled; _finish_resubscribe is epoch-guarded so a settled or
-# superseded cycle is a no-op.
-# S6 ignored: applied_count is a shared mutable counter (`[0]`) read by reference so
-# the watchdog sees live on_settled updates; PackedInt32Array is copy-on-write and
-# would capture a stale copy at bind() time.
-func _on_resubscribe_watchdog(epoch: int, applied_count: Array[int], total_sets: int) -> void: # gdlint: ignore[S6]
-	if epoch == _resubscribe_epoch and applied_count[0] < total_sets:
-		push_warning(
-			(
-				"SpacetimeDBClient: resubscribe timed out (%d/%d settled) — completing anyway."
-				% [applied_count[0], total_sets]
+# The reconnect's SubscribeBatchApplied. Checked against the request before anything is
+# applied: an answer to a request this client did not make, or one whose sets are not
+# exactly the ones sent, cannot be reconciled against, and applying it would leave rows
+# under ids no handle owns. That is a protocol violation, so the socket is dropped.
+func _on_subscribe_batch_applied(message: SubscribeBatchAppliedMessage) -> void:
+	var violation: String = _subscribe_batch_violation(message)
+	if not violation.is_empty():
+		if _connection != null:
+			_connection.abort_protocol_violation(violation)
+		return
+	var epoch: int = _resubscribe_request_epoch
+	# Cleared before any game code runs, so a callback that reconnects or subscribes
+	# cannot be answered by this message a second time.
+	_resubscribe_request_id = -1
+	_resubscribe_sets = { }
+	var updates: Array[TableUpdateData] = []
+	var update_query_ids: PackedInt64Array = []
+	var applied: PackedInt64Array = []
+	var failed: Dictionary[int, String] = { }
+	for result: SubscribeSetResultData in message.results:
+		if result.is_error:
+			failed[result.query_set_id] = result.error_message
+			continue
+		applied.append(result.query_set_id)
+		for table: TableUpdateData in result.tables:
+			updates.append(table)
+			update_query_ids.append(result.query_set_id)
+	print_log(
+		"SpacetimeDBClient: SubscribeBatchApplied, request %d: %d applied, %d failed."
+		% [message.request_id, applied.size(), failed.size()]
+	)
+	_settle_reconnect(epoch, updates, update_query_ids, applied, failed)
+
+
+# Empty when [param message] answers the outstanding request with exactly its sets.
+func _subscribe_batch_violation(message: SubscribeBatchAppliedMessage) -> String:
+	if _resubscribe_request_id < 0 or message.request_id != _resubscribe_request_id:
+		return (
+			"SubscribeBatchApplied for request %d, but the outstanding request is %d"
+			% [message.request_id, _resubscribe_request_id]
+		)
+	if message.results.size() != _resubscribe_sets.size():
+		return (
+			"SubscribeBatchApplied carries %d results for %d sets"
+			% [message.results.size(), _resubscribe_sets.size()]
+		)
+	var seen: Dictionary[int, bool] = { }
+	for result: SubscribeSetResultData in message.results:
+		if not _resubscribe_sets.has(result.query_set_id) or seen.has(result.query_set_id):
+			return (
+				"SubscribeBatchApplied names query set %d, which was not sent or repeats"
+				% result.query_set_id
 			)
+		seen[result.query_set_id] = true
+	return ""
+
+
+# Applies a reconnect's snapshot to the mirror as one message, then settles the handles,
+# then reports `reconnected`. Each step after the first runs game code, so each is followed
+# by a check that nothing has moved the session on: a callback that called
+# connect_db/disconnect_db, or lost the socket again, owns what happens next. A callback
+# that only wiped the mirror (clear_local_db) has not: the sets are still live on the
+# server, so their handles settle and `reconnected` fires as usual.
+func _settle_reconnect(
+		epoch: int,
+		updates: Array[TableUpdateData],
+		update_query_ids: PackedInt64Array,
+		applied: PackedInt64Array,
+		failed: Dictionary[int, String],
+) -> void:
+	var intent: int = _session_intent
+	if _local_db:
+		_local_db.apply_reconnect_snapshot(updates, update_query_ids)
+	if _reconcile_superseded(intent):
+		return
+	if not applied.is_empty() and not _received_initial_subscription:
+		_received_initial_subscription = true
+		database_initialized.emit()
+		if _reconcile_superseded(intent):
+			return
+	for query_id: int in applied:
+		# Gone when a callback above unsubscribed it and the server already answered.
+		if not pending_subscriptions.has(query_id):
+			continue
+		var sub: SpacetimeDBSubscription = pending_subscriptions[query_id]
+		pending_subscriptions.erase(query_id)
+		current_subscriptions[query_id] = sub
+		sub.applied.emit()
+		if _reconcile_superseded(intent):
+			return
+	# Every failed handle is retired before the first `end` fires, so an `end` handler that
+	# unsubscribes a sibling finds it already over, rather than sending an Unsubscribe for
+	# a set the server never took.
+	var ending: Array[SpacetimeDBSubscription] = []
+	for query_id: int in failed:
+		_unsubscribing_query_ids.erase(query_id)
+		# An errored set delivered no rows; this drops any membership it may hold.
+		if _local_db:
+			_local_db.prune_query(query_id)
+		if not pending_subscriptions.has(query_id):
+			continue
+		var sub: SpacetimeDBSubscription = pending_subscriptions[query_id]
+		pending_subscriptions.erase(query_id)
+		sub.error_message = failed[query_id]
+		sub.mark_ended()
+		ending.append(sub)
+	for sub: SpacetimeDBSubscription in ending:
+		sub.end.emit()
+		if _reconcile_superseded(intent):
+			return
+	_finish_resubscribe(epoch)
+
+
+# connect_db and disconnect_db bump the intent before they wipe the mirror, and a lost
+# socket leaves IDLE, so these two cover every way the SDK itself ends the session.
+func _reconcile_superseded(intent: int) -> bool:
+	return _session_intent != intent or _reconnect_state != _ReconnectState.IDLE
+
+
+# Watchdog timeout for a reconnect's SubscribeBatch. A no-op once the cycle settled or was
+# superseded. Otherwise the cycle completes without the server's answer: the stale rows are
+# dropped (an empty snapshot) and `reconnected` fires, so the game is not left waiting on a
+# server that may never answer. The request stays armed: a late answer still applies its
+# rows and fires each handle's `applied`, but not a second `reconnected`.
+func _on_resubscribe_watchdog(epoch: int) -> void:
+	if epoch != _resubscribe_epoch or _resubscribe_request_id < 0:
+		return
+	push_warning(
+		(
+			"SpacetimeDBClient: the reconnect's SubscribeBatch was not answered within "
+			+ "%.0f s; completing the reconnect without it."
 		)
-		_finish_resubscribe(epoch)
+		% RESUBSCRIBE_TIMEOUT_SECONDS
+	)
+	_settle_reconnect(epoch, [], PackedInt64Array(), PackedInt64Array(), { })
 
 
 ## Completes a resubscribe cycle: clears the saved set and emits [signal reconnected],
@@ -2807,12 +3180,12 @@ func _on_resubscribe_watchdog(epoch: int, applied_count: Array[int], total_sets:
 func _finish_resubscribe(epoch: int) -> void:
 	if epoch != _resubscribe_epoch:
 		return
-	# Supersede this cycle so a late settle OR the watchdog timer that also calls
-	# _finish_resubscribe can't re-fire reconnected (both compare their captured
-	# epoch to _resubscribe_epoch and bail once it moves).
+	# Supersede this cycle so the watchdog or a late answer can't re-fire reconnected.
 	_resubscribe_epoch += 1
-	# Cleared, not ended: every entry that made it through the pass is live again in
-	# current/pending, and the ones that did not were ended by the pass itself.
+	# The reconnect is complete only now, so only now does the next drop start a new count.
+	_reconnect_attempt = 0
+	# Cleared, not ended: every entry that was restored is live again in current/pending,
+	# and the ones that were not have already ended.
 	_saved_subscriptions.clear()
 	reconnected.emit()
 

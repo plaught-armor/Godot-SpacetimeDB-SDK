@@ -126,8 +126,8 @@ func _test_room_reopens() -> void:
 	client.free()
 
 
-# The reconnect's own resubscribe loop is exempt. It issues every saved set in one
-# synchronous pass, so pending climbs to the whole set by construction; applying the cap
+# The reconnect's own resubscribe is exempt. It issues every saved set in one
+# SubscribeBatch, so pending climbs to the whole set by construction; applying the cap
 # there refused the tail of the game's OWN previously-acknowledged state and lost it
 # (measured: 4116 live subscriptions, 20 sets gone, `reconnected` emitted as if it had
 # worked).
@@ -141,6 +141,9 @@ func _test_the_resubscribe_loop_is_exempt() -> void:
 	# Pending is AT the cap before the loop runs, which is the state a real reconnect
 	# reaches by its own second half: without the exemption every set below is refused.
 	_fill_pending(client, cap)
+	# Past the ids _fill_pending used, as a real session's counter would be; the batch
+	# would otherwise reuse them and overwrite those entries.
+	client._next_query_id = cap
 	var sets: int = 20
 	for i: int in sets:
 		var saved: SpacetimeDBSubscription = SpacetimeDBSubscription.create(client, i, _q(i))
@@ -148,9 +151,9 @@ func _test_the_resubscribe_loop_is_exempt() -> void:
 		client._saved_subscriptions.append(saved)
 	var query_ids_before: int = client._next_query_id
 	client._resubscribe_saved_queries()
-	# Every saved set got a query id; none was refused. The sends themselves fail (there is
-	# no socket), which is what the loop's own one-line summary reports — that summary's
-	# count is log-only and is deliberately not asserted here.
+	# Every saved set got a query id; none was refused. The send itself fails (there is
+	# no socket), which the batch reports in one line — log-only, deliberately not
+	# asserted here.
 	_check_i(
 		"every saved set was issued past the cap",
 		client._next_query_id - query_ids_before,

@@ -33,6 +33,9 @@ const UNSUB_TABLE: String = "does_not_exist"
 const PROC_PARAMS_FIXTURE: String = "res://tests/fixtures/wire_procedure_params.bin"
 const IDENTITY_FIXTURE: String = "res://tests/fixtures/wire_identity_token.bin"
 const RESUBSCRIBE_FIXTURE: String = "res://tests/fixtures/wire_resubscribe.bin"
+## The reconnect's SubscribeBatchApplied from SpacetimeDB 2.16.3, captured by
+## tests/_live_reconnect_check.gd: one restored handle, one query set.
+const SUBSCRIBE_BATCH_FIXTURE: String = "res://tests/fixtures/wire_subscribe_batch.bin"
 const BROADCAST_FIXTURE: String = "res://tests/fixtures/wire_broadcast_txn.bin"
 const PROBE_ROWS_FIXTURE: String = "res://tests/fixtures/wire_probe_rows.bin"
 const GZIP_FIXTURE: String = "res://tests/fixtures/wire_snapshot_gzip.bin"
@@ -65,6 +68,7 @@ func _initialize() -> void:
 	fails += _test_real_procedure_params_decode()
 	fails += _test_real_identity_token_decodes()
 	fails += _test_real_resubscribe_decodes()
+	fails += _test_real_subscribe_batch_decodes()
 	fails += _test_real_broadcast_decodes()
 	fails += _test_real_probe_rows_decode()
 	fails += _test_real_compressed_frames_decode()
@@ -479,6 +483,30 @@ func _test_real_resubscribe_decodes() -> int:
 	if rows.is_empty():
 		return f
 	f += _check_i("world_size survives the reconnect", rows[0].world_size, EXPECTED_WORLD_SIZE)
+	return f
+
+
+func _test_real_subscribe_batch_decodes() -> int:
+	var messages: Array[SpacetimeDBServerMessage] = _messages_in(SUBSCRIBE_BATCH_FIXTURE)
+	var f: int = _check_i("the capture holds one message", messages.size(), 1)
+	if messages.size() != 1 or messages[0] is not SubscribeBatchAppliedMessage:
+		return f + _check_b("it is a SubscribeBatchApplied", false, true)
+	var batch: SubscribeBatchAppliedMessage = messages[0]
+	# Query set and request ids both restart at 0 with the new session.
+	f += _check_i("answers the session's first request", batch.request_id, 0)
+	f += _check_i("one result for the one set sent", batch.results.size(), 1)
+	if batch.results.size() != 1:
+		return f
+	var result: SubscribeSetResultData = batch.results[0]
+	f += _check_i("for query set 0", result.query_set_id, 0)
+	f += _check_b("which applied", result.is_error, false)
+	var rows: Array[Resource] = []
+	for update: TableUpdateData in result.tables:
+		if String(update.table_name) == "config":
+			rows.append_array(update.inserts)
+	f += _check_i("carrying the config row", rows.size(), 1)
+	if rows.size() == 1:
+		f += _check_i("with its world_size", rows[0].world_size, EXPECTED_WORLD_SIZE)
 	return f
 
 
