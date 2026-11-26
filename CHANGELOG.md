@@ -22,17 +22,23 @@ All notable changes to the SpacetimeDB Godot SDK will be documented in this file
 - **A server message that cannot be parsed ends the session.** Before, the messages read
   before the failure were still delivered and the rest of the packet was skipped. Now
   nothing from the packet is delivered, the packets after it are dropped, and the socket
-  is closed as a protocol violation. Auto-reconnect treats that close as a failed
-  connection.
+  is closed as a protocol violation.
+- **A protocol violation ends the session for good.** This covers a message that cannot
+  be parsed and a reconnect replay answer that does not match the request. Auto-reconnect
+  no longer retries either, because a new socket would replay the same subscriptions and
+  meet the same message. The official SDKs make the same call. `connection_error` fires
+  with the new `SpacetimeDBConnection.ERR_PROTOCOL_VIOLATION` code and a reason naming
+  the fault, then `reconnect_failed` if a reconnect cycle owned the session, then
+  `disconnected`.
 - **Close codes 1002, 1003, 1007 and 1008 are terminal.** They mean the server rejected
   what this client sent, and a new socket would meet the same close. Auto-reconnect no
   longer retries them: a cycle in progress ends with `reconnect_failed`, then
   `disconnected` fires, and the error log names the code.
-- **A reconnect attempt counts until its subscriptions are restored.** The attempt
-  counter used to reset as soon as the new socket's identity arrived. A server that
-  accepted the socket and then failed the replay every time made the client reconnect
-  forever. The counter now resets only once the restore has settled, so that server uses
-  up `max_reconnect_attempts` and the cycle ends with `reconnect_failed`.
+- **A terminal close before a reconnect's replay settles reports `reconnect_failed`.**
+  The attempt counter resets when the new socket's identity arrives, as in the official
+  SDKs, and the cycle used to count as over at that point too. A terminal close in the
+  window before the replay settled ended the session without `reconnect_failed`. Now the
+  cycle owns the session until the replay settles.
 
 ### Added
 - **`SpacetimeDBConnectionOptions.token_provider`.** An optional `Callable` that

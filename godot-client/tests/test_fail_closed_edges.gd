@@ -9,10 +9,11 @@
 #    the code. One that lands after a reconnect's IdentityToken but before its replay
 #    settles still owes the game reconnect_failed: the cycle reads IDLE there, but the game
 #    heard reconnecting and is waiting for the outcome.
-# 3. A server that answers every reconnect's replay with a protocol violation exhausts
-#    max_reconnect_attempts and reports reconnect_failed. The attempt count resets when a
-#    replay settles, not when the new socket's IdentityToken arrives, so a socket that opens
-#    and then fails its replay does not hand the next cycle a fresh allowance.
+# 3. The first protocol violation (a message that cannot be parsed, or a replay answer
+#    that does not match the request) is terminal: no reconnect follows, connection_error
+#    names the fault, reconnect_failed is heard if a reconnect cycle owned the session, and
+#    disconnected comes last. The attempt count resets when the reconnect's IdentityToken
+#    arrives, as it does in the official SDKs, not when the replay settles.
 #
 # Driven through the real handlers with stub connection and deserializer objects. The
 # client is in the tree because the reconnect scheduler needs get_tree(); its delays are
@@ -37,6 +38,8 @@ var _reconnecting_count: int = 0
 var _reconnect_failed_count: int = 0
 var _disconnected_count: int = 0
 var _connected_count: int = 0
+var _error_codes: PackedInt32Array = []
+var _error_reasons: PackedStringArray = []
 
 
 func _initialize() -> void:
@@ -47,7 +50,8 @@ func _initialize() -> void:
 	f += await _test_terminal_close_outside_cycle()
 	f += _test_terminal_close_diagnostic()
 	f += await _test_terminal_close_before_replay_settles()
-	f += await _test_repeated_violation_exhausts()
+	f += _test_violation_reports_its_code()
+	f += await _test_first_violation_is_terminal()
 	if f == 0:
 		print("ALL PASS (%d/%d)" % [_total, _total])
 	else:
@@ -331,55 +335,75 @@ func _make_replaying_client() -> SpacetimeDBClient:
 	return client
 
 
-# Each cycle: the attempt connects, the new socket's IdentityToken arrives and the replay is
-# sent, and the server answers it with a violation (the error abort_protocol_violation
-# reports). With the count reset at the identity this goes on forever; the bound is
-# max_reconnect_attempts.
-func _test_repeated_violation_exhausts() -> int:
+# The real connection reports a violation under the code the client treats as terminal,
+# and the reason carries the fault it was given.
+func _test_violation_reports_its_code() -> int:
 	var f: int = 0
-	var client: SpacetimeDBClient = await _make_client()
-	var conn: _StubConn = client._connection
-	client._serializer = BSATNSerializer.new(false)
-	client._local_db = LocalDatabase.new(
-		SpacetimeDBSchema.new("test_mod", "res://__no_schema__", false)
+	var conn: SpacetimeDBConnection = SpacetimeDBConnection.new(
+		SpacetimeDBConnectionOptions.new(),
+		"violation_db",
 	)
-	client._token = "token"
-	client.current_subscriptions[0] = SpacetimeDBSubscription.create(
-		client,
-		0,
-		PackedStringArray(["SELECT * FROM tbl"]),
-	)
-	client._next_query_id = 1
+	_error_codes.clear()
+	_error_reasons.clear()
+	conn.connection_error.connect(_on_connection_error)
+	conn.abort_protocol_violation("the fault text")
+	f += _check_i("one connection_error", _error_codes.size(), 1)
+	if _error_codes.size() == 1:
+		f += _check_i(
+			"under ERR_PROTOCOL_VIOLATION",
+			_error_codes[0],
+			SpacetimeDBConnection.ERR_PROTOCOL_VIOLATION,
+		)
+		f += _check_b("naming the fault", _error_reasons[0].contains("the fault text"), true)
+	conn.free()
+	return f
+
+
+func _test_first_violation_is_terminal() -> int:
+	var f: int = 0
+	var violation: int = SpacetimeDBConnection.ERR_PROTOCOL_VIOLATION
+	var reason: String = "Protocol violation: a server message could not be parsed (bad tag)"
+
+	# Outside a cycle, with auto-reconnect on: the session ends, nothing reconnects.
+	var live: SpacetimeDBClient = await _make_replaying_client()
+	live.connection_error.connect(_on_connection_error)
 	_reset_counts()
-
-	client._on_connection_error(ERR_INVALID_DATA, "Protocol violation: first")
-	var cycles: int = 0
-	for i: int in _MAX_ATTEMPTS * 3:
-		if _reconnect_failed_count > 0:
-			break
-		cycles += 1
-		client._attempt_reconnect()
-		client._handle_parsed_message(_identity_token())
-		client._on_connection_error(ERR_INVALID_DATA, "Protocol violation: again")
-
-	f += _check_i("the replay was sent every cycle", conn.sent, cycles)
-	f += _check_i("reconnect_failed once", _reconnect_failed_count, 1)
-	f += _check_i("after max_reconnect_attempts cycles", cycles, _MAX_ATTEMPTS)
-	f += _check_i("attempts reported", _reconnecting_count, _MAX_ATTEMPTS)
-	f += _check_i("disconnected", _disconnected_count, 1)
-	_free_client(client)
-
-	# A replay that settles does reset it: the next drop is a fresh cycle.
-	var settled: SpacetimeDBClient = await _make_client()
-	settled._local_db = LocalDatabase.new(
-		SpacetimeDBSchema.new("test_mod", "res://__no_schema__", false)
+	live._on_connection_error(violation, reason)
+	f += _check_i("live session: no reconnect", _reconnecting_count, 0)
+	f += _check_b(
+		"live session: cycle not started",
+		live._reconnect_state == live._ReconnectState.IDLE,
+		true,
 	)
-	settled._token = "token"
-	settled._start_reconnection()
-	settled._attempt_reconnect()
-	settled._handle_parsed_message(_identity_token()) # nothing saved: settles at once
-	f += _check_i("a settled replay resets the count", settled._reconnect_attempt, 0)
-	_free_client(settled)
+	f += _check_i("live session: no reconnect_failed", _reconnect_failed_count, 0)
+	f += _check_i("live session: disconnected", _disconnected_count, 1)
+	f += _check_i("live session: connection_error heard", _error_codes.size(), 1)
+	if _error_codes.size() == 1:
+		f += _check_b("live session: names the fault", _error_reasons[0].contains("bad tag"), true)
+	_free_client(live)
+
+	# Inside a reconnect's replay window: the cycle owned the session, so it failed.
+	var replaying: SpacetimeDBClient = await _make_replaying_client()
+	var conn: _StubConn = replaying._connection
+	replaying.connection_error.connect(_on_connection_error)
+	_reset_counts()
+	replaying._on_connection_error(ERR_CONNECTION_ERROR, "dropped")
+	replaying._attempt_reconnect()
+	f += _check_i("replay: attempt 1 counted", replaying._reconnect_attempt, 1)
+	replaying._handle_parsed_message(_identity_token())
+	f += _check_i("replay: the identity resets the count", replaying._reconnect_attempt, 0)
+	f += _check_i("replay: the replay was sent", conn.sent, 1)
+	replaying._on_connection_error(violation, reason)
+	f += _check_i("replay: no next attempt", _reconnecting_count, 1)
+	f += _check_i("replay: reconnect_failed", _reconnect_failed_count, 1)
+	f += _check_i("replay: disconnected", _disconnected_count, 1)
+	f += _check_b(
+		"replay: the cycle is over",
+		replaying._reconnect_state == replaying._ReconnectState.IDLE
+		and not replaying._reconnect_replay_open,
+		true,
+	)
+	_free_client(replaying)
 	return f
 
 
@@ -428,6 +452,8 @@ func _free_client(client: SpacetimeDBClient) -> void:
 
 
 func _reset_counts() -> void:
+	_error_codes.clear()
+	_error_reasons.clear()
 	_reconnecting_count = 0
 	_reconnect_failed_count = 0
 	_disconnected_count = 0
@@ -443,6 +469,11 @@ func _on_reconnect_failed() -> void:
 
 func _on_connected(_identity: PackedByteArray, _token: String) -> void:
 	_connected_count += 1
+
+
+func _on_connection_error(code: int, reason: String) -> void:
+	_error_codes.append(code)
+	_error_reasons.append(reason)
 
 
 func _on_disconnected() -> void:

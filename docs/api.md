@@ -323,20 +323,26 @@ After `reconnect_failed`, the cache keeps the last state it had, the same as aft
 
 ### What ends a session without a reconnect
 
-- **A server message that cannot be parsed.** Nothing from that packet is delivered, every
-  packet after it is dropped unread, and the socket is closed as a protocol violation
-  (`connection_error` with `ERR_INVALID_DATA`). With `auto_reconnect` on this counts as a
-  failed connection, so a reconnect follows.
+- **A server message that cannot be parsed, or a protocol violation.** For a bad message,
+  nothing from that packet is delivered and every packet after it is dropped unread. A
+  protocol violation is an answer this client cannot reconcile with what it asked for,
+  such as a reconnect's replay answer with the wrong request id. Either way the socket is
+  dropped and no reconnect follows, with `auto_reconnect` on or off: a new socket would
+  replay the same subscriptions and meet the same message. `connection_error` fires with
+  `SpacetimeDBConnection.ERR_PROTOCOL_VIOLATION` and a reason that names the fault. If a
+  reconnect cycle owned the session, `reconnect_failed` follows. `disconnected` fires
+  last. A `connection_error` handler that calls `connect_db()` or `disconnect_db()` has
+  already decided what happens next, so neither signal follows in that case.
 - **A close with code 1002, 1003, 1007 or 1008.** These mean the server rejected what
   this client sent, so a new socket would meet the same close. No reconnect follows: a
   cycle in progress ends with `reconnect_failed`, then `disconnected` fires. The error log
   names the code and the server's reason.
 
-A reconnect counts as done only once its subscriptions are restored, not when the new
-socket opens. A server that accepts the socket and then fails the replay every time (a
-protocol violation or a message that cannot be parsed) uses up `max_reconnect_attempts`
-and ends with `reconnect_failed`. A failure after a restore succeeded starts a fresh
-count, since that session was established.
+The attempt count starts over when the server accepts a reconnect's socket (its identity
+arrives), as it does in the official SDKs. A drop after that, even one before the
+replay settles, starts a new cycle from attempt 1. A terminal close in that window still
+ends with `reconnect_failed`, because the cycle that the game heard `reconnecting` for
+has not finished.
 
 ## Generated `ModuleClient` class
 
